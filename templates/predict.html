@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Результат прогноза</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background-color: #f5f7fa;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .header h2 {
+      margin: 0;
+      color: #333;
+    }
+    .btn-logout {
+      background: #e74c3c;
+      border: none;
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .btn-logout:hover {
+      background: #c0392b;
+    }
+    .metrics, .stats {
+      background: #fff;
+      padding: 15px;
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    .metrics p, .stats p {
+      margin: 5px 0;
+      color: #444;
+    }
+    .chart {
+      background: #fff;
+      padding: 10px;
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    th, td {
+      padding: 8px 12px;
+      border: 1px solid #e1e4e8;
+      text-align: center;
+      color: #333;
+    }
+    th {
+      background: #ecf0f1;
+      cursor: pointer;
+    }
+    th:hover {
+      background: #d0d7de;
+    }
+    a.download {
+      display: inline-block;
+      margin-bottom: 15px;
+      background: #3498db;
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 4px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    a.download:hover {
+      background: #2980b9;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Прогноз для {{ ticker }} ({{ start_date }} – {{ end_date }})</h2>
+    <a href="/logout" class="btn-logout">Выйти</a>
+  </div>
+  {% if role == 'admin' %}
+  <div class="stats">
+    <p>MAE: {{ mae }}, RMSE: {{ rmse }}</p>
+  </div>
+{% endif %}
+  <div class="chart" id="orig_chart" style="height:400px;"></div>
+  <div class="chart" id="price_chart" style="height:400px;"></div>
+
+  <a href="/download_csv?ticker={{ ticker }}&start_date={{ start_date }}&end_date={{ end_date }}&days_ahead={{ days_ahead }}" class="download">Скачать CSV</a>
+
+  <h3>Таблица прогноз vs факт</h3>
+  <table id="predTable">
+    <thead>
+      <tr>
+        <th>Дата</th>
+        <th>Факт</th>
+        <th>Прогноз</th>
+        <th onclick="sortTable(3)">Абс. ошибка ▲▼</th>
+        <th onclick="sortTable(4)">% ошибка ▲▼</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in table %}
+      <tr>
+        <td>{{ row.date }}</td>
+        <td>{{ row.actual }}</td>
+        <td>{{ row.predicted }}</td>
+        <td>{{ row.abs_error }}</td>
+        <td>{{ row.pct_error }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if role == 'admin' %}
+    <div class="chart" id="rsi_chart" style="height:300px;"></div>
+    <div class="chart" id="macd_chart" style="height:300px;"></div>
+  {% endif %}
+
+  <script>
+    function sortTable(n) {
+      const table = document.getElementById('predTable');
+      const rows = Array.from(table.tBodies[0].rows);
+      const dir = table.getAttribute('data-sort-dir') === 'asc' ? 'desc' : 'asc';
+      rows.sort((a, b) => {
+        const x = parseFloat(a.cells[n].innerText.replace('%',''));
+        const y = parseFloat(b.cells[n].innerText.replace('%',''));
+        return dir === 'asc' ? x - y : y - x;
+      });
+      rows.forEach(r => table.tBodies[0].appendChild(r));
+      table.setAttribute('data-sort-dir', dir);
+    }
+
+    const DATA = {{ data_json | safe }};
+    const ORIG_LEN = DATA.actual.filter(v => v !== null).length;
+    const ORIG_DATES = DATA.dates.slice(0, ORIG_LEN);
+
+    Plotly.newPlot('orig_chart', [
+      { x: ORIG_DATES, y: DATA.actual.slice(0, ORIG_LEN), name: 'Close' }
+    ], { title: 'Original Close Price', xaxis: { rangeslider: { visible: true } } });
+
+    Plotly.newPlot('price_chart', [
+      { x: DATA.dates, y: DATA.actual, name: 'Actual', mode: 'lines' },
+      { x: DATA.dates, y: DATA.predicted, name: 'Predicted', mode: 'lines' }
+    ], { title: 'Actual vs Predicted' });
+
+    {% if role == 'admin' %}
+      Plotly.newPlot('rsi_chart', [
+        { x: ORIG_DATES, y: DATA.rsi, name: 'RSI' }
+      ], { title: 'RSI' });
+
+      Plotly.newPlot('macd_chart', [
+        { x: ORIG_DATES, y: DATA.macd, name: 'MACD' },
+        { x: ORIG_DATES, y: DATA.signal, name: 'Signal' }
+      ], { title: 'MACD & Signal' });
+    {% endif %}
+  </script>
+</body>
+</html>
