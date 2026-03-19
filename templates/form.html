@@ -3,99 +3,361 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Gold Price Prediction</title>
+  <title>FinanceGuru — Прогноз</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
-      background: #f0f2f5;
-      font-family: Arial, sans-serif;
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      background: #0a0e17;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
+      color: #e2e8f0;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .navbar {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 2rem;
+      background: rgba(15, 23, 42, 0.8);
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      backdrop-filter: blur(20px);
+    }
+
+    .navbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+    }
+
+    .navbar-logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #10b981, #3b82f6);
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 100vh;
-      margin: 0;
     }
-    .container {
-      background: #fff;
-      padding: 2rem;
+
+    .navbar-logo svg {
+      width: 18px;
+      height: 18px;
+      fill: white;
+    }
+
+    .navbar-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      letter-spacing: -0.01em;
+    }
+
+    .navbar-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .navbar-user {
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }
+
+    .btn-logout {
+      padding: 0.45rem 1rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      font-family: 'Inter', sans-serif;
+      color: #94a3b8;
+      background: rgba(51, 65, 85, 0.4);
+      border: 1px solid rgba(51, 65, 85, 0.6);
       border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      width: 360px;
-    }
-    .header {
-      text-align: center;
-      margin-bottom: 1.5rem;
-    }
-    .header h1 {
-      margin: 0;
-      font-size: 1.5rem;
-      color: #333;
-    }
-    .header .link-logout {
-      font-size: 0.9rem;
-      color: #007bff;
       text-decoration: none;
-      margin-top: 0.5rem;
-      display: inline-block;
+      transition: all 0.2s;
     }
-    form .form-group {
-      margin-bottom: 1rem;
+
+    .btn-logout:hover {
+      color: #f1f5f9;
+      border-color: rgba(239, 68, 68, 0.5);
+      background: rgba(239, 68, 68, 0.1);
     }
-    form label {
+
+    .main {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: calc(100vh - 62px);
+      padding: 2rem;
+    }
+
+    .form-card {
+      width: 460px;
+      padding: 2.5rem;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(51, 65, 85, 0.5);
+      border-radius: 16px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+    }
+
+    .form-header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .form-header h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 0.5rem;
+    }
+
+    .form-header p {
+      color: #64748b;
+      font-size: 0.875rem;
+    }
+
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
       display: block;
-      margin-bottom: 0.3rem;
-      color: #555;
-      font-size: 0.9rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
-    form input[type="text"],
-    form input[type="date"],
-    form input[type="number"] {
+
+    .form-input {
       width: 100%;
-      padding: 0.5rem;
-      border: 1px solid #ccc;
-      border-radius: 4px;
+      padding: 0.7rem 1rem;
+      font-size: 0.95rem;
+      font-family: 'Inter', sans-serif;
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid rgba(51, 65, 85, 0.8);
+      border-radius: 10px;
+      color: #e2e8f0;
+      transition: all 0.2s ease;
+      outline: none;
+    }
+
+    .form-input:focus {
+      border-color: #10b981;
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .ticker-hint {
+      font-size: 0.75rem;
+      color: #475569;
+      margin-top: 0.35rem;
+    }
+
+    .btn-predict {
+      display: block;
+      width: 100%;
+      padding: 0.85rem;
       font-size: 1rem;
-      box-sizing: border-box;
-    }
-    .btn {
-      width: 100%;
-      padding: 0.6rem;
-      background: #007bff;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #10b981, #059669);
       color: #fff;
       border: none;
-      border-radius: 4px;
-      font-size: 1rem;
+      border-radius: 10px;
       cursor: pointer;
+      transition: all 0.2s ease;
+      margin-top: 0.5rem;
     }
-    .btn:hover {
-      background: #0056b3;
+
+    .btn-predict:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3);
+    }
+
+    .btn-predict:active {
+      transform: translateY(0);
+    }
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+
+    .feature {
+      text-align: center;
+      padding: 1rem 0.5rem;
+      background: rgba(30, 41, 59, 0.4);
+      border: 1px solid rgba(51, 65, 85, 0.3);
+      border-radius: 12px;
+    }
+
+    .feature-icon {
+      font-size: 1.5rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .feature-label {
+      font-size: 0.7rem;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Loading overlay */
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(10, 14, 23, 0.85);
+      backdrop-filter: blur(8px);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.5rem;
+    }
+
+    .loading-overlay.active {
+      display: flex;
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 3px solid rgba(16, 185, 129, 0.2);
+      border-top-color: #10b981;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      color: #94a3b8;
+      font-size: 0.95rem;
+    }
+
+    .loading-sub {
+      color: #475569;
+      font-size: 0.8rem;
+      margin-top: -1rem;
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>Прогноз золота</h1>
-      <a href="/logout" class="link-logout">Выйти</a>
+  <nav class="navbar">
+    <a href="/" class="navbar-brand">
+      <div class="navbar-logo">
+        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      </div>
+      <span class="navbar-title">FinanceGuru</span>
+    </a>
+    <div class="navbar-right">
+      <a href="/logout" class="btn-logout">Выйти</a>
     </div>
-    <form action="/predict" method="post">
-      <div class="form-group">
-        <label for="ticker">Тикер</label>
-        <input id="ticker" name="ticker" type="text" value="GC=F" required>
+  </nav>
+
+  <div class="main">
+    <div>
+      <div class="form-card">
+        <div class="form-header">
+          <h2>Настройка прогноза</h2>
+          <p>Укажите параметры для анализа и прогнозирования</p>
+        </div>
+
+        {% if error %}
+        <div class="alert-danger" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#fca5a5;padding:0.75rem 1rem;border-radius:10px;margin-bottom:1.25rem;font-size:0.875rem;">{{ error }}</div>
+        {% endif %}
+
+        <form action="/predict" method="post" id="predictForm">
+          <div class="form-group">
+            <label for="ticker">Тикер</label>
+            <input id="ticker" name="ticker" type="text" class="form-input" value="GC=F" required>
+            <div class="ticker-hint">GC=F — золото, SI=F — серебро, CL=F — нефть</div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="start_date">Дата начала</label>
+              <input id="start_date" name="start_date" type="date" class="form-input" required>
+            </div>
+            <div class="form-group">
+              <label for="end_date">Дата конца</label>
+              <input id="end_date" name="end_date" type="date" class="form-input" required>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="days_ahead">Прогноз вперёд (дней)</label>
+            <input id="days_ahead" name="days_ahead" type="number" class="form-input" value="0" min="0" max="365">
+          </div>
+
+          <button type="submit" class="btn-predict">Запустить анализ</button>
+        </form>
+
+        <div class="features">
+          <div class="feature">
+            <div class="feature-icon" style="color:#10b981;">&#9672;</div>
+            <div class="feature-label">{% if ensemble %}Ensemble{% else %}LSTM{% endif %}</div>
+          </div>
+          <div class="feature">
+            <div class="feature-icon" style="color:#3b82f6;">&#9670;</div>
+            <div class="feature-label">{% if ensemble %}CatBoost + XGB{% else %}RSI / MACD{% endif %}</div>
+          </div>
+          <div class="feature">
+            <div class="feature-icon" style="color:#f59e0b;">&#9671;</div>
+            <div class="feature-label">Yahoo Finance</div>
+          </div>
+        </div>
       </div>
-      <div class="form-group">
-        <label for="start_date">Дата начала</label>
-        <input id="start_date" name="start_date" type="date" required>
-      </div>
-      <div class="form-group">
-        <label for="end_date">Дата конца</label>
-        <input id="end_date" name="end_date" type="date" required>
-      </div>
-      <div class="form-group">
-        <label for="days_ahead">Прогноз на дней вперёд</label>
-        <input id="days_ahead" name="days_ahead" type="number" value="0" min="0">
-      </div>
-      <button type="submit" class="btn">Запустить прогноз</button>
-    </form>
+    </div>
   </div>
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+    <div class="loading-text">Анализ данных и построение прогноза...</div>
+    <div class="loading-sub">Загрузка котировок, расчёт индикаторов, запуск LSTM</div>
+  </div>
+
+  <script>
+    document.getElementById('predictForm').addEventListener('submit', function() {
+      document.getElementById('loadingOverlay').classList.add('active');
+    });
+  </script>
 </body>
 </html>

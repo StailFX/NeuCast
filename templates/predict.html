@@ -2,169 +2,653 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Результат прогноза</title>
-  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinanceGuru — Результаты</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
-      font-family: Arial, sans-serif;
-      padding: 20px;
-      background-color: #f5f7fa;
+      font-family: 'Inter', sans-serif;
+      background: #0a0e17;
+      color: #e2e8f0;
+      min-height: 100vh;
     }
-    .header {
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.02) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* Navbar */
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 20px;
+      padding: 0.75rem 2rem;
+      background: rgba(15, 23, 42, 0.9);
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      backdrop-filter: blur(20px);
     }
-    .header h2 {
-      margin: 0;
-      color: #333;
-    }
-    .btn-logout {
-      background: #e74c3c;
-      border: none;
-      color: #fff;
-      padding: 8px 12px;
-      border-radius: 4px;
-      cursor: pointer;
+
+    .navbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
       text-decoration: none;
-      font-size: 14px;
     }
-    .btn-logout:hover {
-      background: #c0392b;
+
+    .navbar-logo {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #10b981, #3b82f6);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .metrics, .stats {
-      background: #fff;
-      padding: 15px;
-      border-radius: 6px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-      margin-bottom: 20px;
+
+    .navbar-logo svg { width: 16px; height: 16px; fill: white; }
+
+    .navbar-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #f1f5f9;
     }
-    .metrics p, .stats p {
-      margin: 5px 0;
-      color: #444;
+
+    .navbar-right {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
     }
-    .chart {
-      background: #fff;
-      padding: 10px;
-      border-radius: 6px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-      margin-bottom: 20px;
+
+    .btn-nav {
+      padding: 0.4rem 0.9rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      font-family: 'Inter', sans-serif;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: 1px solid transparent;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: #fff;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+
+    .btn-back {
+      color: #94a3b8;
+      background: rgba(51, 65, 85, 0.4);
+      border-color: rgba(51, 65, 85, 0.6);
     }
-    th, td {
-      padding: 8px 12px;
-      border: 1px solid #e1e4e8;
-      text-align: center;
-      color: #333;
+    .btn-back:hover { color: #f1f5f9; border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.1); }
+
+    .btn-csv {
+      color: #10b981;
+      background: rgba(16, 185, 129, 0.1);
+      border-color: rgba(16, 185, 129, 0.3);
     }
+    .btn-csv:hover { background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.5); }
+
+    .btn-out {
+      color: #94a3b8;
+      background: transparent;
+      border-color: rgba(51, 65, 85, 0.6);
+    }
+    .btn-out:hover { color: #fca5a5; border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.1); }
+
+    /* Dashboard */
+    .dashboard {
+      position: relative;
+      z-index: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1.5rem 2rem 3rem;
+    }
+
+    .page-title { margin-bottom: 1.5rem; }
+    .page-title h1 { font-size: 1.5rem; font-weight: 700; color: #f1f5f9; }
+    .page-title .subtitle { color: #64748b; font-size: 0.85rem; margin-top: 0.25rem; }
+
+    /* Metric cards */
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .metric-card {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(51, 65, 85, 0.5);
+      border-radius: 12px;
+      padding: 1.1rem 1.25rem;
+      backdrop-filter: blur(10px);
+      transition: border-color 0.2s;
+    }
+    .metric-card:hover { border-color: rgba(51, 65, 85, 0.8); }
+
+    .metric-label {
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.4rem;
+    }
+
+    .metric-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+
+    .metric-value.green { color: #10b981; }
+    .metric-value.blue { color: #3b82f6; }
+    .metric-value.amber { color: #f59e0b; }
+    .metric-value.red { color: #ef4444; }
+    .metric-value.purple { color: #a78bfa; }
+
+    .metric-sub { font-size: 0.7rem; color: #475569; margin-top: 0.2rem; }
+
+    /* Chart cards */
+    .chart-card {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(51, 65, 85, 0.5);
+      border-radius: 12px;
+      padding: 1rem 1rem 0.5rem;
+      margin-bottom: 1.5rem;
+      backdrop-filter: blur(10px);
+      overflow: hidden;
+    }
+
+    .chart-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 0.5rem 0.75rem;
+    }
+
+    .chart-card-title { font-size: 0.85rem; font-weight: 600; color: #94a3b8; }
+
+    .chart-badges { display: flex; gap: 0.5rem; }
+
+    .chart-card-badge {
+      font-size: 0.6rem;
+      padding: 0.15rem 0.55rem;
+      border-radius: 20px;
+      font-weight: 500;
+    }
+    .badge-green { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2); }
+    .badge-blue { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.2); }
+    .badge-amber { background: rgba(245, 158, 11, 0.1); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.2); }
+    .badge-purple { background: rgba(167, 139, 250, 0.1); color: #a78bfa; border: 1px solid rgba(167, 139, 250, 0.2); }
+
+    /* Charts grid */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .charts-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    /* Table */
+    .table-card {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(51, 65, 85, 0.5);
+      border-radius: 12px;
+      backdrop-filter: blur(10px);
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+
+    .table-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+    }
+
+    .table-card-title { font-size: 0.9rem; font-weight: 600; color: #94a3b8; }
+    .table-count { font-size: 0.75rem; color: #475569; }
+
+    .table-scroll {
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    .table-scroll::-webkit-scrollbar { width: 6px; }
+    .table-scroll::-webkit-scrollbar-track { background: rgba(30, 41, 59, 0.3); }
+    .table-scroll::-webkit-scrollbar-thumb { background: rgba(51, 65, 85, 0.6); border-radius: 3px; }
+
+    table { width: 100%; border-collapse: collapse; }
+
     th {
-      background: #ecf0f1;
+      position: sticky;
+      top: 0;
+      background: rgba(15, 23, 42, 0.98);
+      padding: 0.7rem 1rem;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #64748b;
+      text-align: right;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
       cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
     }
-    th:hover {
-      background: #d0d7de;
+    th:first-child { text-align: left; }
+    th:hover { color: #94a3b8; }
+    th .si { opacity: 0.4; margin-left: 3px; font-size: 0.55rem; }
+
+    td {
+      padding: 0.55rem 1rem;
+      font-size: 0.82rem;
+      text-align: right;
+      color: #cbd5e1;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.15);
+      font-variant-numeric: tabular-nums;
     }
-    a.download {
-      display: inline-block;
-      margin-bottom: 15px;
-      background: #3498db;
-      color: #fff;
-      padding: 8px 12px;
-      border-radius: 4px;
-      text-decoration: none;
-      font-size: 14px;
-    }
-    a.download:hover {
-      background: #2980b9;
+    td:first-child { text-align: left; color: #94a3b8; font-size: 0.78rem; }
+    tr:hover td { background: rgba(51, 65, 85, 0.12); }
+
+    .e-low { color: #10b981; }
+    .e-mid { color: #f59e0b; }
+    .e-high { color: #ef4444; }
+
+    @media (max-width: 900px) {
+      .dashboard { padding: 1rem; }
+      .charts-grid, .charts-grid-3 { grid-template-columns: 1fr; }
+      .metrics-row { grid-template-columns: 1fr 1fr; }
+      .navbar { padding: 0.75rem 1rem; }
     }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h2>Прогноз для {{ ticker }} ({{ start_date }} – {{ end_date }})</h2>
-    <a href="/logout" class="btn-logout">Выйти</a>
+  <nav class="navbar">
+    <a href="/" class="navbar-brand">
+      <div class="navbar-logo">
+        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      </div>
+      <span class="navbar-title">FinanceGuru</span>
+    </a>
+    <div class="navbar-right">
+      <a href="/" class="btn-nav btn-back">Новый прогноз</a>
+      <a href="/download_csv?ticker={{ ticker }}&start_date={{ start_date }}&end_date={{ end_date }}&days_ahead={{ days_ahead }}"
+         class="btn-nav btn-csv">CSV</a>
+      <a href="/logout" class="btn-nav btn-out">Выйти</a>
+    </div>
+  </nav>
+
+  <div class="dashboard">
+    <div class="page-title">
+      <h1>{{ ticker }} <span style="font-size:0.7em;font-weight:500;color:{% if ensemble %}#10b981{% else %}#3b82f6{% endif %};background:{% if ensemble %}rgba(16,185,129,0.1){% else %}rgba(59,130,246,0.1){% endif %};padding:0.15em 0.6em;border-radius:6px;border:1px solid {% if ensemble %}rgba(16,185,129,0.2){% else %}rgba(59,130,246,0.2){% endif %};">{{ model_name }}</span></h1>
+      <div class="subtitle">{{ start_date }} &mdash; {{ end_date }}{% if days_ahead > 0 %} &bull; Прогноз на {{ days_ahead }} дн. вперёд{% endif %}</div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics-row">
+      {% if role == 'admin' %}
+      <div class="metric-card">
+        <div class="metric-label">MAE</div>
+        <div class="metric-value blue">{{ mae }}</div>
+        <div class="metric-sub">Средняя абс. ошибка</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">RMSE</div>
+        <div class="metric-value amber">{{ rmse }}</div>
+        <div class="metric-sub">Корень из СКО</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">MAPE</div>
+        <div class="metric-value purple">{{ mape }}%</div>
+        <div class="metric-sub">Средн. % ошибка</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">R²</div>
+        <div class="metric-value green">{{ r2 }}</div>
+        <div class="metric-sub">Коэф. детерминации</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Direction Acc.</div>
+        <div class="metric-value {% if dir_acc|float >= 55 %}green{% elif dir_acc|float >= 50 %}amber{% else %}red{% endif %}">{{ dir_acc }}%</div>
+        <div class="metric-sub">Точность направления</div>
+      </div>
+      {% endif %}
+      <div class="metric-card">
+        <div class="metric-label">Train / Test</div>
+        <div class="metric-value" id="mDays">—</div>
+        <div class="metric-sub" id="mSplit">80% / 20%</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Последняя цена</div>
+        <div class="metric-value green" id="mLast">—</div>
+        <div class="metric-sub">USD (факт)</div>
+      </div>
+      {% if days_ahead > 0 %}
+      <div class="metric-card">
+        <div class="metric-label">Прогноз ({{ days_ahead }}д.)</div>
+        <div class="metric-value amber" id="mForecast">—</div>
+        <div class="metric-sub" id="mForecastRange">GBM Monte Carlo</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Main price chart -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Факт vs Прогноз (Train | Test | Future)</span>
+        <div class="chart-badges">
+          <span class="chart-card-badge badge-blue">Actual</span>
+          <span class="chart-card-badge" style="background:rgba(100,116,139,0.1);color:#94a3b8;border:1px solid rgba(100,116,139,0.2);">Train</span>
+          <span class="chart-card-badge badge-green">Test</span>
+          {% if days_ahead > 0 %}<span class="chart-card-badge badge-amber">GBM Forecast</span>{% endif %}
+        </div>
+      </div>
+      <div id="price_chart" style="height:440px;"></div>
+    </div>
+
+    <!-- Bollinger Bands chart -->
+    {% if role == 'admin' %}
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Bollinger Bands (20, 2)</span>
+        <div class="chart-badges">
+          <span class="chart-card-badge badge-purple">BB Upper</span>
+          <span class="chart-card-badge badge-blue">Close</span>
+          <span class="chart-card-badge badge-purple">BB Lower</span>
+        </div>
+      </div>
+      <div id="bb_chart" style="height:350px;"></div>
+    </div>
+    {% endif %}
+
+    <!-- Original close price -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Оригинальная цена закрытия</span>
+        <span class="chart-card-badge badge-blue">Yahoo Finance</span>
+      </div>
+      <div id="orig_chart" style="height:320px;"></div>
+    </div>
+
+    <!-- Indicator charts (admin only) -->
+    {% if role == 'admin' %}
+    <div class="charts-grid-3">
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">RSI (14)</span>
+          <span class="chart-card-badge badge-amber">Осциллятор</span>
+        </div>
+        <div id="rsi_chart" style="height:260px;"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">MACD / Signal</span>
+          <span class="chart-card-badge badge-blue">Тренд</span>
+        </div>
+        <div id="macd_chart" style="height:260px;"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">ATR (14)</span>
+          <span class="chart-card-badge badge-green">Волатильность</span>
+        </div>
+        <div id="atr_chart" style="height:260px;"></div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Table -->
+    <div class="table-card">
+      <div class="table-card-header">
+        <span class="table-card-title">Детализация (тестовая выборка &mdash; данные, которые модель НЕ видела)</span>
+        <span class="table-count" id="rowCount"></span>
+      </div>
+      <div class="table-scroll">
+        <table id="predTable">
+          <thead>
+            <tr>
+              <th onclick="sortT(0)">Дата <span class="si">&#9650;&#9660;</span></th>
+              <th onclick="sortT(1)">Факт <span class="si">&#9650;&#9660;</span></th>
+              <th onclick="sortT(2)">Прогноз <span class="si">&#9650;&#9660;</span></th>
+              <th onclick="sortT(3)">Абс. ошибка <span class="si">&#9650;&#9660;</span></th>
+              <th onclick="sortT(4)">% ошибка <span class="si">&#9650;&#9660;</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in table %}
+            <tr>
+              <td>{{ row.date }}</td>
+              <td>{{ row.actual }}</td>
+              <td>{{ row.predicted }}</td>
+              <td>{{ row.abs_error }}</td>
+              <td class="{% if row.pct_error|float < 1 %}e-low{% elif row.pct_error|float < 3 %}e-mid{% else %}e-high{% endif %}">{{ row.pct_error }}%</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
-  {% if role == 'admin' %}
-  <div class="stats">
-    <p>MAE: {{ mae }}, RMSE: {{ rmse }}</p>
-  </div>
-{% endif %}
-  <div class="chart" id="orig_chart" style="height:400px;"></div>
-  <div class="chart" id="price_chart" style="height:400px;"></div>
-
-  <a href="/download_csv?ticker={{ ticker }}&start_date={{ start_date }}&end_date={{ end_date }}&days_ahead={{ days_ahead }}" class="download">Скачать CSV</a>
-
-  <h3>Таблица прогноз vs факт</h3>
-  <table id="predTable">
-    <thead>
-      <tr>
-        <th>Дата</th>
-        <th>Факт</th>
-        <th>Прогноз</th>
-        <th onclick="sortTable(3)">Абс. ошибка ▲▼</th>
-        <th onclick="sortTable(4)">% ошибка ▲▼</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in table %}
-      <tr>
-        <td>{{ row.date }}</td>
-        <td>{{ row.actual }}</td>
-        <td>{{ row.predicted }}</td>
-        <td>{{ row.abs_error }}</td>
-        <td>{{ row.pct_error }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  {% if role == 'admin' %}
-    <div class="chart" id="rsi_chart" style="height:300px;"></div>
-    <div class="chart" id="macd_chart" style="height:300px;"></div>
-  {% endif %}
 
   <script>
-    function sortTable(n) {
-      const table = document.getElementById('predTable');
-      const rows = Array.from(table.tBodies[0].rows);
-      const dir = table.getAttribute('data-sort-dir') === 'asc' ? 'desc' : 'asc';
+    /* Sorting */
+    let sd = {};
+    function sortT(n) {
+      const t = document.getElementById('predTable');
+      const rows = Array.from(t.tBodies[0].rows);
+      const dir = sd[n] === 'asc' ? 'desc' : 'asc';
+      sd[n] = dir;
       rows.sort((a, b) => {
-        const x = parseFloat(a.cells[n].innerText.replace('%',''));
-        const y = parseFloat(b.cells[n].innerText.replace('%',''));
+        let x = a.cells[n].innerText.replace('%','');
+        let y = b.cells[n].innerText.replace('%','');
+        if (n === 0) return dir === 'asc' ? x.localeCompare(y) : y.localeCompare(x);
+        x = parseFloat(x) || 0; y = parseFloat(y) || 0;
         return dir === 'asc' ? x - y : y - x;
       });
-      rows.forEach(r => table.tBodies[0].appendChild(r));
-      table.setAttribute('data-sort-dir', dir);
+      rows.forEach(r => t.tBodies[0].appendChild(r));
     }
 
-    const DATA = {{ data_json | safe }};
-    const ORIG_LEN = DATA.actual.filter(v => v !== null).length;
-    const ORIG_DATES = DATA.dates.slice(0, ORIG_LEN);
+    /* Data */
+    const D = {{ data_json | safe }};
+    const OL = D.actual.filter(v => v !== null).length;
+    const OD = D.dates.slice(0, OL);
+    const TS = D.train_size || 0;  // train/test split point
 
-    Plotly.newPlot('orig_chart', [
-      { x: ORIG_DATES, y: DATA.actual.slice(0, ORIG_LEN), name: 'Close' }
-    ], { title: 'Original Close Price', xaxis: { rangeslider: { visible: true } } });
+    /* Metrics */
+    document.getElementById('mDays').textContent = TS + ' / ' + (OL - TS);
+    document.getElementById('mSplit').textContent = 'train ' + TS + ' + test ' + (OL - TS) + ' дней';
+    const la = D.actual.filter(v => v !== null);
+    if (la.length) document.getElementById('mLast').textContent = '$' + la[la.length-1].toFixed(2);
+    const fe = document.getElementById('mForecast');
+    if (fe && D.predicted.length > OL) {
+      fe.textContent = '$' + D.predicted[D.predicted.length-1].toFixed(0);
+      const rangeEl = document.getElementById('mForecastRange');
+      if (rangeEl && D.future_p5 && D.future_p5.length > 0) {
+        const lo = D.future_p5[D.future_p5.length-1].toFixed(0);
+        const hi = D.future_p95[D.future_p95.length-1].toFixed(0);
+        rangeEl.textContent = '90%: $' + lo + ' — $' + hi;
+      }
+    }
+    const testCount = OL - TS;
+    document.getElementById('rowCount').textContent = testCount + ' записей (тестовая выборка)';
 
-    Plotly.newPlot('price_chart', [
-      { x: DATA.dates, y: DATA.actual, name: 'Actual', mode: 'lines' },
-      { x: DATA.dates, y: DATA.predicted, name: 'Predicted', mode: 'lines' }
-    ], { title: 'Actual vs Predicted' });
+    /* Plotly dark theme */
+    const L = {
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: 'transparent',
+      font: { family: 'Inter', color: '#94a3b8', size: 11 },
+      xaxis: { gridcolor: 'rgba(51,65,85,0.25)', linecolor: 'rgba(51,65,85,0.4)', zerolinecolor: 'rgba(51,65,85,0.25)' },
+      yaxis: { gridcolor: 'rgba(51,65,85,0.25)', linecolor: 'rgba(51,65,85,0.4)', zerolinecolor: 'rgba(51,65,85,0.25)', tickprefix: '$' },
+      margin: { l: 65, r: 15, t: 10, b: 40 },
+      legend: { orientation: 'h', y: -0.15, font: { size: 10 } },
+      hovermode: 'x unified',
+    };
+    const C = { displayModeBar: false, responsive: true };
+
+    /* === Main price chart with Train/Test/Future zones === */
+    const pt = [
+      /* Actual price — full line */
+      { x: D.dates, y: D.actual, name: 'Факт', mode: 'lines',
+        line: { color: '#3b82f6', width: 2 }, connectgaps: false },
+
+      /* Train predictions (dimmed) */
+      { x: D.dates.slice(0, TS), y: D.predicted.slice(0, TS),
+        name: 'Train (обучение)', mode: 'lines',
+        line: { color: '#64748b', width: 1.5, dash: 'dot' },
+        opacity: 0.5 },
+
+      /* Test predictions (bright, this is where metrics come from) */
+      { x: D.dates.slice(TS, OL), y: D.predicted.slice(TS, OL),
+        name: 'Test (проверка)', mode: 'lines',
+        line: { color: '#10b981', width: 2.5 } },
+    ];
+
+    /* Train/Test boundary vertical line */
+    const splitDate = D.dates[TS] || '';
+    const shapes = [];
+    if (splitDate) {
+      shapes.push({
+        type: 'line', x0: splitDate, x1: splitDate, y0: 0, y1: 1, yref: 'paper',
+        line: { color: 'rgba(245,158,11,0.5)', width: 2, dash: 'dash' },
+      });
+    }
+
+    /* Future forecast — GBM fan chart */
+    if (D.dates.length > OL) {
+      const futDates = D.dates.slice(OL);
+      const connectDate = D.dates[OL - 1];
+      const connectPrice = D.actual[OL - 1] || D.predicted[OL - 1];
+
+      /* 90% confidence band (p5 — p95) */
+      if (D.future_p5 && D.future_p5.length > 0) {
+        pt.push({
+          x: [connectDate, ...futDates, ...[...futDates].reverse(), connectDate],
+          y: [connectPrice, ...D.future_p95, ...[...D.future_p5].reverse(), connectPrice],
+          fill: 'toself', fillcolor: 'rgba(245,158,11,0.06)',
+          line: { color: 'transparent' },
+          name: '90% интервал', showlegend: true, hoverinfo: 'skip',
+        });
+      }
+
+      /* 50% confidence band (p25 — p75) */
+      if (D.future_upper && D.future_upper.length > 0) {
+        pt.push({
+          x: [connectDate, ...futDates, ...[...futDates].reverse(), connectDate],
+          y: [connectPrice, ...D.future_upper, ...[...D.future_lower].reverse(), connectPrice],
+          fill: 'toself', fillcolor: 'rgba(245,158,11,0.12)',
+          line: { color: 'transparent' },
+          name: '50% интервал', showlegend: true, hoverinfo: 'skip',
+        });
+      }
+
+      /* Median forecast line */
+      pt.push({
+        x: [connectDate, ...futDates],
+        y: [connectPrice, ...D.predicted.slice(OL)],
+        name: 'Прогноз (медиана)', mode: 'lines',
+        line: { color: '#f59e0b', width: 2.5 },
+      });
+
+      /* Future boundary */
+      shapes.push({
+        type: 'line', x0: D.dates[OL], x1: D.dates[OL], y0: 0, y1: 1, yref: 'paper',
+        line: { color: 'rgba(239,68,68,0.4)', width: 1.5, dash: 'dot' },
+      });
+    }
+
+    /* Annotations */
+    const annotations = [];
+    if (splitDate) {
+      annotations.push({
+        x: splitDate, y: 1.02, yref: 'paper', text: 'Train | Test',
+        showarrow: false, font: { size: 10, color: '#f59e0b' },
+      });
+    }
+
+    Plotly.newPlot('price_chart', pt, {
+      ...L,
+      shapes: shapes,
+      annotations: annotations,
+    }, C);
+
+    /* === Original close === */
+    Plotly.newPlot('orig_chart', [{
+      x: OD, y: D.actual.slice(0,OL), name: 'Close', mode: 'lines',
+      line: { color: '#8b5cf6', width: 1.5 },
+      fill: 'tozeroy', fillcolor: 'rgba(139,92,246,0.06)',
+    }], {
+      ...L,
+      xaxis: { ...L.xaxis, rangeslider: { visible: true, bgcolor: 'rgba(15,23,42,0.5)', bordercolor: 'rgba(51,65,85,0.2)' } },
+    }, C);
 
     {% if role == 'admin' %}
-      Plotly.newPlot('rsi_chart', [
-        { x: ORIG_DATES, y: DATA.rsi, name: 'RSI' }
-      ], { title: 'RSI' });
+    /* === Bollinger Bands === */
+    Plotly.newPlot('bb_chart', [
+      {
+        x: OD.concat([...OD].reverse()),
+        y: D.bb_upper.concat([...D.bb_lower].reverse()),
+        fill: 'toself', fillcolor: 'rgba(167,139,250,0.07)',
+        line: { color: 'transparent' }, name: 'BB Band', showlegend: true, hoverinfo: 'skip',
+      },
+      { x: OD, y: D.bb_upper, name: 'BB Upper', mode: 'lines', line: { color: '#a78bfa', width: 1, dash: 'dot' } },
+      { x: OD, y: D.bb_lower, name: 'BB Lower', mode: 'lines', line: { color: '#a78bfa', width: 1, dash: 'dot' } },
+      { x: OD, y: D.actual.slice(0,OL), name: 'Close', mode: 'lines', line: { color: '#3b82f6', width: 1.5 } },
+    ], { ...L }, C);
 
-      Plotly.newPlot('macd_chart', [
-        { x: ORIG_DATES, y: DATA.macd, name: 'MACD' },
-        { x: ORIG_DATES, y: DATA.signal, name: 'Signal' }
-      ], { title: 'MACD & Signal' });
+    /* === RSI === */
+    Plotly.newPlot('rsi_chart', [{
+      x: OD, y: D.rsi, name: 'RSI', mode: 'lines', line: { color: '#f59e0b', width: 1.5 },
+    }], {
+      ...L,
+      yaxis: { ...L.yaxis, tickprefix: '', range: [0, 100] },
+      shapes: [
+        { type:'line', y0:70, y1:70, x0:0, x1:1, xref:'paper', line:{ color:'rgba(239,68,68,0.35)', dash:'dot', width:1 } },
+        { type:'line', y0:30, y1:30, x0:0, x1:1, xref:'paper', line:{ color:'rgba(16,185,129,0.35)', dash:'dot', width:1 } },
+      ],
+    }, C);
+
+    /* === MACD === */
+    const macdHist = D.macd.map((v, i) => v - D.signal[i]);
+    Plotly.newPlot('macd_chart', [
+      {
+        x: OD, y: macdHist, name: 'Histogram', type: 'bar',
+        marker: { color: macdHist.map(v => v >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)') },
+      },
+      { x: OD, y: D.macd, name: 'MACD', mode: 'lines', line: { color: '#3b82f6', width: 1.5 } },
+      { x: OD, y: D.signal, name: 'Signal', mode: 'lines', line: { color: '#ef4444', width: 1.5 } },
+    ], {
+      ...L, yaxis: { ...L.yaxis, tickprefix: '' },
+    }, C);
+
+    /* === ATR === */
+    Plotly.newPlot('atr_chart', [{
+      x: OD, y: D.atr, name: 'ATR(14)', mode: 'lines',
+      line: { color: '#10b981', width: 1.5 },
+      fill: 'tozeroy', fillcolor: 'rgba(16,185,129,0.06)',
+    }], {
+      ...L, yaxis: { ...L.yaxis, tickprefix: '$' },
+    }, C);
     {% endif %}
   </script>
 </body>

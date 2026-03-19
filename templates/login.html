@@ -2,84 +2,197 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>Авторизация</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinanceGuru — Авторизация</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    .login-container {
-      width: 360px;
-      margin: 80px auto;
-      padding: 40px;
-      background: #f9f9f9;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-      font-family: Arial, sans-serif;
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0a0e17;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 50%);
+      overflow: hidden;
     }
-    .login-header h1 {
-      margin: 0 0 20px;
+
+    /* Animated background grid */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 0;
+    }
+
+    .login-wrapper {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2rem;
+    }
+
+    .brand {
       text-align: center;
-      font-size: 24px;
-      color: #333;
     }
+
+    .brand-icon {
+      width: 56px;
+      height: 56px;
+      background: linear-gradient(135deg, #10b981, #3b82f6);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 1rem;
+      box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3);
+    }
+
+    .brand-icon svg {
+      width: 28px;
+      height: 28px;
+      fill: white;
+    }
+
+    .brand h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      letter-spacing: -0.02em;
+    }
+
+    .brand p {
+      color: #64748b;
+      font-size: 0.9rem;
+      margin-top: 0.25rem;
+    }
+
+    .login-card {
+      width: 400px;
+      padding: 2.5rem;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(51, 65, 85, 0.5);
+      border-radius: 16px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+    }
+
+    .alert-danger {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      margin-bottom: 1.5rem;
+      font-size: 0.875rem;
+    }
+
     .form-group {
-      margin-bottom: 15px;
+      margin-bottom: 1.25rem;
     }
+
     .form-group label {
       display: block;
-      font-size: 14px;
-      color: #555;
-      margin-bottom: 5px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
+
     .form-input {
       width: 100%;
-      padding: 8px 10px;
-      font-size: 14px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
+      padding: 0.75rem 1rem;
+      font-size: 0.95rem;
+      font-family: 'Inter', sans-serif;
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid rgba(51, 65, 85, 0.8);
+      border-radius: 10px;
+      color: #e2e8f0;
+      transition: all 0.2s ease;
+      outline: none;
     }
+
+    .form-input:focus {
+      border-color: #10b981;
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+    }
+
+    .form-input::placeholder {
+      color: #475569;
+    }
+
     .btn {
       display: block;
-      width: 106%;
-      padding: 10px;
-      font-size: 16px;
-      background-color: #007bff;
-      color: white;
+      width: 100%;
+      padding: 0.8rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
       border: none;
-      border-radius: 4px;
+      border-radius: 10px;
       cursor: pointer;
+      transition: all 0.2s ease;
+      margin-top: 0.5rem;
     }
+
     .btn:hover {
-      background-color: #0056b3;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3);
     }
-    .alert-danger {
-      background-color: #f8d7da;
-      color: #721c24;
-      padding: 10px;
-      border-radius: 4px;
-      margin-bottom: 15px;
-      border: 1px solid #f5c6cb;
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .footer-note {
+      text-align: center;
+      color: #475569;
+      font-size: 0.8rem;
     }
   </style>
 </head>
 <body>
-  <div class="login-container">
-    <div class="login-header">
-      <h1>Авторизация</h1>
+  <div class="login-wrapper">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      </div>
+      <h1>FinanceGuru</h1>
+      <p>AI-прогнозирование котировок золота</p>
     </div>
-    <div class="login-form">
+
+    <div class="login-card">
       {% if error %}
         <div class="alert-danger">{{ error }}</div>
       {% endif %}
       <form action="/login" method="post">
         <div class="form-group">
           <label for="username">Логин</label>
-          <input type="text" id="username" name="username" class="form-input" required>
+          <input type="text" id="username" name="username" class="form-input" placeholder="Введите логин" required autocomplete="username">
         </div>
         <div class="form-group">
           <label for="password">Пароль</label>
-          <input type="password" id="password" name="password" class="form-input" required>
+          <input type="password" id="password" name="password" class="form-input" placeholder="Введите пароль" required autocomplete="current-password">
         </div>
         <button type="submit" class="btn">Войти</button>
       </form>
     </div>
+
+    <p class="footer-note">LSTM Neural Network &bull; Yahoo Finance Data</p>
   </div>
 </body>
 </html>

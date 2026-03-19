@@ -1,0 +1,188 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+share/python-wheels/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+*.env
+secrets.*
+credentials.*
+*.key
+*.pem
+
+# Keep templates if needed
+!.env.example
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.iml
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# =========================
+# Testing / coverage / lint
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.ruff_cache/
+.hypothesis/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Python version / tooling
+# =========================
+.python-version
+
+# =========================
+# Databases
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+
+# But keep migration/init SQL if any
+!*.sql
+
+# =========================
+# ML / DS artifacts
+# =========================
+# Trained models
+*.h5
+*.hdf5
+*.keras
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.model
+
+# Scalers / encoders / preprocessors
+scaler.pkl
+encoder.pkl
+tokenizer.pkl
+vectorizer.pkl
+
+# Experiment outputs
+artifacts/
+outputs/
+runs/
+mlruns/
+wandb/
+lightning_logs/
+tensorboard/
+tb_logs/
+
+# CatBoost / XGBoost / LightGBM outputs
+catboost_info/
+
+# Data folders (usually do not store raw/generated data in git)
+data/
+datasets/
+raw_data/
+processed_data/
+
+# Keep placeholders if needed
+!data/.gitkeep
+!datasets/.gitkeep
+
+# =========================
+# Application-specific
+# =========================
+analytics.db
+best_model.h5
+best_model_backup.h5
+
+# =========================
+# Flask / Django / web app
+# =========================
+instance/
+.webassets-cache/
+
+# Flask session / cache
+*.cache
+
+# =========================
+# Documentation builds
+# =========================
+docs/_build/
+
+# =========================
+# Node (if frontend appears later)
+# =========================
+node_modules/
+
+# =========================
+# Misc
+# =========================
+coverage.xml
+*.pid
+*.seed
