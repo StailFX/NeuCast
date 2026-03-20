@@ -2,6 +2,7 @@ import io
 import os
 import json
 import pickle
+import asyncio
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -13,28 +14,156 @@ from fastapi import FastAPI, Request, Form, HTTPException, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session
 
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import load_model, clone_model
+from tensorflow.keras.layers import (
+    Layer, Conv1D, Dense, Dropout, GlobalAveragePooling1D,
+    LayerNormalization, Concatenate
+)
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from db import DATABASE_URL, Base
-from models import Role, User, Ticker, MarketData, Indicator, ModelInfo, Prediction, PredictionHistory
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+# ── Custom layers for model loading ──
+
+class AttentionLayer(Layer):
+    """Bahdanau-style attention — for LSTM models."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.W = self.add_weight(name='att_W', shape=(input_shape[-1], input_shape[-1]),
+                                  initializer='glorot_uniform', trainable=True)
+        self.b = self.add_weight(name='att_b', shape=(input_shape[-1],),
+                                  initializer='zeros', trainable=True)
+        self.u = self.add_weight(name='att_u', shape=(input_shape[-1],),
+                                  initializer='glorot_uniform', trainable=True)
+
+    def call(self, x):
+        score = tf.nn.tanh(tf.tensordot(x, self.W, axes=1) + self.b)
+        weights = tf.nn.softmax(tf.tensordot(score, self.u, axes=1), axis=1)
+        return tf.reduce_sum(x * tf.expand_dims(weights, -1), axis=1)
+
+    def get_config(self):
+        return super().get_config()
+
+
+class SEBlock(Layer):
+    """Squeeze-and-Excitation block for TCN."""
+    def __init__(self, ratio=4, **kwargs):
+        super().__init__(**kwargs)
+        self.ratio = ratio
+
+    def build(self, input_shape):
+        ch = input_shape[-1]
+        self.squeeze = GlobalAveragePooling1D()
+        self.fc1 = Dense(ch // self.ratio, activation='relu')
+        self.fc2 = Dense(ch, activation='sigmoid')
+
+    def call(self, x):
+        se = self.squeeze(x)
+        se = self.fc1(se)
+        se = self.fc2(se)
+        se = tf.expand_dims(se, 1)
+        return x * se
+
+    def get_config(self):
+        config = super().get_config()
+        config["ratio"] = self.ratio
+        return config
+
+
+class TCNBlock(Layer):
+    """Temporal Convolutional Block with dilated causal convolutions."""
+    def __init__(self, filters, kernel_size, dilation_rate, dropout_rate=0.2, **kwargs):
+        super().__init__(**kwargs)
+        self.filters = filters
+        self.kernel_size = kernel_size
+        self.dilation_rate = dilation_rate
+        self.dropout_rate = dropout_rate
+
+    def build(self, input_shape):
+        self.conv1 = Conv1D(self.filters, self.kernel_size, dilation_rate=self.dilation_rate,
+                            padding='causal', activation=None)
+        self.bn1 = LayerNormalization()
+        self.conv2 = Conv1D(self.filters, self.kernel_size, dilation_rate=self.dilation_rate,
+                            padding='causal', activation=None)
+        self.bn2 = LayerNormalization()
+        self.dropout = Dropout(self.dropout_rate)
+        self.se = SEBlock(ratio=4)
+        if input_shape[-1] != self.filters:
+            self.residual_conv = Conv1D(self.filters, 1, padding='same')
+        else:
+            self.residual_conv = None
+
+    def call(self, x, training=None):
+        res = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = tf.nn.gelu(out)
+        out = self.dropout(out, training=training)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.se(out)
+        if self.residual_conv is not None:
+            res = self.residual_conv(res)
+        out = tf.nn.gelu(out + res)
+        return out
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "filters": self.filters,
+            "kernel_size": self.kernel_size,
+            "dilation_rate": self.dilation_rate,
+            "dropout_rate": self.dropout_rate,
+        })
+        return config
+
+from db import DATABASE_URL, Base, engine, SessionLocal
+from models import Role, User, Ticker, MarketData, Indicator, ModelInfo, Prediction, PredictionHistory
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# Limit concurrent predictions to avoid OOM on VPS
+MAX_CONCURRENT_PREDICTIONS = 2
+_prediction_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PREDICTIONS)
+_prediction_queue_count = 0  # track waiting users
+
+# Simple TTL cache for predictions (key -> (result, timestamp))
+import time
+_prediction_cache: dict[str, tuple] = {}
+CACHE_TTL = 3600  # 1 hour
+
+# Celery integration
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6380/0")
+USE_CELERY = os.getenv("USE_CELERY", "0") == "1"
+celery_app = None
+if USE_CELERY:
+    try:
+        from celery import Celery
+        celery_app = Celery("neucast", broker=REDIS_URL, backend=REDIS_URL)
+        celery_app.conf.update(
+            task_serializer="pickle",
+            result_serializer="pickle",
+            accept_content=["pickle", "json"],
+        )
+    except ImportError:
+        USE_CELERY = False
+
 # ============================================================
 # Load model and config
 # ============================================================
-base_model = load_model("best_model.h5", compile=False)
+CUSTOM_OBJECTS = {
+    "AttentionLayer": AttentionLayer,
+    "SEBlock": SEBlock,
+    "TCNBlock": TCNBlock,
+}
+base_model = load_model("best_model.h5", compile=False, custom_objects=CUSTOM_OBJECTS)
 SEQ_LEN = 60
 N_FEATURES = base_model.input_shape[-1]
 
@@ -42,10 +171,12 @@ MODEL_COLS = ["Open", "High", "Low", "Close", "Volume", "MA_5", "MA_10", "MA_20"
 
 # Load model config to check type
 MODEL_TYPE = "returns"  # default to returns-based
+IS_MULTITARGET = False
 if os.path.exists("model_config.json"):
     with open("model_config.json") as f:
         model_cfg = json.load(f)
         MODEL_TYPE = model_cfg.get("type", "returns")
+        IS_MULTITARGET = "direction" in model_cfg.get("outputs", [])
 
 TRAIN_RATIO = 0.8
 
@@ -90,6 +221,21 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     low_close = (df["Low"] - df["Close"].shift()).abs()
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR"] = true_range.rolling(14).mean()
+
+    # Momentum features
+    df["ROC_5"] = df["Close"].pct_change(5)      # 5-day rate of change
+    df["ROC_10"] = df["Close"].pct_change(10)     # 10-day rate of change
+    df["Momentum"] = df["Close"] - df["Close"].shift(10)
+
+    # Volatility regime
+    df["Volatility_20"] = df["Close"].pct_change().rolling(20).std()
+
+    # Volume signal
+    df["Volume_MA_20"] = df["Volume"].rolling(20).mean()
+    df["Volume_Ratio"] = df["Volume"] / df["Volume_MA_20"]
+
+    # Price position within Bollinger Bands (0-1 range)
+    df["BB_pct"] = (df["Close"] - df["BB_lower"]) / (df["BB_upper"] - df["BB_lower"])
 
     # Log returns
     df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
@@ -137,8 +283,8 @@ def make_boosting_features(data: np.ndarray) -> np.ndarray:
 def run_prediction(df: pd.DataFrame, days_ahead: int):
     """
     Returns-based pipeline:
-    1. Scale features (for LSTM input)
-    2. LSTM predicts log_return(t+1)
+    1. Scale features (for TCN input)
+    2. TCN predicts log_return(t+1)
     3. Reconstruct price: price(t) = price(t-1) * exp(predicted_return)
     4. Train/test split for honest metrics
     5. CatBoost + XGBoost ensemble on top
@@ -161,25 +307,55 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     X_train = X_all[:train_seq_end]
     y_train = y_all[:train_seq_end]
 
-    # Fine-tune LSTM on train data
+    # Fine-tune TCN on train data
     fine_model = clone_model(base_model)
     fine_model.set_weights(base_model.get_weights())
-    fine_model.compile(optimizer=tf.keras.optimizers.Adam(0.0003), loss="mse")
+
+    # Direction targets for multi-target model
+    direction_all = (log_returns[SEQ_LEN:] > 0).astype(np.float32)
+    dir_train = direction_all[:train_seq_end]
+
+    if IS_MULTITARGET:
+        fine_model.compile(
+            optimizer=tf.keras.optimizers.Adam(0.0003),
+            loss={'return_output': 'mse', 'direction_output': 'binary_crossentropy'},
+            loss_weights={'return_output': 1.0, 'direction_output': 0.5},
+        )
+    else:
+        fine_model.compile(optimizer=tf.keras.optimizers.Adam(0.0003), loss="mse")
 
     if len(X_train) > SEQ_LEN:
         val_size = max(0.1, SEQ_LEN / len(X_train))
-        fine_model.fit(
-            X_train, y_train,
-            epochs=10, batch_size=32,
-            validation_split=val_size,
-            callbacks=[
-                EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=0),
-            ],
-            verbose=0,
-        )
+        if IS_MULTITARGET:
+            fine_model.fit(
+                X_train,
+                {'return_output': y_train, 'direction_output': dir_train},
+                epochs=10, batch_size=32,
+                validation_split=val_size,
+                callbacks=[
+                    EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=0),
+                ],
+                verbose=0,
+            )
+        else:
+            fine_model.fit(
+                X_train, y_train,
+                epochs=10, batch_size=32,
+                validation_split=val_size,
+                callbacks=[
+                    EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=0),
+                ],
+                verbose=0,
+            )
 
     # Predict returns for all data
-    lstm_pred_returns = fine_model.predict(X_all, verbose=0).flatten()
+    raw_pred = fine_model.predict(X_all, verbose=0)
+    if IS_MULTITARGET:
+        lstm_pred_returns = raw_pred[0].flatten()
+        tcn_direction_pred = raw_pred[1].flatten()
+    else:
+        lstm_pred_returns = raw_pred.flatten()
+        tcn_direction_pred = None
 
     # CatBoost + XGBoost ensemble
     X_bst_all = make_boosting_features(scaled_all)
@@ -188,13 +364,15 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
 
     cat_pred = None
     xgb_pred = None
-    model_names = ["LSTM"]
+    lgb_pred = None
+    model_names = ["TCN"]
 
     try:
         from catboost import CatBoostRegressor
         cat = CatBoostRegressor(
-            iterations=500, learning_rate=0.05, depth=6, l2_leaf_reg=5,
-            verbose=0, early_stopping_rounds=50,
+            iterations=1000, learning_rate=0.03, depth=7, l2_leaf_reg=3,
+            random_strength=0.5, bagging_temperature=0.3,
+            verbose=0, early_stopping_rounds=80,
         )
         cat.fit(X_bst_train, y_bst_train,
                 eval_set=(X_bst_all[train_seq_end:], y_all[train_seq_end:]),
@@ -207,15 +385,32 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     try:
         import xgboost as xgb
         xgb_m = xgb.XGBRegressor(
-            n_estimators=500, learning_rate=0.05, max_depth=6,
-            subsample=0.8, colsample_bytree=0.8,
-            early_stopping_rounds=50, verbosity=0,
+            n_estimators=1000, learning_rate=0.03, max_depth=7,
+            subsample=0.8, colsample_bytree=0.7,
+            reg_alpha=0.1, reg_lambda=1.0,
+            early_stopping_rounds=80, verbosity=0,
         )
         xgb_m.fit(X_bst_train, y_bst_train,
                   eval_set=[(X_bst_all[train_seq_end:], y_all[train_seq_end:])],
                   verbose=0)
         xgb_pred = xgb_m.predict(X_bst_all)
         model_names.append("XGBoost")
+    except Exception:
+        pass
+
+    try:
+        import lightgbm as lgbm
+        lgb_m = lgbm.LGBMRegressor(
+            n_estimators=1000, learning_rate=0.03, max_depth=7,
+            num_leaves=63, subsample=0.8, colsample_bytree=0.7,
+            reg_alpha=0.1, reg_lambda=1.0,
+            verbose=-1,
+        )
+        lgb_m.fit(X_bst_train, y_bst_train,
+                  eval_set=[(X_bst_all[train_seq_end:], y_all[train_seq_end:])],
+                  callbacks=[lgbm.early_stopping(80, verbose=False), lgbm.log_evaluation(0)])
+        lgb_pred = lgb_m.predict(X_bst_all)
+        model_names.append("LightGBM")
     except Exception:
         pass
 
@@ -231,6 +426,9 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     if xgb_pred is not None:
         stack_train.append(xgb_pred[:train_seq_end])
         stack_all.append(xgb_pred)
+    if lgb_pred is not None:
+        stack_train.append(lgb_pred[:train_seq_end])
+        stack_all.append(lgb_pred)
 
     if len(stack_train) > 1:
         X_meta_train = np.column_stack(stack_train)
@@ -241,7 +439,17 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         model_name = f"Ensemble ({'+'.join(model_names)})"
     else:
         pred_returns = lstm_pred_returns
-        model_name = "LSTM (fine-tuned)"
+        model_name = "TCN"
+
+    # If multi-target, use direction head to adjust return sign
+    if tcn_direction_pred is not None:
+        adjusted_returns = pred_returns.copy()
+        for i in range(len(adjusted_returns)):
+            if tcn_direction_pred[i] > 0.6 and adjusted_returns[i] < 0:
+                adjusted_returns[i] = abs(adjusted_returns[i]) * 0.5
+            elif tcn_direction_pred[i] < 0.4 and adjusted_returns[i] > 0:
+                adjusted_returns[i] = -abs(adjusted_returns[i]) * 0.5
+        pred_returns = adjusted_returns
 
     # Convert predicted returns → prices
     # price[t] = price[t-1] * exp(predicted_return[t])
@@ -254,13 +462,16 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     # Per-model price predictions for comparison
     model_comparison = {}
     lstm_prices = prev_prices * np.exp(lstm_pred_returns)
-    model_comparison["LSTM"] = lstm_prices.tolist()
+    model_comparison["TCN"] = lstm_prices.tolist()
     if cat_pred is not None:
         cat_prices = prev_prices * np.exp(cat_pred)
         model_comparison["CatBoost"] = cat_prices.tolist()
     if xgb_pred is not None:
         xgb_prices = prev_prices * np.exp(xgb_pred)
         model_comparison["XGBoost"] = xgb_prices.tolist()
+    if lgb_pred is not None:
+        lgb_prices = prev_prices * np.exp(lgb_pred)
+        model_comparison["LightGBM"] = lgb_prices.tolist()
     model_comparison["Ensemble"] = pred_prices.tolist()
 
     # Per-model metrics on test set
@@ -277,11 +488,13 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         return {"mae": round(_mae, 2), "rmse": round(_rmse, 2), "mape": round(_mape, 2), "r2": round(_r2, 4)}
 
     model_metrics = {}
-    model_metrics["LSTM"] = calc_metrics(y_act_test, lstm_prices[test_start:])
+    model_metrics["TCN"] = calc_metrics(y_act_test, lstm_prices[test_start:])
     if cat_pred is not None:
         model_metrics["CatBoost"] = calc_metrics(y_act_test, cat_prices[test_start:])
     if xgb_pred is not None:
         model_metrics["XGBoost"] = calc_metrics(y_act_test, xgb_prices[test_start:])
+    if lgb_pred is not None:
+        model_metrics["LightGBM"] = calc_metrics(y_act_test, lgb_prices[test_start:])
     model_metrics["Ensemble"] = calc_metrics(y_act_test, pred_prices[test_start:])
 
     # Feature importance from boosting models
@@ -311,6 +524,16 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
             }
         except Exception:
             pass
+    if lgb_pred is not None:
+        try:
+            lgb_imp = lgb_m.feature_importances_.astype(float)
+            top_idx = np.argsort(lgb_imp)[::-1][:15]
+            feature_importance["LightGBM"] = {
+                "names": [feat_names[i] for i in top_idx],
+                "values": [round(float(lgb_imp[i]), 2) for i in top_idx],
+            }
+        except Exception:
+            pass
 
     # Residuals (test only)
     y_pred_test = pred_prices[test_start:]
@@ -326,6 +549,15 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     actual_dir = (actual_prices[test_start:] > prev_prices[test_start:]).astype(int)
     pred_dir = (pred_prices[test_start:] > prev_prices[test_start:]).astype(int)
     dir_acc = float(np.mean(actual_dir == pred_dir) * 100)
+
+    # If multi-target model, use direction head to improve predictions
+    if tcn_direction_pred is not None:
+        dir_cls = tcn_direction_pred[test_start:]
+        pred_dir_cls = (dir_cls > 0.5).astype(int)
+        dir_acc_cls = float(np.mean(actual_dir == pred_dir_cls) * 100)
+        # Use the better direction accuracy
+        if dir_acc_cls > dir_acc:
+            dir_acc = dir_acc_cls
 
     # Correlation matrix of features
     corr_cols = ["Close", "Volume", "RSI", "MACD", "MA_5", "MA_20", "MA_50", "ATR", "BB_upper", "BB_lower"]
@@ -572,14 +804,47 @@ async def predict(
     if not role:
         return RedirectResponse("/login")
 
-    try:
-        df = fetch_and_preprocess(ticker, start_date, end_date)
-    except ValueError as e:
-        return templates.TemplateResponse("form.html", {
-            "request": request, "error": str(e), "ensemble": True,
-        })
+    # Celery mode: dispatch task and redirect to waiting page
+    if USE_CELERY and celery_app:
+        task = celery_app.send_task(
+            "neucast.predict",
+            args=[ticker, start_date, end_date, days_ahead],
+            serializer="pickle",
+        )
+        return RedirectResponse(
+            f"/predict/status/{task.id}?ticker={ticker}&start_date={start_date}&end_date={end_date}&days_ahead={days_ahead}",
+            status_code=303,
+        )
 
-    result = run_prediction(df, days_ahead)
+    # Fallback: synchronous mode with semaphore + cache
+    cache_key = f"{ticker}:{start_date}:{end_date}:{days_ahead}"
+    cached = _prediction_cache.get(cache_key)
+    use_cache = False
+    if cached:
+        result, df, cached_at = cached
+        if time.time() - cached_at < CACHE_TTL:
+            use_cache = True
+
+    if not use_cache:
+        global _prediction_queue_count
+        _prediction_queue_count += 1
+        try:
+            async with _prediction_semaphore:
+                try:
+                    loop = asyncio.get_event_loop()
+                    df = await loop.run_in_executor(None, fetch_and_preprocess, ticker, start_date, end_date)
+                except ValueError as e:
+                    return templates.TemplateResponse("form.html", {
+                        "request": request, "error": str(e), "ensemble": True,
+                    })
+
+                result = await loop.run_in_executor(None, run_prediction, df, days_ahead)
+                _prediction_cache[cache_key] = (result, df, time.time())
+                if len(_prediction_cache) > 20:
+                    oldest = min(_prediction_cache, key=lambda k: _prediction_cache[k][2])
+                    del _prediction_cache[oldest]
+        finally:
+            _prediction_queue_count -= 1
 
     # Save to DB
     db_ticker = db.query(Ticker).filter_by(symbol=ticker).first()
@@ -693,6 +958,181 @@ async def predict(
         "data_json": json.dumps(data),
         "table": table,
         "ensemble": True,
+    })
+
+
+# ── Celery task status endpoints ──
+
+@app.get("/predict/status/{task_id}", response_class=HTMLResponse)
+async def predict_status_page(
+    task_id: str,
+    request: Request,
+    ticker: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    days_ahead: int = 0,
+    role: str = Depends(get_current_role),
+):
+    """Waiting page that polls task status via JS."""
+    if not role:
+        return RedirectResponse("/login")
+    return templates.TemplateResponse("waiting.html", {
+        "request": request,
+        "task_id": task_id,
+        "ticker": ticker,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days_ahead": days_ahead,
+    })
+
+
+@app.get("/api/task/{task_id}")
+async def task_status(task_id: str):
+    """API endpoint to check Celery task status."""
+    if not USE_CELERY or not celery_app:
+        return {"state": "FAILURE", "error": "Celery not configured"}
+
+    from celery.result import AsyncResult
+    result = AsyncResult(task_id, app=celery_app)
+
+    if result.state == "PENDING":
+        return {"state": "PENDING", "status": "В очереди..."}
+    elif result.state == "FETCHING":
+        return {"state": "FETCHING", "status": "Загрузка данных..."}
+    elif result.state == "PREDICTING":
+        return {"state": "PREDICTING", "status": "Расчёт прогноза..."}
+    elif result.state == "SUCCESS":
+        res = result.result
+        if isinstance(res, dict) and "error" in res:
+            return {"state": "FAILURE", "error": res["error"]}
+        return {"state": "SUCCESS", "task_id": task_id}
+    elif result.state == "FAILURE":
+        return {"state": "FAILURE", "error": str(result.info)}
+    else:
+        return {"state": result.state, "status": "Обработка..."}
+
+
+@app.get("/predict/result/{task_id}", response_class=HTMLResponse)
+async def predict_result(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_current_role),
+    user: User = Depends(get_current_user),
+):
+    """Render prediction result from completed Celery task."""
+    if not role:
+        return RedirectResponse("/login")
+    if not USE_CELERY or not celery_app:
+        return RedirectResponse("/dashboard")
+
+    from celery.result import AsyncResult
+    async_result = AsyncResult(task_id, app=celery_app)
+
+    if async_result.state != "SUCCESS":
+        return RedirectResponse("/dashboard")
+
+    result = async_result.result
+    if isinstance(result, dict) and "error" in result:
+        return templates.TemplateResponse("form.html", {
+            "request": request, "error": result["error"], "ensemble": True,
+        })
+
+    # Reconstruct df from JSON
+    df = pd.read_json(io.StringIO(result.pop("_df_json")))
+
+    # Reconstruct numpy arrays
+    for key in ["y_act", "y_pred"]:
+        if key in result and isinstance(result[key], list):
+            result[key] = np.array(result[key])
+
+    ticker = result.get("ticker", "")
+    start_date = result.get("start_date", "")
+    end_date = result.get("end_date", "")
+    days_ahead = result.get("days_ahead", 0)
+
+    # Save to DB (same logic as sync predict)
+    db_ticker = db.query(Ticker).filter_by(symbol=ticker).first()
+    if not db_ticker:
+        db_ticker = Ticker(symbol=ticker)
+        db.add(db_ticker)
+        db.commit()
+        db.refresh(db_ticker)
+
+    mi = ModelInfo(
+        name=result["model_name"],
+        parameters=json.dumps({"seq_len": SEQ_LEN, "features": MODEL_COLS, "type": "returns"}),
+        mae=result["mae"], rmse=result["rmse"],
+    )
+    db.add(mi)
+    db.commit()
+    db.refresh(mi)
+
+    train_size = result["train_size"]
+    table = []
+    dates = result["dates"]
+    y_act = result["y_act"] if isinstance(result["y_act"], list) else result["y_act"].tolist()
+    y_pred = result["y_pred"] if isinstance(result["y_pred"], list) else result["y_pred"].tolist()
+    for d, a, p in zip(dates[train_size:], y_act[train_size:], y_pred[train_size:]):
+        err = abs(p - a)
+        pct = 100 * err / a if a != 0 else 0
+        table.append({
+            "date": d, "actual": f"{a:.2f}", "predicted": f"{p:.2f}",
+            "abs_error": f"{err:.2f}", "pct_error": f"{pct:.2f}",
+        })
+
+    data = {
+        "dates": dates + result["future_dates"],
+        "actual": y_act + [None] * len(result["future_dates"]),
+        "predicted": y_pred + result["future_preds"],
+        "train_size": train_size,
+        "future_upper": result["future_upper"],
+        "future_lower": result["future_lower"],
+        "future_p5": result["future_p5"],
+        "future_p95": result["future_p95"],
+        "rsi": result["rsi"],
+        "macd": result["macd"],
+        "signal": result["signal"],
+        "bb_upper": result["bb_upper"],
+        "bb_lower": result["bb_lower"],
+        "atr": result["atr"],
+        "model_comparison": result["model_comparison"],
+        "model_metrics": result["model_metrics"],
+        "feature_importance": result["feature_importance"],
+        "residuals": result["residuals"],
+        "corr_data": result["corr_data"],
+        "corr_labels": result["corr_labels"],
+    }
+
+    saved_context = {
+        "ticker": ticker, "start_date": start_date, "end_date": end_date,
+        "days_ahead": days_ahead, "model_name": result["model_name"],
+        "mae": f"{result['mae']:.2f}", "rmse": f"{result['rmse']:.2f}",
+        "mape": f"{result['mape']:.2f}", "r2": f"{result['r2']:.4f}",
+        "dir_acc": f"{result['dir_acc']:.1f}",
+        "data": data, "table": table,
+    }
+    if user:
+        ph = PredictionHistory(
+            user_id=user.id, ticker=ticker,
+            start_date=start_date, end_date=end_date,
+            days_ahead=days_ahead, model_name=result["model_name"],
+            mape=result["mape"],
+            result_json=json.dumps(saved_context),
+        )
+        db.add(ph)
+    db.commit()
+
+    return templates.TemplateResponse("predict.html", {
+        "request": request,
+        "ticker": ticker, "start_date": start_date,
+        "end_date": end_date, "days_ahead": days_ahead,
+        "role": role, "model_name": result["model_name"],
+        "mae": f"{result['mae']:.2f}", "rmse": f"{result['rmse']:.2f}",
+        "mape": f"{result['mape']:.2f}", "r2": f"{result['r2']:.4f}",
+        "dir_acc": f"{result['dir_acc']:.1f}",
+        "data_json": json.dumps(data),
+        "table": table, "ensemble": True,
     })
 
 
@@ -1027,6 +1467,16 @@ def download_pdf(ticker: str, start_date: str, end_date: str, days_ahead: int = 
         buf, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=gold_report_{ticker}_{end_date}.pdf"},
     )
+
+
+@app.get("/api/queue_status")
+async def queue_status():
+    """Return prediction queue status."""
+    return {
+        "active": MAX_CONCURRENT_PREDICTIONS - _prediction_semaphore._value,
+        "waiting": max(0, _prediction_queue_count - MAX_CONCURRENT_PREDICTIONS),
+        "max_concurrent": MAX_CONCURRENT_PREDICTIONS,
+    }
 
 
 @app.get("/api/live_price")

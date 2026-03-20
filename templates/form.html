@@ -367,6 +367,83 @@
     .loading-text { color: #94a3b8; font-size: 0.95rem; }
     .loading-sub { color: #475569; font-size: 0.8rem; margin-top: -1rem; }
 
+    /* Date wrap with today button inside */
+    .date-wrap {
+      position: relative;
+    }
+    .date-wrap .form-input { padding-right: 5rem; }
+    .btn-today {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
+      padding: 0.3rem 0.55rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      color: #10b981;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .btn-today:hover {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: rgba(16, 185, 129, 0.5);
+    }
+
+    /* Days ahead styled controls */
+    .days-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+    .days-btn {
+      width: 42px;
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      color: #94a3b8;
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid rgba(51, 65, 85, 0.8);
+      cursor: pointer;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .days-btn:first-child { border-radius: 10px 0 0 10px; border-right: none; }
+    .days-btn:last-child { border-radius: 0 10px 10px 0; border-left: none; }
+    .days-btn:hover { color: #f1f5f9; background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.4); }
+    .days-btn:active { transform: scale(0.95); }
+    .days-input {
+      border-radius: 0;
+      text-align: center;
+      flex: 1;
+      -moz-appearance: textfield;
+    }
+    .days-input::-webkit-inner-spin-button,
+    .days-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+    /* Info banner */
+    .info-banner {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.7rem 1rem;
+      font-size: 0.8rem;
+      color: #94a3b8;
+      background: rgba(59, 130, 246, 0.06);
+      border: 1px solid rgba(59, 130, 246, 0.15);
+      border-radius: 10px;
+      margin-bottom: 1rem;
+    }
+    .info-banner svg { flex-shrink: 0; color: #60a5fa; }
+
     @media (max-width: 900px) {
       .main { flex-direction: column; align-items: center; }
       .history-card { width: 100%; max-width: 460px; }
@@ -419,13 +496,25 @@
             </div>
             <div class="form-group">
               <label for="end_date">Дата конца</label>
-              <input id="end_date" name="end_date" type="date" class="form-input" required>
+              <div class="date-wrap">
+                <input id="end_date" name="end_date" type="date" class="form-input" required>
+                <button type="button" class="btn-today" onclick="setToday()" title="Сегодня">Сегодня</button>
+              </div>
             </div>
           </div>
 
           <div class="form-group">
             <label for="days_ahead">Прогноз вперёд (дней)</label>
-            <input id="days_ahead" name="days_ahead" type="number" class="form-input" value="0" min="0" max="365" style="-moz-appearance:textfield;-webkit-appearance:none;appearance:none;">
+            <div class="days-wrap">
+              <button type="button" class="days-btn" onclick="adjustDays(-1)">−</button>
+              <input id="days_ahead" name="days_ahead" type="number" class="form-input days-input" value="0" min="0" max="365">
+              <button type="button" class="days-btn" onclick="adjustDays(1)">+</button>
+            </div>
+          </div>
+
+          <div class="info-banner" id="infoBanner">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            Нужно минимум ~120 торговых дней между датами для корректного анализа
           </div>
 
           <button type="submit" class="btn-predict">Запустить анализ</button>
@@ -479,10 +568,30 @@
   </div>
 
   <script>
+    // Pre-fill dates: start = 1 year ago, end = today
+    (function() {
+      const today = new Date();
+      const yearAgo = new Date(today);
+      yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+      const fmt = d => d.toISOString().slice(0, 10);
+      document.getElementById('start_date').value = fmt(yearAgo);
+      document.getElementById('end_date').value = fmt(today);
+    })();
+
+    function setToday() {
+      document.getElementById('end_date').value = new Date().toISOString().slice(0, 10);
+    }
+
+    function adjustDays(delta) {
+      const inp = document.getElementById('days_ahead');
+      let v = parseInt(inp.value) || 0;
+      v = Math.max(0, Math.min(365, v + delta));
+      inp.value = v;
+    }
+
     document.getElementById('predictForm').addEventListener('submit', function() {
       document.getElementById('loadingOverlay').classList.add('active');
     });
-
   </script>
 </body>
 </html>

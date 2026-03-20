@@ -12,5 +12,10 @@
     "MA_50"
   ],
   "seq_len": 60,
-  "n_features": 9
+  "n_features": 9,
+  "architecture": "TCN_MultiTarget",
+  "outputs": [
+    "return",
+    "direction"
+  ]
 }

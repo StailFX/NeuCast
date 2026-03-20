@@ -87,18 +87,33 @@
     /* Scroll reveal animation */
     .reveal {
       opacity: 0;
-      transform: translateY(40px);
-      transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      transform: translateY(30px);
+      transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: opacity, transform;
     }
     .reveal.visible {
       opacity: 1;
       transform: translateY(0);
     }
-    .reveal-delay-1 { transition-delay: 0.1s; }
-    .reveal-delay-2 { transition-delay: 0.2s; }
-    .reveal-delay-3 { transition-delay: 0.3s; }
-    .reveal-delay-4 { transition-delay: 0.4s; }
-    .reveal-delay-5 { transition-delay: 0.5s; }
+    /* Hero elements appear instantly on load, not on scroll */
+    .reveal-instant {
+      opacity: 0;
+      transform: translateY(20px);
+      animation: revealIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    .reveal-instant.d1 { animation-delay: 0.1s; }
+    .reveal-instant.d2 { animation-delay: 0.25s; }
+    .reveal-instant.d3 { animation-delay: 0.4s; }
+
+    @keyframes revealIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .reveal-delay-1 { transition-delay: 0.08s; }
+    .reveal-delay-2 { transition-delay: 0.16s; }
+    .reveal-delay-3 { transition-delay: 0.24s; }
+    .reveal-delay-4 { transition-delay: 0.32s; }
+    .reveal-delay-5 { transition-delay: 0.4s; }
 
     /* ─── Navbar ─── */
     .nav {
@@ -694,17 +709,17 @@
   <section class="hero">
     <canvas class="hero-chart" id="heroChart"></canvas>
     <div class="hero-content">
-      <div class="hero-badge reveal">
+      <div class="hero-badge reveal-instant">
         <span class="dot"></span>
-        LSTM + CatBoost + XGBoost Ensemble
+        TCN + CatBoost + XGBoost Ensemble
       </div>
-      <h1 class="reveal reveal-delay-1">Прогнозируй рынок<br>с <span class="gradient">точностью AI</span></h1>
-      <p class="hero-sub reveal reveal-delay-2">
+      <h1 class="reveal-instant d1">Прогнозируй рынок<br>с <span class="gradient">точностью AI</span></h1>
+      <p class="hero-sub reveal-instant d2">
         NeuCast использует ансамбль нейросетей и градиентного бустинга
         для прогнозирования котировок золота, серебра, нефти и криптовалют
         на основе данных Yahoo Finance.
       </p>
-      <div class="hero-buttons reveal reveal-delay-3">
+      <div class="hero-buttons reveal-instant d3">
         <a href="{% if logged_in %}/dashboard{% else %}/register{% endif %}" class="btn-hero btn-start">
           Запустить прогноз
           <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
@@ -726,7 +741,7 @@
         <div class="stat-label">R&sup2; коэффициент</div>
       </div>
       <div class="stat">
-        <div class="stat-value amber" data-target="3">3</div>
+        <div class="stat-value amber" data-target="4">4</div>
         <div class="stat-label">ML модели в ансамбле</div>
       </div>
       <div class="stat">
@@ -741,14 +756,14 @@
     <div class="section-header reveal">
       <span class="section-label">Возможности</span>
       <h2>Почему NeuCast?</h2>
-      <p>Не просто LSTM — полноценный исследовательский pipeline для финансового прогнозирования</p>
+      <p>Не просто нейросеть — полноценный исследовательский pipeline для финансового прогнозирования</p>
     </div>
 
     <div class="features-grid">
       <div class="feature-card reveal reveal-delay-1">
         <div class="feature-icon fi-green">&#9673;</div>
         <h3>Stacking Ensemble</h3>
-        <p>LSTM нейросеть + CatBoost + XGBoost объединены через Ridge-мета-модель. Каждая модель ловит свои паттерны, а ансамбль даёт стабильную точность.</p>
+        <p>TCN (Temporal Convolutional Network) + CatBoost + XGBoost + LightGBM объединены через Ridge-мета-модель. Каждая модель ловит свои паттерны, а ансамбль даёт стабильную точность.</p>
       </div>
 
       <div class="feature-card reveal reveal-delay-2">
@@ -778,7 +793,7 @@
       <div class="feature-card reveal reveal-delay-3">
         <div class="feature-icon fi-teal">&#8853;</div>
         <h3>Аналитика моделей</h3>
-        <p>Сравнение LSTM vs CatBoost vs XGBoost, важность признаков, анализ остатков, QQ-plot, корреляционная матрица — полный набор для исследования.</p>
+        <p>Сравнение TCN vs CatBoost vs XGBoost, важность признаков, анализ остатков, QQ-plot, корреляционная матрица — полный набор для исследования.</p>
       </div>
     </div>
   </section>
@@ -805,7 +820,7 @@
       <div class="step reveal reveal-delay-3">
         <div class="step-num">3</div>
         <h4>Ensemble Prediction</h4>
-        <p>LSTM + CatBoost + XGBoost обучаются на train-данных. Ridge-стекинг комбинирует прогнозы.</p>
+        <p>TCN + CatBoost + XGBoost обучаются на train-данных. Ridge-стекинг комбинирует прогнозы.</p>
       </div>
       <div class="step reveal reveal-delay-4">
         <div class="step-num">4</div>
@@ -828,11 +843,11 @@
       <div class="tech-pill"><span class="tech-dot" style="background:#f59e0b;"></span>CatBoost</div>
       <div class="tech-pill"><span class="tech-dot" style="background:#3b82f6;"></span>XGBoost</div>
       <div class="tech-pill"><span class="tech-dot" style="background:#10b981;"></span>FastAPI</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#336791;"></span>PostgreSQL</div>
       <div class="tech-pill"><span class="tech-dot" style="background:#a78bfa;"></span>Plotly.js</div>
       <div class="tech-pill"><span class="tech-dot" style="background:#ef4444;"></span>scikit-learn</div>
       <div class="tech-pill"><span class="tech-dot" style="background:#06b6d4;"></span>Pandas / NumPy</div>
       <div class="tech-pill"><span class="tech-dot" style="background:#eab308;"></span>Yahoo Finance API</div>
-      <div class="tech-pill"><span class="tech-dot" style="background:#64748b;"></span>SQLAlchemy</div>
     </div>
   </section>
 
@@ -849,7 +864,7 @@
   </section>
 
   <footer>
-    NeuCast &copy; 2026 &mdash; LSTM + CatBoost + XGBoost Ensemble &bull; Yahoo Finance Data
+    NeuCast &copy; 2026 &mdash; TCN + CatBoost + XGBoost Ensemble &bull; Yahoo Finance Data
   </footer>
 
   <script>
@@ -868,8 +883,19 @@
           observer.unobserve(e.target);
         }
       });
-    }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+    }, { threshold: 0.05, rootMargin: '0px 0px -20px 0px' });
     revealEls.forEach(el => observer.observe(el));
+
+    // Fallback: reveal any elements already in viewport on load (fast scroll / anchor jump)
+    requestAnimationFrame(() => {
+      revealEls.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.top < window.innerHeight && rect.bottom > 0) {
+          el.classList.add('visible');
+          observer.unobserve(el);
+        }
+      });
+    });
 
     // ── Floating particles ──
     (function createParticles() {
