@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 # ── Custom layers for model loading ──
 
 class AttentionLayer(Layer):
-    """Bahdanau-style attention — for LSTM models."""
+    """Bahdanau-style attention — kept for backward compatibility."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
@@ -351,10 +351,10 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     # Predict returns for all data
     raw_pred = fine_model.predict(X_all, verbose=0)
     if IS_MULTITARGET:
-        lstm_pred_returns = raw_pred[0].flatten()
+        tcn_pred_returns = raw_pred[0].flatten()
         tcn_direction_pred = raw_pred[1].flatten()
     else:
-        lstm_pred_returns = raw_pred.flatten()
+        tcn_pred_returns = raw_pred.flatten()
         tcn_direction_pred = None
 
     # CatBoost + XGBoost ensemble
@@ -417,8 +417,8 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
     # Stacking
     from sklearn.linear_model import Ridge
 
-    stack_train = [lstm_pred_returns[:train_seq_end]]
-    stack_all = [lstm_pred_returns]
+    stack_train = [tcn_pred_returns[:train_seq_end]]
+    stack_all = [tcn_pred_returns]
 
     if cat_pred is not None:
         stack_train.append(cat_pred[:train_seq_end])
@@ -438,7 +438,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         pred_returns = meta.predict(X_meta_all)
         model_name = f"Ensemble ({'+'.join(model_names)})"
     else:
-        pred_returns = lstm_pred_returns
+        pred_returns = tcn_pred_returns
         model_name = "TCN"
 
     # If multi-target, use direction head to adjust return sign
@@ -461,8 +461,8 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
 
     # Per-model price predictions for comparison
     model_comparison = {}
-    lstm_prices = prev_prices * np.exp(lstm_pred_returns)
-    model_comparison["TCN"] = lstm_prices.tolist()
+    tcn_prices = prev_prices * np.exp(tcn_pred_returns)
+    model_comparison["TCN"] = tcn_prices.tolist()
     if cat_pred is not None:
         cat_prices = prev_prices * np.exp(cat_pred)
         model_comparison["CatBoost"] = cat_prices.tolist()
@@ -488,7 +488,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         return {"mae": round(_mae, 2), "rmse": round(_rmse, 2), "mape": round(_mape, 2), "r2": round(_r2, 4)}
 
     model_metrics = {}
-    model_metrics["TCN"] = calc_metrics(y_act_test, lstm_prices[test_start:])
+    model_metrics["TCN"] = calc_metrics(y_act_test, tcn_prices[test_start:])
     if cat_pred is not None:
         model_metrics["CatBoost"] = calc_metrics(y_act_test, cat_prices[test_start:])
     if xgb_pred is not None:

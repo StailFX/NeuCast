@@ -515,11 +515,12 @@
 
     <div class="chart-card">
       <div class="chart-card-header">
-        <span class="chart-card-title">LSTM vs CatBoost vs XGBoost vs Ensemble (тестовая выборка)</span>
+        <span class="chart-card-title">TCN vs CatBoost vs XGBoost vs LightGBM vs Ensemble (тестовая выборка)</span>
         <div class="chart-badges">
-          <span class="chart-card-badge badge-blue">LSTM</span>
+          <span class="chart-card-badge badge-blue">TCN</span>
           <span class="chart-card-badge badge-amber">CatBoost</span>
           <span class="chart-card-badge badge-red">XGBoost</span>
+          <span class="chart-card-badge badge-purple">LightGBM</span>
           <span class="chart-card-badge badge-green">Ensemble</span>
         </div>
       </div>
@@ -838,7 +839,7 @@
         { x: testDates, y: actualTest, name: 'Факт', mode: 'lines',
           line: { color: '#94a3b8', width: 2, dash: 'dot' } },
       ];
-      const colors = { LSTM: '#3b82f6', CatBoost: '#f59e0b', XGBoost: '#ef4444', Ensemble: '#10b981' };
+      const colors = { TCN: '#3b82f6', CatBoost: '#f59e0b', XGBoost: '#ef4444', LightGBM: '#8b5cf6', Ensemble: '#10b981' };
       for (const [name, prices] of Object.entries(D.model_comparison || {})) {
         traces.push({
           x: testDates, y: prices.slice(TS, OL), name: name, mode: 'lines',
