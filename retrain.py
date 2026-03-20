@@ -1,5 +1,5 @@
 """
-FinanceGuru — Retrain model to predict RETURNS (% change), not prices.
+NeuCast — Retrain model to predict RETURNS (% change), not prices.
 
 Why returns:
   - Prices are non-stationary (trend up forever) — model can't extrapolate
@@ -50,7 +50,7 @@ def make_return_sequences(scaled_data, returns):
 
 
 print("=" * 60)
-print("  FinanceGuru — Returns-Based Model Training")
+print("  NeuCast — Returns-Based Model Training")
 print("=" * 60)
 
 # Download

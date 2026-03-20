@@ -1,5 +1,5 @@
 """
-FinanceGuru — Скрипт обучения ансамблевой модели.
+NeuCast — Скрипт обучения ансамблевой модели.
 
 Архитектура (Stacking Ensemble):
   Level-0 (базовые модели):
@@ -202,7 +202,7 @@ def build_lstm_attention(n_features: int) -> Model:
 # Main
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description="Train Ensemble model for FinanceGuru")
+    parser = argparse.ArgumentParser(description="Train Ensemble model for NeuCast")
     parser.add_argument("--ticker", default="GC=F")
     parser.add_argument("--start", default="2015-01-01")
     parser.add_argument("--end", default="2025-12-31")
@@ -213,7 +213,7 @@ def main():
 
     # ---- Load data ----
     print(f"\n{'='*60}")
-    print(f"  FinanceGuru — Ensemble Training Pipeline")
+    print(f"  NeuCast — Ensemble Training Pipeline")
     print(f"{'='*60}")
     print(f"\nТикер: {args.ticker}")
     print(f"Период: {args.start} — {args.end}")

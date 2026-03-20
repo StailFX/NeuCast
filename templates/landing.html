@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuCast — AI-прогнозирование котировок</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --green: #10b981;
+      --green-dark: #059669;
+      --blue: #3b82f6;
+      --amber: #f59e0b;
+      --purple: #a78bfa;
+      --red: #ef4444;
+      --teal: #14b8a6;
+      --bg: #060a13;
+      --bg-card: rgba(12, 20, 35, 0.85);
+      --border: rgba(51, 65, 85, 0.35);
+      --text: #e2e8f0;
+      --text-muted: #64748b;
+      --text-dim: #94a3b8;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow-x: hidden;
+    }
+
+    /* Animated grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 80px 80px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* Floating orbs */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(100px);
+      pointer-events: none;
+      z-index: 0;
+      animation: orbFloat 20s ease-in-out infinite;
+    }
+    .orb-1 {
+      width: 600px; height: 600px;
+      background: rgba(16, 185, 129, 0.07);
+      top: -200px; left: -100px;
+      animation-delay: 0s;
+    }
+    .orb-2 {
+      width: 500px; height: 500px;
+      background: rgba(59, 130, 246, 0.06);
+      top: 40%; right: -150px;
+      animation-delay: -7s;
+      animation-duration: 25s;
+    }
+    .orb-3 {
+      width: 400px; height: 400px;
+      background: rgba(167, 139, 250, 0.05);
+      bottom: -100px; left: 30%;
+      animation-delay: -14s;
+      animation-duration: 22s;
+    }
+
+    @keyframes orbFloat {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      25% { transform: translate(40px, -30px) scale(1.05); }
+      50% { transform: translate(-20px, 40px) scale(0.95); }
+      75% { transform: translate(30px, 20px) scale(1.02); }
+    }
+
+    /* Scroll reveal animation */
+    .reveal {
+      opacity: 0;
+      transform: translateY(40px);
+      transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .reveal-delay-1 { transition-delay: 0.1s; }
+    .reveal-delay-2 { transition-delay: 0.2s; }
+    .reveal-delay-3 { transition-delay: 0.3s; }
+    .reveal-delay-4 { transition-delay: 0.4s; }
+    .reveal-delay-5 { transition-delay: 0.5s; }
+
+    /* ─── Navbar ─── */
+    .nav {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      z-index: 100;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 3rem;
+      background: rgba(6, 10, 19, 0.6);
+      backdrop-filter: blur(24px);
+      border-bottom: 1px solid transparent;
+      transition: all 0.3s;
+    }
+    .nav.scrolled {
+      border-bottom-color: var(--border);
+      background: rgba(6, 10, 19, 0.9);
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+    }
+
+    .nav-logo {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--green), var(--blue));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+      transition: transform 0.3s;
+    }
+    .nav-brand:hover .nav-logo { transform: rotate(-5deg) scale(1.05); }
+    .nav-logo svg { width: 18px; height: 18px; fill: white; }
+
+    .nav-name { font-size: 1.2rem; font-weight: 700; color: #f1f5f9; letter-spacing: -0.01em; }
+
+    .nav-links { display: flex; gap: 0.75rem; align-items: center; }
+
+    .nav-btn {
+      padding: 0.55rem 1.3rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      font-family: 'Inter', sans-serif;
+      border-radius: 10px;
+      text-decoration: none;
+      transition: all 0.25s;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+
+    .nav-btn-ghost {
+      color: var(--text-dim);
+      border-color: var(--border);
+      background: transparent;
+    }
+    .nav-btn-ghost:hover { color: #f1f5f9; border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.05); }
+
+    .nav-btn-primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--green), var(--green-dark));
+      border: none;
+      box-shadow: 0 2px 12px rgba(16, 185, 129, 0.2);
+    }
+    .nav-btn-primary:hover { box-shadow: 0 4px 24px rgba(16, 185, 129, 0.35); transform: translateY(-1px); }
+
+    /* ─── Hero ─── */
+    .hero {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 8rem 2rem 4rem;
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      max-width: 860px;
+    }
+
+    /* Animated chart canvas behind hero text */
+    .hero-chart {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 700px;
+      height: 400px;
+      opacity: 0.12;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 1.15rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--green);
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.15);
+      border-radius: 50px;
+      margin-bottom: 2rem;
+      letter-spacing: 0.02em;
+    }
+
+    .hero-badge .dot {
+      width: 7px; height: 7px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    h1 {
+      font-size: 4rem;
+      font-weight: 900;
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+      margin-bottom: 1.5rem;
+      color: #f8fafc;
+    }
+
+    h1 .gradient {
+      background: linear-gradient(135deg, #34d399, #60a5fa, #a78bfa);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: shimmer 4s ease-in-out infinite;
+    }
+
+    @keyframes shimmer {
+      0%, 100% { background-position: 0% center; }
+      50% { background-position: 100% center; }
+    }
+
+    .hero-sub {
+      font-size: 1.2rem;
+      color: var(--text-dim);
+      line-height: 1.75;
+      max-width: 620px;
+      margin: 0 auto 2.5rem;
+      font-weight: 400;
+    }
+
+    .hero-buttons {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn-hero {
+      padding: 0.9rem 2.2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      border-radius: 14px;
+      text-decoration: none;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn-start {
+      color: #fff;
+      background: linear-gradient(135deg, var(--green), var(--green-dark));
+      border: none;
+      box-shadow: 0 4px 24px rgba(16, 185, 129, 0.3), 0 0 0 0 rgba(16, 185, 129, 0);
+    }
+    .btn-start:hover { transform: translateY(-3px); box-shadow: 0 8px 40px rgba(16, 185, 129, 0.4), 0 0 0 4px rgba(16, 185, 129, 0.1); }
+
+    .btn-demo {
+      color: var(--text-dim);
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(8px);
+    }
+    .btn-demo:hover { color: #f1f5f9; border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.06); }
+
+    /* Arrow icon in button */
+    .btn-arrow {
+      transition: transform 0.3s;
+    }
+    .btn-start:hover .btn-arrow { transform: translateX(3px); }
+
+    /* ─── Stats bar ─── */
+    .stats-wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 1000px;
+      margin: -2rem auto 0;
+      padding: 0 2rem;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2.5rem 2rem;
+      backdrop-filter: blur(16px);
+    }
+
+    .stat {
+      text-align: center;
+      position: relative;
+    }
+    .stat:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 15%;
+      height: 70%;
+      width: 1px;
+      background: var(--border);
+    }
+
+    .stat-value {
+      font-size: 2.8rem;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+
+    .stat-value.green { color: var(--green); }
+    .stat-value.blue { color: var(--blue); }
+    .stat-value.amber { color: var(--amber); }
+    .stat-value.purple { color: var(--purple); }
+
+    .stat-label {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 500;
+    }
+
+    /* counter animation */
+    .stat-value[data-target] {
+      transition: color 0.3s;
+    }
+
+    /* ─── Section base ─── */
+    .section {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 6rem 2rem;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+
+    .section-label {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--green);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 1rem;
+    }
+
+    .section-header h2 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 1rem;
+      color: #f1f5f9;
+    }
+
+    .section-header p {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      max-width: 560px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    /* ─── Features ─── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2.2rem;
+      backdrop-filter: blur(10px);
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 20px;
+      padding: 1px;
+      background: linear-gradient(135deg, transparent 40%, rgba(16, 185, 129, 0.15) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+    .feature-card:hover::before { opacity: 1; }
+    .feature-card:hover { border-color: rgba(16, 185, 129, 0.3); transform: translateY(-6px); box-shadow: 0 20px 60px rgba(0,0,0,0.25); }
+
+    .feature-icon {
+      width: 52px; height: 52px;
+      border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.4rem;
+      margin-bottom: 1.25rem;
+      position: relative;
+    }
+
+    .fi-green { background: rgba(16, 185, 129, 0.12); color: var(--green); box-shadow: 0 0 20px rgba(16, 185, 129, 0.08); }
+    .fi-blue { background: rgba(59, 130, 246, 0.12); color: var(--blue); box-shadow: 0 0 20px rgba(59, 130, 246, 0.08); }
+    .fi-amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); box-shadow: 0 0 20px rgba(245, 158, 11, 0.08); }
+    .fi-purple { background: rgba(167, 139, 250, 0.12); color: var(--purple); box-shadow: 0 0 20px rgba(167, 139, 250, 0.08); }
+    .fi-red { background: rgba(239, 68, 68, 0.12); color: var(--red); box-shadow: 0 0 20px rgba(239, 68, 68, 0.08); }
+    .fi-teal { background: rgba(20, 184, 166, 0.12); color: var(--teal); box-shadow: 0 0 20px rgba(20, 184, 166, 0.08); }
+
+    .feature-card h3 {
+      font-size: 1.08rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 0.6rem;
+    }
+
+    .feature-card p {
+      font-size: 0.87rem;
+      color: var(--text-muted);
+      line-height: 1.65;
+    }
+
+    /* ─── How it works ─── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.25rem;
+      position: relative;
+    }
+
+    /* Connecting line behind steps */
+    .steps::before {
+      content: '';
+      position: absolute;
+      top: 32px;
+      left: calc(12.5% + 20px);
+      right: calc(12.5% + 20px);
+      height: 2px;
+      background: linear-gradient(90deg, var(--green), var(--blue), var(--purple), var(--amber));
+      border-radius: 2px;
+      opacity: 0.3;
+    }
+
+    .step {
+      text-align: center;
+      padding: 0 1rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-num {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, var(--green), var(--blue));
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem; font-weight: 800; color: #fff;
+      margin: 0 auto 1.25rem;
+      box-shadow: 0 4px 20px rgba(16, 185, 129, 0.25);
+      position: relative;
+    }
+
+    .step-num::after {
+      content: '';
+      position: absolute;
+      inset: -4px;
+      border-radius: 50%;
+      border: 2px solid rgba(16, 185, 129, 0.15);
+    }
+
+    .step h4 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 0.5rem;
+    }
+
+    .step p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    /* ─── Tech stack ─── */
+    .tech-grid {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-top: 2rem;
+    }
+
+    .tech-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.65rem 1.3rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 50px;
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      font-weight: 500;
+      transition: all 0.3s;
+      backdrop-filter: blur(8px);
+    }
+    .tech-pill:hover { border-color: rgba(16, 185, 129, 0.4); color: #f1f5f9; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
+
+    .tech-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ─── CTA ─── */
+    .cta {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 4rem 2rem 6rem;
+    }
+
+    .cta-box {
+      max-width: 750px;
+      margin: 0 auto;
+      padding: 4rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      backdrop-filter: blur(16px);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .cta-box::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .cta-box h2 {
+      font-size: 2rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+      position: relative;
+    }
+
+    .cta-box p {
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+      font-size: 1rem;
+      position: relative;
+    }
+
+    /* ─── Footer ─── */
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 2.5rem 2rem;
+      border-top: 1px solid var(--border);
+      color: #334155;
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+
+    /* ─── Particles ─── */
+    .particles {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .particle {
+      position: absolute;
+      width: 2px;
+      height: 2px;
+      background: rgba(16, 185, 129, 0.4);
+      border-radius: 50%;
+      animation: particleFloat linear infinite;
+    }
+
+    @keyframes particleFloat {
+      0% { transform: translateY(100vh) scale(0); opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 1024px) {
+      h1 { font-size: 3rem; }
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+      .stats { grid-template-columns: repeat(2, 1fr); gap: 2rem; }
+      .stat:nth-child(2)::after { display: none; }
+    }
+
+    @media (max-width: 768px) {
+      h1 { font-size: 2.4rem; }
+      .features-grid { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: 1fr 1fr; }
+      .steps::before { display: none; }
+      .nav { padding: 0.75rem 1.5rem; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .hero { padding: 7rem 1.5rem 3rem; }
+      .hero-chart { display: none; }
+    }
+
+    @media (max-width: 480px) {
+      h1 { font-size: 2rem; }
+      .steps { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr; }
+      .stat::after { display: none !important; }
+      .stat { padding: 0.75rem 0; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Floating orbs -->
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <!-- Particles -->
+  <div class="particles" id="particles"></div>
+
+  <!-- Navbar -->
+  <nav class="nav" id="navbar">
+    <a href="/" class="nav-brand">
+      <div class="nav-logo">
+        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      </div>
+      <span class="nav-name">NeuCast</span>
+    </a>
+    <div class="nav-links">
+      {% if logged_in %}
+        <a href="/dashboard" class="nav-btn nav-btn-primary">Dashboard</a>
+      {% else %}
+        <a href="/login" class="nav-btn nav-btn-ghost">Войти</a>
+        <a href="/register" class="nav-btn nav-btn-primary">Начать</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <canvas class="hero-chart" id="heroChart"></canvas>
+    <div class="hero-content">
+      <div class="hero-badge reveal">
+        <span class="dot"></span>
+        LSTM + CatBoost + XGBoost Ensemble
+      </div>
+      <h1 class="reveal reveal-delay-1">Прогнозируй рынок<br>с <span class="gradient">точностью AI</span></h1>
+      <p class="hero-sub reveal reveal-delay-2">
+        NeuCast использует ансамбль нейросетей и градиентного бустинга
+        для прогнозирования котировок золота, серебра, нефти и криптовалют
+        на основе данных Yahoo Finance.
+      </p>
+      <div class="hero-buttons reveal reveal-delay-3">
+        <a href="{% if logged_in %}/dashboard{% else %}/register{% endif %}" class="btn-hero btn-start">
+          Запустить прогноз
+          <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </a>
+        <a href="#features" class="btn-hero btn-demo">Узнать больше</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <div class="stats-wrap reveal">
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value green" data-target="1" data-prefix="<" data-suffix="%">&lt;1%</div>
+        <div class="stat-label">MAPE (ошибка прогноза)</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value blue" data-target="0.98">0.98</div>
+        <div class="stat-label">R&sup2; коэффициент</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value amber" data-target="3">3</div>
+        <div class="stat-label">ML модели в ансамбле</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value purple" data-target="1000">1000</div>
+        <div class="stat-label">Monte Carlo симуляций</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Features -->
+  <section class="section" id="features">
+    <div class="section-header reveal">
+      <span class="section-label">Возможности</span>
+      <h2>Почему NeuCast?</h2>
+      <p>Не просто LSTM — полноценный исследовательский pipeline для финансового прогнозирования</p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon fi-green">&#9673;</div>
+        <h3>Stacking Ensemble</h3>
+        <p>LSTM нейросеть + CatBoost + XGBoost объединены через Ridge-мета-модель. Каждая модель ловит свои паттерны, а ансамбль даёт стабильную точность.</p>
+      </div>
+
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon fi-blue">&#916;</div>
+        <h3>Returns-based подход</h3>
+        <p>Предсказываем не абсолютную цену, а логарифмические доходности — стационарный ряд, который модели обучаются прогнозировать гораздо точнее.</p>
+      </div>
+
+      <div class="feature-card reveal reveal-delay-3">
+        <div class="feature-icon fi-amber">&#9830;</div>
+        <h3>Monte Carlo прогноз</h3>
+        <p>Будущие цены моделируются через Geometric Brownian Motion с 1000 симуляциями. Полный веер сценариев с доверительными интервалами.</p>
+      </div>
+
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon fi-purple">&#9632;</div>
+        <h3>Технический анализ</h3>
+        <p>RSI, MACD, Bollinger Bands, ATR, скользящие средние — все ключевые индикаторы рассчитываются автоматически и визуализируются на графиках.</p>
+      </div>
+
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon fi-red">&#9733;</div>
+        <h3>Честные метрики</h3>
+        <p>Строгий 80/20 train/test split. Scaler обучается только на train-данных. Никакого data leakage — метрики отражают реальную предсказательную силу.</p>
+      </div>
+
+      <div class="feature-card reveal reveal-delay-3">
+        <div class="feature-icon fi-teal">&#8853;</div>
+        <h3>Аналитика моделей</h3>
+        <p>Сравнение LSTM vs CatBoost vs XGBoost, важность признаков, анализ остатков, QQ-plot, корреляционная матрица — полный набор для исследования.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="section">
+    <div class="section-header reveal">
+      <span class="section-label">Процесс</span>
+      <h2>Как это работает</h2>
+      <p>От сырых данных до прогноза — за 4 шага</p>
+    </div>
+
+    <div class="steps">
+      <div class="step reveal reveal-delay-1">
+        <div class="step-num">1</div>
+        <h4>Загрузка данных</h4>
+        <p>Котировки загружаются с Yahoo Finance в реальном времени. OHLCV данные за любой период.</p>
+      </div>
+      <div class="step reveal reveal-delay-2">
+        <div class="step-num">2</div>
+        <h4>Feature Engineering</h4>
+        <p>Рассчитываются 9+ признаков: MA, RSI, MACD, Bollinger, ATR. Из каждого окна извлекаются 7 статистик.</p>
+      </div>
+      <div class="step reveal reveal-delay-3">
+        <div class="step-num">3</div>
+        <h4>Ensemble Prediction</h4>
+        <p>LSTM + CatBoost + XGBoost обучаются на train-данных. Ridge-стекинг комбинирует прогнозы.</p>
+      </div>
+      <div class="step reveal reveal-delay-4">
+        <div class="step-num">4</div>
+        <h4>Визуализация</h4>
+        <p>Интерактивный дашборд с графиками, метриками, PDF-отчёт и экспорт в CSV.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tech stack -->
+  <section class="section">
+    <div class="section-header reveal">
+      <span class="section-label">Стек</span>
+      <h2>Технологии</h2>
+      <p>Современный стек для надёжного прогнозирования</p>
+    </div>
+
+    <div class="tech-grid reveal">
+      <div class="tech-pill"><span class="tech-dot" style="background:#ff6f00;"></span>TensorFlow / Keras</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#f59e0b;"></span>CatBoost</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#3b82f6;"></span>XGBoost</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#10b981;"></span>FastAPI</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#a78bfa;"></span>Plotly.js</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#ef4444;"></span>scikit-learn</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#06b6d4;"></span>Pandas / NumPy</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#eab308;"></span>Yahoo Finance API</div>
+      <div class="tech-pill"><span class="tech-dot" style="background:#64748b;"></span>SQLAlchemy</div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="cta-box reveal">
+      <h2>Готовы попробовать?</h2>
+      <p>Зарегистрируйтесь бесплатно и получите AI-прогноз котировок за минуту</p>
+      <a href="{% if logged_in %}/dashboard{% else %}/register{% endif %}" class="btn-hero btn-start" style="position:relative;">
+        Начать прогнозирование
+        <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    NeuCast &copy; 2026 &mdash; LSTM + CatBoost + XGBoost Ensemble &bull; Yahoo Finance Data
+  </footer>
+
+  <script>
+    // ── Navbar scroll effect ──
+    const nav = document.getElementById('navbar');
+    window.addEventListener('scroll', () => {
+      nav.classList.toggle('scrolled', window.scrollY > 40);
+    });
+
+    // ── Scroll reveal (IntersectionObserver) ──
+    const revealEls = document.querySelectorAll('.reveal');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.classList.add('visible');
+          observer.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+    revealEls.forEach(el => observer.observe(el));
+
+    // ── Floating particles ──
+    (function createParticles() {
+      const container = document.getElementById('particles');
+      const count = 25;
+      for (let i = 0; i < count; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        p.style.left = Math.random() * 100 + '%';
+        p.style.animationDuration = (12 + Math.random() * 18) + 's';
+        p.style.animationDelay = (Math.random() * 20) + 's';
+        p.style.width = p.style.height = (1.5 + Math.random() * 2) + 'px';
+        p.style.opacity = 0.2 + Math.random() * 0.4;
+        if (Math.random() > 0.6) p.style.background = 'rgba(59,130,246,0.35)';
+        if (Math.random() > 0.85) p.style.background = 'rgba(167,139,250,0.35)';
+        container.appendChild(p);
+      }
+    })();
+
+    // ── Hero animated chart (canvas) ──
+    (function drawHeroChart() {
+      const canvas = document.getElementById('heroChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = 700 * dpr;
+      canvas.height = 400 * dpr;
+      ctx.scale(dpr, dpr);
+
+      // Generate smooth price-like path
+      let points = [];
+      let y = 200;
+      for (let x = 0; x <= 700; x += 3) {
+        y += (Math.random() - 0.48) * 6;
+        y = Math.max(60, Math.min(340, y));
+        points.push({ x, y });
+      }
+
+      let offset = 0;
+
+      function draw() {
+        ctx.clearRect(0, 0, 700, 400);
+
+        // Draw line
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
+        ctx.lineWidth = 2;
+        points.forEach((p, i) => {
+          const yy = p.y + Math.sin((p.x + offset) * 0.008) * 15;
+          if (i === 0) ctx.moveTo(p.x, yy);
+          else ctx.lineTo(p.x, yy);
+        });
+        ctx.stroke();
+
+        // Gradient fill under line
+        const grad = ctx.createLinearGradient(0, 0, 0, 400);
+        grad.addColorStop(0, 'rgba(16, 185, 129, 0.15)');
+        grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
+        ctx.lineTo(700, 400);
+        ctx.lineTo(0, 400);
+        ctx.closePath();
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        offset += 0.8;
+        requestAnimationFrame(draw);
+      }
+      draw();
+    })();
+  </script>
+</body>
+</html>

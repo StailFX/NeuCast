@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NeuCast — Авторизация</title>
+  <title>NeuCast — Регистрация</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -22,7 +22,6 @@
       overflow: hidden;
     }
 
-    /* Animated background grid */
     body::before {
       content: '';
       position: fixed;
@@ -43,9 +42,7 @@
       gap: 2rem;
     }
 
-    .brand {
-      text-align: center;
-    }
+    .brand { text-align: center; }
 
     .brand-icon {
       width: 56px;
@@ -59,27 +56,13 @@
       box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3);
     }
 
-    .brand-icon svg {
-      width: 28px;
-      height: 28px;
-      fill: white;
-    }
+    .brand-icon svg { width: 28px; height: 28px; fill: white; }
 
-    .brand h1 {
-      font-size: 1.75rem;
-      font-weight: 700;
-      color: #f1f5f9;
-      letter-spacing: -0.02em;
-    }
-
-    .brand p {
-      color: #64748b;
-      font-size: 0.9rem;
-      margin-top: 0.25rem;
-    }
+    .brand h1 { font-size: 1.75rem; font-weight: 700; color: #f1f5f9; letter-spacing: -0.02em; }
+    .brand p { color: #64748b; font-size: 0.9rem; margin-top: 0.25rem; }
 
     .login-card {
-      width: 400px;
+      width: 420px;
       padding: 2.5rem;
       background: rgba(15, 23, 42, 0.8);
       border: 1px solid rgba(51, 65, 85, 0.5);
@@ -98,9 +81,7 @@
       font-size: 0.875rem;
     }
 
-    .form-group {
-      margin-bottom: 1.25rem;
-    }
+    .form-group { margin-bottom: 1.25rem; }
 
     .form-group label {
       display: block;
@@ -130,9 +111,7 @@
       box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
     }
 
-    .form-input::placeholder {
-      color: #475569;
-    }
+    .form-input::placeholder { color: #475569; }
 
     .btn {
       display: block;
@@ -141,7 +120,7 @@
       font-size: 0.95rem;
       font-weight: 600;
       font-family: 'Inter', sans-serif;
-      background: linear-gradient(135deg, #10b981, #059669);
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
       color: #fff;
       border: none;
       border-radius: 10px;
@@ -152,11 +131,7 @@
 
     .btn:hover {
       transform: translateY(-1px);
-      box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3);
-    }
-
-    .btn:active {
-      transform: translateY(0);
+      box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
     }
 
     .footer-note {
@@ -164,6 +139,12 @@
       color: #475569;
       font-size: 0.8rem;
     }
+
+    .footer-note a {
+      color: #10b981;
+      text-decoration: none;
+    }
+    .footer-note a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -173,28 +154,35 @@
         <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
       </div>
       <h1>NeuCast</h1>
-      <p>AI-прогнозирование котировок золота</p>
+      <p>Создайте аккаунт</p>
     </div>
 
     <div class="login-card">
       {% if error %}
         <div class="alert-danger">{{ error }}</div>
       {% endif %}
-      <form action="/login" method="post">
+      <form action="/register" method="post">
         <div class="form-group">
           <label for="username">Логин</label>
-          <input type="text" id="username" name="username" class="form-input" placeholder="Введите логин" required autocomplete="username">
+          <input type="text" id="username" name="username" class="form-input" placeholder="Придумайте логин" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="email">Email (необязательно)</label>
+          <input type="email" id="email" name="email" class="form-input" placeholder="your@email.com" autocomplete="email">
         </div>
         <div class="form-group">
           <label for="password">Пароль</label>
-          <input type="password" id="password" name="password" class="form-input" placeholder="Введите пароль" required autocomplete="current-password">
+          <input type="password" id="password" name="password" class="form-input" placeholder="Минимум 4 символа" required autocomplete="new-password">
         </div>
-        <button type="submit" class="btn">Войти</button>
+        <div class="form-group">
+          <label for="password2">Повторите пароль</label>
+          <input type="password" id="password2" name="password2" class="form-input" placeholder="Повторите пароль" required autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn">Зарегистрироваться</button>
       </form>
     </div>
 
-    <p class="footer-note">Нет аккаунта? <a href="/register" style="color:#10b981;text-decoration:none;">Зарегистрироваться</a></p>
-    <p class="footer-note">LSTM Neural Network &bull; Yahoo Finance Data</p>
+    <p class="footer-note">Уже есть аккаунт? <a href="/login">Войти</a></p>
   </div>
 </body>
 </html>

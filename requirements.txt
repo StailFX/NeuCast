@@ -12,3 +12,4 @@ catboost>=1.2
 xgboost>=2.0.0
 PyWavelets>=1.4.0
 h5py>=3.9.0
+fpdf2>=2.7.0

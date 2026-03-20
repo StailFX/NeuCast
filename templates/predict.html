@@ -1,19 +1,56 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FinanceGuru — Результаты</title>
+  <title>NeuCast — Результаты</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
+    :root {
+      --bg: #0a0e17;
+      --bg-card: rgba(15, 23, 42, 0.8);
+      --border: rgba(51, 65, 85, 0.5);
+      --border-hover: rgba(51, 65, 85, 0.8);
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --text-faint: #475569;
+      --navbar-bg: rgba(15, 23, 42, 0.9);
+      --grid-color: rgba(16, 185, 129, 0.02);
+      --table-header-bg: rgba(15, 23, 42, 0.98);
+      --row-hover: rgba(51, 65, 85, 0.12);
+      --green: #10b981;
+      --blue: #3b82f6;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --purple: #a78bfa;
+    }
+
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --bg-card: rgba(255, 255, 255, 0.9);
+      --border: rgba(203, 213, 225, 0.7);
+      --border-hover: rgba(148, 163, 184, 0.6);
+      --text: #1e293b;
+      --text-dim: #475569;
+      --text-muted: #64748b;
+      --text-faint: #94a3b8;
+      --navbar-bg: rgba(255, 255, 255, 0.95);
+      --grid-color: rgba(16, 185, 129, 0.04);
+      --table-header-bg: rgba(248, 250, 252, 0.98);
+      --row-hover: rgba(241, 245, 249, 0.8);
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: 'Inter', sans-serif;
-      background: #0a0e17;
-      color: #e2e8f0;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
+      transition: background 0.3s, color 0.3s;
     }
 
     body::before {
@@ -21,14 +58,13 @@
       position: fixed;
       inset: 0;
       background-image:
-        linear-gradient(rgba(16, 185, 129, 0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(16, 185, 129, 0.02) 1px, transparent 1px);
+        linear-gradient(var(--grid-color) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
       background-size: 60px 60px;
       z-index: 0;
       pointer-events: none;
     }
 
-    /* Navbar */
     .navbar {
       position: sticky;
       top: 0;
@@ -37,8 +73,8 @@
       justify-content: space-between;
       align-items: center;
       padding: 0.75rem 2rem;
-      background: rgba(15, 23, 42, 0.9);
-      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      background: var(--navbar-bg);
+      border-bottom: 1px solid var(--border);
       backdrop-filter: blur(20px);
     }
 
@@ -58,13 +94,36 @@
       align-items: center;
       justify-content: center;
     }
-
     .navbar-logo svg { width: 16px; height: 16px; fill: white; }
 
     .navbar-title {
       font-size: 1.05rem;
       font-weight: 700;
-      color: #f1f5f9;
+      color: var(--text);
+    }
+
+    .live-ticker {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      padding: 0.3rem 0.8rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      min-width: 160px;
+    }
+    .live-ticker .price { font-weight: 700; color: var(--text); }
+    .live-ticker .change-up { color: #10b981; font-weight: 600; }
+    .live-ticker .change-down { color: #ef4444; font-weight: 600; }
+    .live-ticker .pulse {
+      width: 6px; height: 6px; background: #10b981; border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
     }
 
     .navbar-right {
@@ -86,11 +145,11 @@
     }
 
     .btn-back {
-      color: #94a3b8;
+      color: var(--text-dim);
       background: rgba(51, 65, 85, 0.4);
-      border-color: rgba(51, 65, 85, 0.6);
+      border-color: var(--border);
     }
-    .btn-back:hover { color: #f1f5f9; border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.1); }
+    .btn-back:hover { color: var(--text); border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.1); }
 
     .btn-csv {
       color: #10b981;
@@ -100,13 +159,22 @@
     .btn-csv:hover { background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.5); }
 
     .btn-out {
-      color: #94a3b8;
+      color: var(--text-dim);
       background: transparent;
-      border-color: rgba(51, 65, 85, 0.6);
+      border-color: var(--border);
     }
     .btn-out:hover { color: #fca5a5; border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.1); }
 
-    /* Dashboard */
+    .btn-theme {
+      color: var(--text-dim);
+      background: var(--bg-card);
+      border-color: var(--border);
+      font-size: 1rem;
+      padding: 0.3rem 0.6rem;
+      line-height: 1;
+    }
+    .btn-theme:hover { border-color: var(--amber); }
+
     .dashboard {
       position: relative;
       z-index: 1;
@@ -116,8 +184,8 @@
     }
 
     .page-title { margin-bottom: 1.5rem; }
-    .page-title h1 { font-size: 1.5rem; font-weight: 700; color: #f1f5f9; }
-    .page-title .subtitle { color: #64748b; font-size: 0.85rem; margin-top: 0.25rem; }
+    .page-title h1 { font-size: 1.5rem; font-weight: 700; color: var(--text); }
+    .page-title .subtitle { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem; }
 
     /* Metric cards */
     .metrics-row {
@@ -128,19 +196,19 @@
     }
 
     .metric-card {
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px solid rgba(51, 65, 85, 0.5);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 12px;
       padding: 1.1rem 1.25rem;
       backdrop-filter: blur(10px);
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, transform 0.2s;
     }
-    .metric-card:hover { border-color: rgba(51, 65, 85, 0.8); }
+    .metric-card:hover { border-color: var(--border-hover); transform: translateY(-2px); }
 
     .metric-label {
       font-size: 0.65rem;
       font-weight: 600;
-      color: #64748b;
+      color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.08em;
       margin-bottom: 0.4rem;
@@ -149,7 +217,7 @@
     .metric-value {
       font-size: 1.3rem;
       font-weight: 700;
-      color: #f1f5f9;
+      color: var(--text);
     }
 
     .metric-value.green { color: #10b981; }
@@ -158,17 +226,18 @@
     .metric-value.red { color: #ef4444; }
     .metric-value.purple { color: #a78bfa; }
 
-    .metric-sub { font-size: 0.7rem; color: #475569; margin-top: 0.2rem; }
+    .metric-sub { font-size: 0.7rem; color: var(--text-faint); margin-top: 0.2rem; }
 
     /* Chart cards */
     .chart-card {
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px solid rgba(51, 65, 85, 0.5);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 12px;
       padding: 1rem 1rem 0.5rem;
       margin-bottom: 1.5rem;
       backdrop-filter: blur(10px);
       overflow: hidden;
+      animation: fadeInUp 0.5s ease-out both;
     }
 
     .chart-card-header {
@@ -178,9 +247,9 @@
       padding: 0 0.5rem 0.75rem;
     }
 
-    .chart-card-title { font-size: 0.85rem; font-weight: 600; color: #94a3b8; }
+    .chart-card-title { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); }
 
-    .chart-badges { display: flex; gap: 0.5rem; }
+    .chart-badges { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 
     .chart-card-badge {
       font-size: 0.6rem;
@@ -192,8 +261,8 @@
     .badge-blue { background: rgba(59, 130, 246, 0.1); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.2); }
     .badge-amber { background: rgba(245, 158, 11, 0.1); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.2); }
     .badge-purple { background: rgba(167, 139, 250, 0.1); color: #a78bfa; border: 1px solid rgba(167, 139, 250, 0.2); }
+    .badge-red { background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2); }
 
-    /* Charts grid */
     .charts-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -208,14 +277,44 @@
       margin-bottom: 1.5rem;
     }
 
+    /* Model metrics table */
+    .model-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+    }
+    .model-table th {
+      position: static;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      text-align: right;
+      border-bottom: 1px solid var(--border);
+    }
+    .model-table th:first-child { text-align: left; }
+    .model-table td {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.82rem;
+      text-align: right;
+      color: var(--text);
+      border-bottom: 1px solid rgba(51, 65, 85, 0.15);
+      font-variant-numeric: tabular-nums;
+    }
+    .model-table td:first-child { text-align: left; font-weight: 600; }
+    .model-table tr.best td { color: #10b981; }
+
     /* Table */
     .table-card {
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px solid rgba(51, 65, 85, 0.5);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 12px;
       backdrop-filter: blur(10px);
       overflow: hidden;
       margin-bottom: 1.5rem;
+      animation: fadeInUp 0.5s ease-out both;
     }
 
     .table-card-header {
@@ -226,8 +325,8 @@
       border-bottom: 1px solid rgba(51, 65, 85, 0.3);
     }
 
-    .table-card-title { font-size: 0.9rem; font-weight: 600; color: #94a3b8; }
-    .table-count { font-size: 0.75rem; color: #475569; }
+    .table-card-title { font-size: 0.9rem; font-weight: 600; color: var(--text-dim); }
+    .table-count { font-size: 0.75rem; color: var(--text-faint); }
 
     .table-scroll {
       max-height: 500px;
@@ -243,43 +342,75 @@
     th {
       position: sticky;
       top: 0;
-      background: rgba(15, 23, 42, 0.98);
+      background: var(--table-header-bg);
       padding: 0.7rem 1rem;
       font-size: 0.68rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.06em;
-      color: #64748b;
+      color: var(--text-muted);
       text-align: right;
-      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      border-bottom: 1px solid var(--border);
       cursor: pointer;
       user-select: none;
       white-space: nowrap;
     }
     th:first-child { text-align: left; }
-    th:hover { color: #94a3b8; }
+    th:hover { color: var(--text-dim); }
     th .si { opacity: 0.4; margin-left: 3px; font-size: 0.55rem; }
 
     td {
       padding: 0.55rem 1rem;
       font-size: 0.82rem;
       text-align: right;
-      color: #cbd5e1;
+      color: var(--text);
       border-bottom: 1px solid rgba(51, 65, 85, 0.15);
       font-variant-numeric: tabular-nums;
     }
-    td:first-child { text-align: left; color: #94a3b8; font-size: 0.78rem; }
-    tr:hover td { background: rgba(51, 65, 85, 0.12); }
+    td:first-child { text-align: left; color: var(--text-dim); font-size: 0.78rem; }
+    tr:hover td { background: var(--row-hover); }
 
     .e-low { color: #10b981; }
     .e-mid { color: #f59e0b; }
     .e-high { color: #ef4444; }
+
+    /* Animations */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .chart-card:nth-child(1) { animation-delay: 0s; }
+    .chart-card:nth-child(2) { animation-delay: 0.05s; }
+    .chart-card:nth-child(3) { animation-delay: 0.1s; }
+    .chart-card:nth-child(4) { animation-delay: 0.15s; }
+
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text);
+      margin: 2rem 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .section-icon {
+      width: 24px; height: 24px;
+      background: linear-gradient(135deg, var(--green), var(--blue));
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem;
+      color: white;
+    }
 
     @media (max-width: 900px) {
       .dashboard { padding: 1rem; }
       .charts-grid, .charts-grid-3 { grid-template-columns: 1fr; }
       .metrics-row { grid-template-columns: 1fr 1fr; }
       .navbar { padding: 0.75rem 1rem; }
+      .live-ticker { display: none; }
     }
   </style>
 </head>
@@ -289,12 +420,23 @@
       <div class="navbar-logo">
         <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
       </div>
-      <span class="navbar-title">FinanceGuru</span>
+      <span class="navbar-title">NeuCast</span>
     </a>
+
+    <div class="live-ticker" id="liveTicker">
+      <div class="pulse"></div>
+      <span id="liveSymbol">{{ ticker }}</span>
+      <span class="price" id="livePrice">...</span>
+      <span id="liveChange"></span>
+    </div>
+
     <div class="navbar-right">
-      <a href="/" class="btn-nav btn-back">Новый прогноз</a>
+      <button class="btn-nav btn-theme" id="themeToggle" title="Сменить тему">&#9790;</button>
+      <a href="/dashboard" class="btn-nav btn-back">Новый прогноз</a>
       <a href="/download_csv?ticker={{ ticker }}&start_date={{ start_date }}&end_date={{ end_date }}&days_ahead={{ days_ahead }}"
          class="btn-nav btn-csv">CSV</a>
+      <a href="/download_pdf?ticker={{ ticker }}&start_date={{ start_date }}&end_date={{ end_date }}&days_ahead={{ days_ahead }}"
+         class="btn-nav btn-csv" style="color:#a78bfa;background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.3);">PDF</a>
       <a href="/logout" class="btn-nav btn-out">Выйти</a>
     </div>
   </nav>
@@ -324,7 +466,7 @@
         <div class="metric-sub">Средн. % ошибка</div>
       </div>
       <div class="metric-card">
-        <div class="metric-label">R²</div>
+        <div class="metric-label">R&sup2;</div>
         <div class="metric-value green">{{ r2 }}</div>
         <div class="metric-sub">Коэф. детерминации</div>
       </div>
@@ -336,18 +478,18 @@
       {% endif %}
       <div class="metric-card">
         <div class="metric-label">Train / Test</div>
-        <div class="metric-value" id="mDays">—</div>
+        <div class="metric-value" id="mDays">&mdash;</div>
         <div class="metric-sub" id="mSplit">80% / 20%</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Последняя цена</div>
-        <div class="metric-value green" id="mLast">—</div>
+        <div class="metric-value green" id="mLast">&mdash;</div>
         <div class="metric-sub">USD (факт)</div>
       </div>
       {% if days_ahead > 0 %}
       <div class="metric-card">
         <div class="metric-label">Прогноз ({{ days_ahead }}д.)</div>
-        <div class="metric-value amber" id="mForecast">—</div>
+        <div class="metric-value amber" id="mForecast">&mdash;</div>
         <div class="metric-sub" id="mForecastRange">GBM Monte Carlo</div>
       </div>
       {% endif %}
@@ -367,8 +509,87 @@
       <div id="price_chart" style="height:440px;"></div>
     </div>
 
+    <!-- ========== MODEL COMPARISON ========== -->
+    {% if role == 'admin' %}
+    <div class="section-title"><div class="section-icon">&#8853;</div> Сравнение моделей</div>
+
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">LSTM vs CatBoost vs XGBoost vs Ensemble (тестовая выборка)</span>
+        <div class="chart-badges">
+          <span class="chart-card-badge badge-blue">LSTM</span>
+          <span class="chart-card-badge badge-amber">CatBoost</span>
+          <span class="chart-card-badge badge-red">XGBoost</span>
+          <span class="chart-card-badge badge-green">Ensemble</span>
+        </div>
+      </div>
+      <div id="comparison_chart" style="height:400px;"></div>
+    </div>
+
+    <div class="chart-card" style="padding:1.25rem;">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Метрики по моделям (Test)</span>
+      </div>
+      <table class="model-table" id="modelMetricsTable">
+        <thead>
+          <tr><th>Модель</th><th>MAE ($)</th><th>RMSE ($)</th><th>MAPE (%)</th><th>R&sup2;</th></tr>
+        </thead>
+        <tbody id="modelMetricsBody"></tbody>
+      </table>
+    </div>
+
+    <!-- ========== FEATURE IMPORTANCE ========== -->
+    <div class="section-title"><div class="section-icon">&#9733;</div> Важность признаков</div>
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">CatBoost Feature Importance</span>
+          <span class="chart-card-badge badge-amber">Top 15</span>
+        </div>
+        <div id="fi_catboost" style="height:380px;"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">XGBoost Feature Importance</span>
+          <span class="chart-card-badge badge-red">Top 15</span>
+        </div>
+        <div id="fi_xgboost" style="height:380px;"></div>
+      </div>
+    </div>
+
+    <!-- ========== RESIDUAL ANALYSIS ========== -->
+    <div class="section-title"><div class="section-icon">&#916;</div> Анализ остатков (Residuals)</div>
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Распределение ошибок</span>
+          <span class="chart-card-badge badge-purple">Histogram</span>
+        </div>
+        <div id="residual_hist" style="height:350px;"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">QQ-Plot (нормальность остатков)</span>
+          <span class="chart-card-badge badge-blue">Normal QQ</span>
+        </div>
+        <div id="qq_plot" style="height:350px;"></div>
+      </div>
+    </div>
+
+    <!-- ========== CORRELATION MATRIX ========== -->
+    <div class="section-title"><div class="section-icon">&#9632;</div> Корреляционная матрица</div>
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Корреляция между признаками</span>
+        <span class="chart-card-badge badge-purple">Heatmap</span>
+      </div>
+      <div id="corr_heatmap" style="height:500px;"></div>
+    </div>
+    {% endif %}
+
     <!-- Bollinger Bands chart -->
     {% if role == 'admin' %}
+    <div class="section-title"><div class="section-icon">&#8776;</div> Технические индикаторы</div>
     <div class="chart-card">
       <div class="chart-card-header">
         <span class="chart-card-title">Bollinger Bands (20, 2)</span>
@@ -452,6 +673,45 @@
   </div>
 
   <script>
+    /* =============== THEME TOGGLE =============== */
+    const html = document.documentElement;
+    const themeBtn = document.getElementById('themeToggle');
+    const saved = localStorage.getItem('fg_theme');
+    if (saved) html.setAttribute('data-theme', saved);
+
+    themeBtn.addEventListener('click', () => {
+      const cur = html.getAttribute('data-theme');
+      const next = cur === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('fg_theme', next);
+      themeBtn.innerHTML = next === 'dark' ? '&#9790;' : '&#9788;';
+      replotAll();
+    });
+    if (html.getAttribute('data-theme') === 'light') themeBtn.innerHTML = '&#9788;';
+
+    function getPlotlyTheme() {
+      const isDark = html.getAttribute('data-theme') === 'dark';
+      return {
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        font: { family: 'Inter', color: isDark ? '#94a3b8' : '#475569', size: 11 },
+        xaxis: {
+          gridcolor: isDark ? 'rgba(51,65,85,0.25)' : 'rgba(203,213,225,0.5)',
+          linecolor: isDark ? 'rgba(51,65,85,0.4)' : 'rgba(203,213,225,0.6)',
+          zerolinecolor: isDark ? 'rgba(51,65,85,0.25)' : 'rgba(203,213,225,0.4)',
+        },
+        yaxis: {
+          gridcolor: isDark ? 'rgba(51,65,85,0.25)' : 'rgba(203,213,225,0.5)',
+          linecolor: isDark ? 'rgba(51,65,85,0.4)' : 'rgba(203,213,225,0.6)',
+          zerolinecolor: isDark ? 'rgba(51,65,85,0.25)' : 'rgba(203,213,225,0.4)',
+          tickprefix: '$',
+        },
+        margin: { l: 65, r: 15, t: 10, b: 40 },
+        legend: { orientation: 'h', y: -0.15, font: { size: 10 } },
+        hovermode: 'x unified',
+      };
+    }
+
     /* Sorting */
     let sd = {};
     function sortT(n) {
@@ -473,7 +733,7 @@
     const D = {{ data_json | safe }};
     const OL = D.actual.filter(v => v !== null).length;
     const OD = D.dates.slice(0, OL);
-    const TS = D.train_size || 0;  // train/test split point
+    const TS = D.train_size || 0;
 
     /* Metrics */
     document.getElementById('mDays').textContent = TS + ' / ' + (OL - TS);
@@ -490,166 +750,333 @@
         rangeEl.textContent = '90%: $' + lo + ' — $' + hi;
       }
     }
-    const testCount = OL - TS;
-    document.getElementById('rowCount').textContent = testCount + ' записей (тестовая выборка)';
+    document.getElementById('rowCount').textContent = (OL - TS) + ' записей (тестовая выборка)';
 
-    /* Plotly dark theme */
-    const L = {
-      paper_bgcolor: 'transparent',
-      plot_bgcolor: 'transparent',
-      font: { family: 'Inter', color: '#94a3b8', size: 11 },
-      xaxis: { gridcolor: 'rgba(51,65,85,0.25)', linecolor: 'rgba(51,65,85,0.4)', zerolinecolor: 'rgba(51,65,85,0.25)' },
-      yaxis: { gridcolor: 'rgba(51,65,85,0.25)', linecolor: 'rgba(51,65,85,0.4)', zerolinecolor: 'rgba(51,65,85,0.25)', tickprefix: '$' },
-      margin: { l: 65, r: 15, t: 10, b: 40 },
-      legend: { orientation: 'h', y: -0.15, font: { size: 10 } },
-      hovermode: 'x unified',
-    };
     const C = { displayModeBar: false, responsive: true };
+    const ANIM = { transition: { duration: 600 }, frame: { duration: 600 } };
 
-    /* === Main price chart with Train/Test/Future zones === */
-    const pt = [
-      /* Actual price — full line */
-      { x: D.dates, y: D.actual, name: 'Факт', mode: 'lines',
-        line: { color: '#3b82f6', width: 2 }, connectgaps: false },
+    /* =============== MAIN PRICE CHART =============== */
+    function plotMainChart() {
+      const L = getPlotlyTheme();
+      const pt = [
+        { x: D.dates, y: D.actual, name: 'Факт', mode: 'lines',
+          line: { color: '#3b82f6', width: 2 }, connectgaps: false },
+        { x: D.dates.slice(0, TS), y: D.predicted.slice(0, TS),
+          name: 'Train (обучение)', mode: 'lines',
+          line: { color: '#64748b', width: 1.5, dash: 'dot' }, opacity: 0.5 },
+        { x: D.dates.slice(TS, OL), y: D.predicted.slice(TS, OL),
+          name: 'Test (проверка)', mode: 'lines',
+          line: { color: '#10b981', width: 2.5 } },
+      ];
 
-      /* Train predictions (dimmed) */
-      { x: D.dates.slice(0, TS), y: D.predicted.slice(0, TS),
-        name: 'Train (обучение)', mode: 'lines',
-        line: { color: '#64748b', width: 1.5, dash: 'dot' },
-        opacity: 0.5 },
-
-      /* Test predictions (bright, this is where metrics come from) */
-      { x: D.dates.slice(TS, OL), y: D.predicted.slice(TS, OL),
-        name: 'Test (проверка)', mode: 'lines',
-        line: { color: '#10b981', width: 2.5 } },
-    ];
-
-    /* Train/Test boundary vertical line */
-    const splitDate = D.dates[TS] || '';
-    const shapes = [];
-    if (splitDate) {
-      shapes.push({
-        type: 'line', x0: splitDate, x1: splitDate, y0: 0, y1: 1, yref: 'paper',
-        line: { color: 'rgba(245,158,11,0.5)', width: 2, dash: 'dash' },
-      });
-    }
-
-    /* Future forecast — GBM fan chart */
-    if (D.dates.length > OL) {
-      const futDates = D.dates.slice(OL);
-      const connectDate = D.dates[OL - 1];
-      const connectPrice = D.actual[OL - 1] || D.predicted[OL - 1];
-
-      /* 90% confidence band (p5 — p95) */
-      if (D.future_p5 && D.future_p5.length > 0) {
-        pt.push({
-          x: [connectDate, ...futDates, ...[...futDates].reverse(), connectDate],
-          y: [connectPrice, ...D.future_p95, ...[...D.future_p5].reverse(), connectPrice],
-          fill: 'toself', fillcolor: 'rgba(245,158,11,0.06)',
-          line: { color: 'transparent' },
-          name: '90% интервал', showlegend: true, hoverinfo: 'skip',
+      const splitDate = D.dates[TS] || '';
+      const shapes = [];
+      if (splitDate) {
+        shapes.push({
+          type: 'line', x0: splitDate, x1: splitDate, y0: 0, y1: 1, yref: 'paper',
+          line: { color: 'rgba(245,158,11,0.5)', width: 2, dash: 'dash' },
         });
       }
 
-      /* 50% confidence band (p25 — p75) */
-      if (D.future_upper && D.future_upper.length > 0) {
+      if (D.dates.length > OL) {
+        const futDates = D.dates.slice(OL);
+        const cDate = D.dates[OL - 1];
+        const cPrice = D.actual[OL - 1] || D.predicted[OL - 1];
+
+        if (D.future_p5 && D.future_p5.length > 0) {
+          pt.push({
+            x: [cDate, ...futDates, ...[...futDates].reverse(), cDate],
+            y: [cPrice, ...D.future_p95, ...[...D.future_p5].reverse(), cPrice],
+            fill: 'toself', fillcolor: 'rgba(245,158,11,0.06)',
+            line: { color: 'transparent' },
+            name: '90% интервал', showlegend: true, hoverinfo: 'skip',
+          });
+        }
+
+        if (D.future_upper && D.future_upper.length > 0) {
+          pt.push({
+            x: [cDate, ...futDates, ...[...futDates].reverse(), cDate],
+            y: [cPrice, ...D.future_upper, ...[...D.future_lower].reverse(), cPrice],
+            fill: 'toself', fillcolor: 'rgba(245,158,11,0.12)',
+            line: { color: 'transparent' },
+            name: '50% интервал', showlegend: true, hoverinfo: 'skip',
+          });
+        }
+
         pt.push({
-          x: [connectDate, ...futDates, ...[...futDates].reverse(), connectDate],
-          y: [connectPrice, ...D.future_upper, ...[...D.future_lower].reverse(), connectPrice],
-          fill: 'toself', fillcolor: 'rgba(245,158,11,0.12)',
-          line: { color: 'transparent' },
-          name: '50% интервал', showlegend: true, hoverinfo: 'skip',
+          x: [cDate, ...futDates],
+          y: [cPrice, ...D.predicted.slice(OL)],
+          name: 'Прогноз (медиана)', mode: 'lines',
+          line: { color: '#f59e0b', width: 2.5 },
+        });
+
+        shapes.push({
+          type: 'line', x0: D.dates[OL], x1: D.dates[OL], y0: 0, y1: 1, yref: 'paper',
+          line: { color: 'rgba(239,68,68,0.4)', width: 1.5, dash: 'dot' },
         });
       }
 
-      /* Median forecast line */
-      pt.push({
-        x: [connectDate, ...futDates],
-        y: [connectPrice, ...D.predicted.slice(OL)],
-        name: 'Прогноз (медиана)', mode: 'lines',
-        line: { color: '#f59e0b', width: 2.5 },
-      });
+      const annotations = [];
+      if (splitDate) {
+        annotations.push({
+          x: splitDate, y: 1.02, yref: 'paper', text: 'Train | Test',
+          showarrow: false, font: { size: 10, color: '#f59e0b' },
+        });
+      }
 
-      /* Future boundary */
-      shapes.push({
-        type: 'line', x0: D.dates[OL], x1: D.dates[OL], y0: 0, y1: 1, yref: 'paper',
-        line: { color: 'rgba(239,68,68,0.4)', width: 1.5, dash: 'dot' },
-      });
+      Plotly.newPlot('price_chart', pt, { ...L, shapes, annotations }, C);
     }
 
-    /* Annotations */
-    const annotations = [];
-    if (splitDate) {
-      annotations.push({
-        x: splitDate, y: 1.02, yref: 'paper', text: 'Train | Test',
-        showarrow: false, font: { size: 10, color: '#f59e0b' },
-      });
+    /* =============== MODEL COMPARISON =============== */
+    function plotComparison() {
+      const el = document.getElementById('comparison_chart');
+      if (!el) return;
+      const L = getPlotlyTheme();
+      const testDates = D.dates.slice(TS, OL);
+      const actualTest = D.actual.slice(TS, OL);
+      const traces = [
+        { x: testDates, y: actualTest, name: 'Факт', mode: 'lines',
+          line: { color: '#94a3b8', width: 2, dash: 'dot' } },
+      ];
+      const colors = { LSTM: '#3b82f6', CatBoost: '#f59e0b', XGBoost: '#ef4444', Ensemble: '#10b981' };
+      for (const [name, prices] of Object.entries(D.model_comparison || {})) {
+        traces.push({
+          x: testDates, y: prices.slice(TS, OL), name: name, mode: 'lines',
+          line: { color: colors[name] || '#a78bfa', width: name === 'Ensemble' ? 2.5 : 1.5 },
+        });
+      }
+      Plotly.newPlot('comparison_chart', traces, L, C);
+
+      // Model metrics table
+      const tbody = document.getElementById('modelMetricsBody');
+      if (!tbody || !D.model_metrics) return;
+      let bestMape = Infinity, bestName = '';
+      for (const [n, m] of Object.entries(D.model_metrics)) {
+        if (m.mape < bestMape) { bestMape = m.mape; bestName = n; }
+      }
+      tbody.innerHTML = '';
+      for (const [n, m] of Object.entries(D.model_metrics)) {
+        const cls = n === bestName ? ' class="best"' : '';
+        tbody.innerHTML += `<tr${cls}><td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${colors[n]||'#a78bfa'};margin-right:6px;"></span>${n}</td><td>${m.mae}</td><td>${m.rmse}</td><td>${m.mape}%</td><td>${m.r2}</td></tr>`;
+      }
     }
 
-    Plotly.newPlot('price_chart', pt, {
-      ...L,
-      shapes: shapes,
-      annotations: annotations,
-    }, C);
+    /* =============== FEATURE IMPORTANCE =============== */
+    function plotFeatureImportance() {
+      const fi = D.feature_importance || {};
+      for (const [model, data] of Object.entries(fi)) {
+        const elId = model === 'CatBoost' ? 'fi_catboost' : 'fi_xgboost';
+        const el = document.getElementById(elId);
+        if (!el || !data) continue;
+        const L = getPlotlyTheme();
+        const names = [...data.names].reverse();
+        const vals = [...data.values].reverse();
+        const color = model === 'CatBoost' ? '#f59e0b' : '#ef4444';
+        Plotly.newPlot(elId, [{
+          y: names, x: vals, type: 'bar', orientation: 'h',
+          marker: { color: color, opacity: 0.8 },
+          text: vals.map(v => v.toFixed(2)), textposition: 'outside',
+          textfont: { size: 9, color: '#94a3b8' },
+        }], {
+          ...L,
+          yaxis: { ...L.yaxis, tickprefix: '', tickfont: { size: 9 } },
+          xaxis: { ...L.xaxis, title: 'Importance' },
+          margin: { l: 140, r: 50, t: 10, b: 40 },
+        }, C);
+      }
+    }
 
-    /* === Original close === */
-    Plotly.newPlot('orig_chart', [{
-      x: OD, y: D.actual.slice(0,OL), name: 'Close', mode: 'lines',
-      line: { color: '#8b5cf6', width: 1.5 },
-      fill: 'tozeroy', fillcolor: 'rgba(139,92,246,0.06)',
-    }], {
-      ...L,
-      xaxis: { ...L.xaxis, rangeslider: { visible: true, bgcolor: 'rgba(15,23,42,0.5)', bordercolor: 'rgba(51,65,85,0.2)' } },
-    }, C);
+    /* =============== RESIDUAL ANALYSIS =============== */
+    function plotResiduals() {
+      const el1 = document.getElementById('residual_hist');
+      const el2 = document.getElementById('qq_plot');
+      if (!el1 || !D.residuals) return;
+      const L = getPlotlyTheme();
+      const res = D.residuals;
 
-    {% if role == 'admin' %}
-    /* === Bollinger Bands === */
-    Plotly.newPlot('bb_chart', [
-      {
-        x: OD.concat([...OD].reverse()),
-        y: D.bb_upper.concat([...D.bb_lower].reverse()),
-        fill: 'toself', fillcolor: 'rgba(167,139,250,0.07)',
-        line: { color: 'transparent' }, name: 'BB Band', showlegend: true, hoverinfo: 'skip',
-      },
-      { x: OD, y: D.bb_upper, name: 'BB Upper', mode: 'lines', line: { color: '#a78bfa', width: 1, dash: 'dot' } },
-      { x: OD, y: D.bb_lower, name: 'BB Lower', mode: 'lines', line: { color: '#a78bfa', width: 1, dash: 'dot' } },
-      { x: OD, y: D.actual.slice(0,OL), name: 'Close', mode: 'lines', line: { color: '#3b82f6', width: 1.5 } },
-    ], { ...L }, C);
+      // Histogram
+      Plotly.newPlot('residual_hist', [{
+        x: res, type: 'histogram', nbinsx: 40,
+        marker: { color: 'rgba(167,139,250,0.6)', line: { color: '#a78bfa', width: 1 } },
+        name: 'Ошибки',
+      }], {
+        ...L,
+        xaxis: { ...L.xaxis, title: 'Ошибка ($)' },
+        yaxis: { ...L.yaxis, tickprefix: '', title: 'Частота' },
+        shapes: [{
+          type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper',
+          line: { color: '#ef4444', width: 2, dash: 'dash' },
+        }],
+      }, C);
 
-    /* === RSI === */
-    Plotly.newPlot('rsi_chart', [{
-      x: OD, y: D.rsi, name: 'RSI', mode: 'lines', line: { color: '#f59e0b', width: 1.5 },
-    }], {
-      ...L,
-      yaxis: { ...L.yaxis, tickprefix: '', range: [0, 100] },
-      shapes: [
-        { type:'line', y0:70, y1:70, x0:0, x1:1, xref:'paper', line:{ color:'rgba(239,68,68,0.35)', dash:'dot', width:1 } },
-        { type:'line', y0:30, y1:30, x0:0, x1:1, xref:'paper', line:{ color:'rgba(16,185,129,0.35)', dash:'dot', width:1 } },
-      ],
-    }, C);
+      // QQ-Plot
+      if (!el2) return;
+      const sorted = [...res].sort((a, b) => a - b);
+      const n = sorted.length;
+      const theoretical = [];
+      for (let i = 0; i < n; i++) {
+        const p = (i + 0.5) / n;
+        theoretical.push(qnorm(p));
+      }
+      const mean = res.reduce((a, b) => a + b, 0) / n;
+      const std = Math.sqrt(res.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+      const normalized = sorted.map(v => (v - mean) / (std || 1));
 
-    /* === MACD === */
-    const macdHist = D.macd.map((v, i) => v - D.signal[i]);
-    Plotly.newPlot('macd_chart', [
-      {
-        x: OD, y: macdHist, name: 'Histogram', type: 'bar',
-        marker: { color: macdHist.map(v => v >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)') },
-      },
-      { x: OD, y: D.macd, name: 'MACD', mode: 'lines', line: { color: '#3b82f6', width: 1.5 } },
-      { x: OD, y: D.signal, name: 'Signal', mode: 'lines', line: { color: '#ef4444', width: 1.5 } },
-    ], {
-      ...L, yaxis: { ...L.yaxis, tickprefix: '' },
-    }, C);
+      Plotly.newPlot('qq_plot', [
+        { x: theoretical, y: normalized, mode: 'markers', name: 'Остатки',
+          marker: { color: '#3b82f6', size: 4, opacity: 0.7 } },
+        { x: [-3, 3], y: [-3, 3], mode: 'lines', name: 'Нормальное',
+          line: { color: '#ef4444', width: 2, dash: 'dash' } },
+      ], {
+        ...L,
+        xaxis: { ...L.xaxis, title: 'Теоретические квантили' },
+        yaxis: { ...L.yaxis, tickprefix: '', title: 'Фактические квантили' },
+      }, C);
+    }
 
-    /* === ATR === */
-    Plotly.newPlot('atr_chart', [{
-      x: OD, y: D.atr, name: 'ATR(14)', mode: 'lines',
-      line: { color: '#10b981', width: 1.5 },
-      fill: 'tozeroy', fillcolor: 'rgba(16,185,129,0.06)',
-    }], {
-      ...L, yaxis: { ...L.yaxis, tickprefix: '$' },
-    }, C);
-    {% endif %}
+    // Inverse normal CDF (rational approximation)
+    function qnorm(p) {
+      if (p <= 0) return -Infinity;
+      if (p >= 1) return Infinity;
+      if (p < 0.5) return -qnorm(1 - p);
+      const t = Math.sqrt(-2 * Math.log(1 - p));
+      const c0 = 2.515517, c1 = 0.802853, c2 = 0.010328;
+      const d1 = 1.432788, d2 = 0.189269, d3 = 0.001308;
+      return t - (c0 + c1 * t + c2 * t * t) / (1 + d1 * t + d2 * t * t + d3 * t * t * t);
+    }
+
+    /* =============== CORRELATION MATRIX =============== */
+    function plotCorrelation() {
+      const el = document.getElementById('corr_heatmap');
+      if (!el || !D.corr_data) return;
+      const L = getPlotlyTheme();
+      const isDark = html.getAttribute('data-theme') === 'dark';
+
+      Plotly.newPlot('corr_heatmap', [{
+        z: D.corr_data,
+        x: D.corr_labels,
+        y: D.corr_labels,
+        type: 'heatmap',
+        colorscale: [
+          [0, '#ef4444'],
+          [0.25, '#fca5a5'],
+          [0.5, isDark ? '#1e293b' : '#f8fafc'],
+          [0.75, '#6ee7b7'],
+          [1, '#10b981'],
+        ],
+        zmin: -1, zmax: 1,
+        text: D.corr_data.map(row => row.map(v => v.toFixed(2))),
+        texttemplate: '%{text}',
+        textfont: { size: 10 },
+        hovertemplate: '%{x} — %{y}: %{z:.3f}<extra></extra>',
+        colorbar: { title: 'r', tickfont: { size: 10 } },
+      }], {
+        ...L,
+        hovermode: 'closest',
+        xaxis: { ...L.xaxis, tickangle: -45, showgrid: false },
+        yaxis: { ...L.yaxis, tickprefix: '', autorange: 'reversed', showgrid: false },
+        margin: { l: 80, r: 20, t: 20, b: 80 },
+      }, { displayModeBar: false, responsive: true });
+    }
+
+    /* =============== STANDARD CHARTS =============== */
+    function plotOriginal() {
+      const L = getPlotlyTheme();
+      Plotly.newPlot('orig_chart', [{
+        x: OD, y: D.actual.slice(0,OL), name: 'Close', mode: 'lines',
+        line: { color: '#8b5cf6', width: 1.5 },
+        fill: 'tozeroy', fillcolor: 'rgba(139,92,246,0.06)',
+      }], {
+        ...L,
+        xaxis: { ...L.xaxis, rangeslider: { visible: true, bgcolor: 'rgba(15,23,42,0.5)', bordercolor: 'rgba(51,65,85,0.2)' } },
+      }, C);
+    }
+
+    function plotIndicators() {
+      const L = getPlotlyTheme();
+
+      {% if role == 'admin' %}
+      /* Bollinger Bands */
+      Plotly.newPlot('bb_chart', [
+        {
+          x: OD.concat([...OD].reverse()),
+          y: D.bb_upper.concat([...D.bb_lower].reverse()),
+          fill: 'toself', fillcolor: 'rgba(167,139,250,0.07)',
+          line: { color: 'transparent' }, name: 'BB Band', showlegend: true, hoverinfo: 'skip',
+        },
+        { x: OD, y: D.bb_upper, name: 'BB Upper', mode: 'lines', line: { color: '#a78bfa', width: 1, dash: 'dot' } },
+        { x: OD, y: D.bb_lower, name: 'BB Lower', mode: 'lines', line: { color: '#a78bfa', width: 1, dash: 'dot' } },
+        { x: OD, y: D.actual.slice(0,OL), name: 'Close', mode: 'lines', line: { color: '#3b82f6', width: 1.5 } },
+      ], { ...L }, C);
+
+      /* RSI */
+      Plotly.newPlot('rsi_chart', [{
+        x: OD, y: D.rsi, name: 'RSI', mode: 'lines', line: { color: '#f59e0b', width: 1.5 },
+      }], {
+        ...L,
+        yaxis: { ...L.yaxis, tickprefix: '', range: [0, 100] },
+        shapes: [
+          { type:'line', y0:70, y1:70, x0:0, x1:1, xref:'paper', line:{ color:'rgba(239,68,68,0.35)', dash:'dot', width:1 } },
+          { type:'line', y0:30, y1:30, x0:0, x1:1, xref:'paper', line:{ color:'rgba(16,185,129,0.35)', dash:'dot', width:1 } },
+        ],
+      }, C);
+
+      /* MACD */
+      const macdHist = D.macd.map((v, i) => v - D.signal[i]);
+      Plotly.newPlot('macd_chart', [
+        {
+          x: OD, y: macdHist, name: 'Histogram', type: 'bar',
+          marker: { color: macdHist.map(v => v >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)') },
+        },
+        { x: OD, y: D.macd, name: 'MACD', mode: 'lines', line: { color: '#3b82f6', width: 1.5 } },
+        { x: OD, y: D.signal, name: 'Signal', mode: 'lines', line: { color: '#ef4444', width: 1.5 } },
+      ], {
+        ...L, yaxis: { ...L.yaxis, tickprefix: '' },
+      }, C);
+
+      /* ATR */
+      Plotly.newPlot('atr_chart', [{
+        x: OD, y: D.atr, name: 'ATR(14)', mode: 'lines',
+        line: { color: '#10b981', width: 1.5 },
+        fill: 'tozeroy', fillcolor: 'rgba(16,185,129,0.06)',
+      }], {
+        ...L, yaxis: { ...L.yaxis, tickprefix: '$' },
+      }, C);
+      {% endif %}
+    }
+
+    /* =============== REPLOT ALL =============== */
+    function replotAll() {
+      plotMainChart();
+      plotComparison();
+      plotFeatureImportance();
+      plotResiduals();
+      plotCorrelation();
+      plotOriginal();
+      plotIndicators();
+    }
+
+    /* Initial render */
+    replotAll();
+
+    /* =============== LIVE PRICE TICKER =============== */
+    async function fetchLivePrice() {
+      try {
+        const res = await fetch('/api/live_price?ticker={{ ticker }}');
+        const data = await res.json();
+        if (data.price) {
+          document.getElementById('livePrice').textContent = '$' + data.price.toFixed(2);
+          const changeEl = document.getElementById('liveChange');
+          if (data.change !== null) {
+            const sign = data.change >= 0 ? '+' : '';
+            changeEl.textContent = sign + data.change.toFixed(2) + ' (' + sign + data.change_pct.toFixed(2) + '%)';
+            changeEl.className = data.change >= 0 ? 'change-up' : 'change-down';
+          }
+        }
+      } catch(e) {}
+    }
+    fetchLivePrice();
+    setInterval(fetchLivePrice, 30000);
   </script>
 </body>
 </html>

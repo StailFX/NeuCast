@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
+from datetime import datetime
 from db import Base
 
 class Role(Base):
@@ -12,9 +13,27 @@ class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
+    email = Column(String, nullable=True)
     password = Column(String)
     role_id = Column(Integer, ForeignKey('roles.id'))
+    created_at = Column(DateTime, default=datetime.utcnow)
     role = relationship('Role', back_populates='users')
+    prediction_history = relationship('PredictionHistory', back_populates='user')
+
+
+class PredictionHistory(Base):
+    __tablename__ = 'prediction_history'
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    ticker = Column(String)
+    start_date = Column(String)
+    end_date = Column(String)
+    days_ahead = Column(Integer, default=0)
+    model_name = Column(String)
+    mape = Column(Float, nullable=True)
+    result_json = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship('User', back_populates='prediction_history')
 
 
 class Ticker(Base):
