@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.git
+venv
+catboost_info
+*.db
+best_model_backup.h5
+.dockerignore
+docker-compose.yml
+Dockerfile
+nginx/
+README.md

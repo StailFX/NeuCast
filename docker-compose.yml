@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  # ── PostgreSQL ──
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: neucast
+      POSTGRES_USER: neucast
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neucast"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis ──
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── FastAPI app ──
+  app:
+    build: .
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://neucast:${POSTGRES_PASSWORD:-changeme}@postgres:5432/neucast
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "1"
+    volumes:
+      - ./best_model.h5:/app/best_model.h5
+      - ./model_config.json:/app/model_config.json
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Celery worker ──
+  celery:
+    build: .
+    restart: always
+    command: celery -A celery_worker worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
+    environment:
+      DATABASE_URL: postgresql://neucast:${POSTGRES_PASSWORD:-changeme}@postgres:5432/neucast
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./best_model.h5:/app/best_model.h5
+      - ./model_config.json:/app/model_config.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Nginx (для нового сервера без системного nginx) ──
+  # На текущем VPS используется системный nginx, поэтому профиль standalone.
+  # Запуск с nginx: docker compose --profile standalone up -d
+  # Запуск без nginx (текущий VPS): docker compose up -d
+  nginx:
+    image: nginx:alpine
+    restart: always
+    profiles: ["standalone"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/neucast.conf:/etc/nginx/conf.d/default.conf
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  redisdata:
