@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuCast — Расчёт прогноза...</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      background: #0a0e17;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .waiting-container {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      max-width: 500px;
+      padding: 3rem 2rem;
+    }
+
+    .spinner {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 2rem;
+      position: relative;
+    }
+
+    .spinner-ring {
+      position: absolute;
+      inset: 0;
+      border: 3px solid transparent;
+      border-radius: 50%;
+      animation: spin 1.5s linear infinite;
+    }
+
+    .spinner-ring:nth-child(1) {
+      border-top-color: #10b981;
+      animation-duration: 1.5s;
+    }
+
+    .spinner-ring:nth-child(2) {
+      inset: 8px;
+      border-right-color: #3b82f6;
+      animation-duration: 2s;
+      animation-direction: reverse;
+    }
+
+    .spinner-ring:nth-child(3) {
+      inset: 16px;
+      border-bottom-color: #8b5cf6;
+      animation-duration: 1s;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .pulse-dot {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 12px;
+      height: 12px;
+      background: #10b981;
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      50% { opacity: 0.5; transform: translate(-50%, -50%) scale(1.5); }
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .status-text {
+      color: #94a3b8;
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+      min-height: 1.5em;
+      transition: opacity 0.3s;
+    }
+
+    .ticker-badge {
+      display: inline-block;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #10b981;
+      padding: 0.3rem 0.8rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-bottom: 1.5rem;
+    }
+
+    .progress-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      text-align: left;
+      margin: 2rem 0;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid rgba(51, 65, 85, 0.3);
+      font-size: 0.9rem;
+      color: #64748b;
+      transition: all 0.3s;
+    }
+
+    .step.active {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.05);
+      color: #e2e8f0;
+    }
+
+    .step.done {
+      border-color: rgba(16, 185, 129, 0.2);
+      color: #10b981;
+    }
+
+    .step-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+      border: 2px solid #334155;
+      transition: all 0.3s;
+    }
+
+    .step.active .step-icon {
+      border-color: #10b981;
+      background: rgba(16, 185, 129, 0.2);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .step.done .step-icon {
+      border-color: #10b981;
+      background: #10b981;
+      color: #0a0e17;
+    }
+
+    .error-msg {
+      color: #ef4444;
+      margin-top: 1rem;
+      padding: 1rem;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: 8px;
+      display: none;
+    }
+
+    .time-elapsed {
+      color: #475569;
+      font-size: 0.8rem;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="waiting-container">
+    <div class="spinner">
+      <div class="spinner-ring"></div>
+      <div class="spinner-ring"></div>
+      <div class="spinner-ring"></div>
+      <div class="pulse-dot"></div>
+    </div>
+
+    <h1>NeuCast</h1>
+    <div class="ticker-badge">{{ ticker }}</div>
+    <p class="status-text" id="statusText">Подключение...</p>
+
+    <div class="progress-steps">
+      <div class="step" id="step-queue">
+        <div class="step-icon">1</div>
+        <span>Задача в очереди</span>
+      </div>
+      <div class="step" id="step-fetch">
+        <div class="step-icon">2</div>
+        <span>Загрузка данных с Yahoo Finance</span>
+      </div>
+      <div class="step" id="step-predict">
+        <div class="step-icon">3</div>
+        <span>TCN + CatBoost + XGBoost + LightGBM</span>
+      </div>
+      <div class="step" id="step-done">
+        <div class="step-icon">4</div>
+        <span>Готово</span>
+      </div>
+    </div>
+
+    <div class="error-msg" id="errorMsg"></div>
+    <div class="time-elapsed" id="timeElapsed"></div>
+  </div>
+
+  <script>
+    const taskId = "{{ task_id }}";
+    const startTime = Date.now();
+    let pollInterval;
+
+    function setStep(activeStep) {
+      const steps = ['queue', 'fetch', 'predict', 'done'];
+      const idx = steps.indexOf(activeStep);
+      steps.forEach((s, i) => {
+        const el = document.getElementById('step-' + s);
+        el.classList.remove('active', 'done');
+        if (i < idx) el.classList.add('done');
+        else if (i === idx) el.classList.add('active');
+      });
+    }
+
+    function updateTime() {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const min = Math.floor(elapsed / 60);
+      const sec = elapsed % 60;
+      document.getElementById('timeElapsed').textContent =
+        min > 0 ? `${min} мин ${sec} сек` : `${sec} сек`;
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch(`/api/task/${taskId}`);
+        const data = await res.json();
+
+        document.getElementById('statusText').textContent = data.status || data.state;
+
+        if (data.state === 'PENDING') {
+          setStep('queue');
+        } else if (data.state === 'FETCHING') {
+          setStep('fetch');
+        } else if (data.state === 'PREDICTING') {
+          setStep('predict');
+        } else if (data.state === 'SUCCESS') {
+          setStep('done');
+          document.getElementById('statusText').textContent = 'Перенаправление...';
+          clearInterval(pollInterval);
+          window.location.href = `/predict/result/${taskId}`;
+          return;
+        } else if (data.state === 'FAILURE') {
+          clearInterval(pollInterval);
+          document.getElementById('statusText').textContent = 'Ошибка';
+          const errEl = document.getElementById('errorMsg');
+          errEl.textContent = data.error || 'Неизвестная ошибка';
+          errEl.style.display = 'block';
+          return;
+        }
+      } catch (e) {
+        // Network error, retry silently
+      }
+      updateTime();
+    }
+
+    setStep('queue');
+    pollStatus();
+    pollInterval = setInterval(pollStatus, 1500);
+    setInterval(updateTime, 1000);
+  </script>
+</body>
+</html>
