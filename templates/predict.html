@@ -405,6 +405,50 @@
       color: white;
     }
 
+    /* Sentiment news list */
+    .news-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.2s;
+    }
+    .news-item:last-child { border-bottom: none; }
+    .news-item:hover { background: var(--row-hover); border-radius: 8px; padding-left: 0.5rem; }
+
+    .news-sentiment-dot {
+      flex-shrink: 0;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      margin-top: 6px;
+    }
+    .news-sentiment-dot.positive { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.4); }
+    .news-sentiment-dot.negative { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+    .news-sentiment-dot.neutral  { background: #64748b; }
+
+    .news-content { flex: 1; min-width: 0; }
+    .news-title {
+      font-size: 0.85rem; font-weight: 500; color: var(--text);
+      text-decoration: none; line-height: 1.4;
+      display: block;
+    }
+    .news-title:hover { color: var(--blue); }
+    .news-meta {
+      font-size: 0.72rem; color: var(--text-muted);
+      margin-top: 0.25rem;
+      display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;
+    }
+    .news-score {
+      font-size: 0.7rem; font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .news-score.positive { background: rgba(16,185,129,0.15); color: #10b981; }
+    .news-score.negative { background: rgba(239,68,68,0.15); color: #ef4444; }
+    .news-score.neutral  { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
     @media (max-width: 900px) {
       .dashboard { padding: 1rem; }
       .charts-grid, .charts-grid-3 { grid-template-columns: 1fr; }
@@ -537,6 +581,36 @@
         </thead>
         <tbody id="modelMetricsBody"></tbody>
       </table>
+    </div>
+
+    <!-- ========== SENTIMENT ANALYSIS ========== -->
+    <div class="section-title"><div class="section-icon">&#9883;</div> Sentiment Analysis (FinBERT)</div>
+
+    <div class="charts-grid">
+      <div class="chart-card" style="padding:1.25rem;">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Сигнал рынка</span>
+          <span class="chart-card-badge" id="sentimentSignalBadge" style="display:none;">—</span>
+        </div>
+        <div id="sentimentGauge" style="height:260px;"></div>
+        <div id="sentimentStats" style="display:flex;justify-content:center;gap:2rem;margin-top:0.5rem;font-size:0.8rem;color:var(--text-dim);"></div>
+      </div>
+
+      <div class="chart-card" style="padding:1.25rem;">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Распределение тональности</span>
+          <span class="chart-card-badge badge-blue" id="sentimentCountBadge">0 статей</span>
+        </div>
+        <div id="sentimentPie" style="height:300px;"></div>
+      </div>
+    </div>
+
+    <div class="chart-card" style="padding:1.25rem;">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Последние новости</span>
+        <span class="chart-card-badge badge-purple">FinBERT NLP</span>
+      </div>
+      <div id="sentimentNewsList" style="max-height:500px;overflow-y:auto;"></div>
     </div>
 
     <!-- ========== FEATURE IMPORTANCE ========== -->
@@ -853,7 +927,7 @@
       if (!tbody || !D.model_metrics) return;
       let bestMape = Infinity, bestName = '';
       for (const [n, m] of Object.entries(D.model_metrics)) {
-        if (m.mape < bestMape) { bestMape = m.mape; bestName = n; }
+        if (m.mape < bestMape || (m.mape === bestMape && n === 'Ensemble')) { bestMape = m.mape; bestName = n; }
       }
       tbody.innerHTML = '';
       for (const [n, m] of Object.entries(D.model_metrics)) {
@@ -1046,10 +1120,135 @@
       {% endif %}
     }
 
+    /* =============== SENTIMENT ANALYSIS =============== */
+    function plotSentiment() {
+      const S = D.sentiment;
+      if (!S || S.signal === 'no_data') {
+        const el = document.getElementById('sentimentGauge');
+        if (el) el.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--text-muted);font-size:0.9rem;">Новости не найдены</div>';
+        return;
+      }
+
+      const isDark = html.getAttribute('data-theme') === 'dark';
+      const L = getPlotlyTheme();
+
+      // Signal badge
+      const badge = document.getElementById('sentimentSignalBadge');
+      if (badge) {
+        badge.style.display = 'inline-block';
+        const signalMap = { bullish: ['BULLISH', '#10b981', 'rgba(16,185,129,0.15)'], bearish: ['BEARISH', '#ef4444', 'rgba(239,68,68,0.15)'], neutral: ['NEUTRAL', '#64748b', 'rgba(100,116,139,0.15)'] };
+        const [text, color, bg] = signalMap[S.signal] || signalMap.neutral;
+        badge.textContent = text;
+        badge.style.color = color;
+        badge.style.background = bg;
+        badge.style.border = `1px solid ${color}33`;
+      }
+
+      // Gauge chart
+      const gaugeVal = (S.avg_score + 1) / 2 * 100; // map -1..+1 → 0..100
+      Plotly.newPlot('sentimentGauge', [{
+        type: 'indicator',
+        mode: 'gauge+number+delta',
+        value: S.avg_score,
+        number: { suffix: '', font: { size: 36, color: isDark ? '#e2e8f0' : '#1e293b' }, valueformat: '+.3f' },
+        gauge: {
+          axis: { range: [-1, 1], tickwidth: 1, tickcolor: isDark ? '#334155' : '#cbd5e1', dtick: 0.25 },
+          bar: { color: S.signal === 'bullish' ? '#10b981' : S.signal === 'bearish' ? '#ef4444' : '#64748b', thickness: 0.3 },
+          bgcolor: isDark ? '#0f172a' : '#f1f5f9',
+          borderwidth: 1,
+          bordercolor: isDark ? '#334155' : '#cbd5e1',
+          steps: [
+            { range: [-1, -0.15], color: 'rgba(239,68,68,0.12)' },
+            { range: [-0.15, 0.15], color: 'rgba(100,116,139,0.08)' },
+            { range: [0.15, 1], color: 'rgba(16,185,129,0.12)' },
+          ],
+          threshold: {
+            line: { color: '#f59e0b', width: 3 },
+            thickness: 0.8,
+            value: S.avg_score,
+          },
+        },
+      }], {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        font: { color: isDark ? '#94a3b8' : '#64748b', family: 'Inter' },
+        margin: { t: 30, b: 0, l: 40, r: 40 },
+        height: 260,
+        annotations: [
+          { x: 0.13, y: 0, text: 'Bearish', showarrow: false, font: { size: 11, color: '#ef4444' } },
+          { x: 0.5, y: 0, text: 'Neutral', showarrow: false, font: { size: 11, color: '#64748b' } },
+          { x: 0.87, y: 0, text: 'Bullish', showarrow: false, font: { size: 11, color: '#10b981' } },
+        ],
+      }, { displayModeBar: false, responsive: true });
+
+      // Stats under gauge
+      const stats = document.getElementById('sentimentStats');
+      if (stats) {
+        stats.innerHTML = `
+          <span style="color:#10b981;">&#9650; Positive: ${S.positive_pct}%</span>
+          <span style="color:#64748b;">&#9644; Neutral: ${S.neutral_pct}%</span>
+          <span style="color:#ef4444;">&#9660; Negative: ${S.negative_pct}%</span>
+        `;
+      }
+
+      // Count badge
+      const countBadge = document.getElementById('sentimentCountBadge');
+      if (countBadge) {
+        const word = S.total_articles === 1 ? 'статья' : S.total_articles < 5 ? 'статьи' : 'статей';
+        countBadge.textContent = `${S.total_articles} ${word}`;
+      }
+
+      // Pie chart
+      Plotly.newPlot('sentimentPie', [{
+        values: [S.positive_pct, S.neutral_pct, S.negative_pct],
+        labels: ['Positive', 'Neutral', 'Negative'],
+        type: 'pie',
+        hole: 0.55,
+        marker: {
+          colors: ['#10b981', isDark ? '#334155' : '#94a3b8', '#ef4444'],
+          line: { color: isDark ? '#0f172a' : '#ffffff', width: 2 },
+        },
+        textinfo: 'label+percent',
+        textfont: { size: 12, color: isDark ? '#e2e8f0' : '#1e293b' },
+        hovertemplate: '%{label}: %{percent}<extra></extra>',
+        pull: [0.03, 0, 0.03],
+      }], {
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        font: { family: 'Inter', color: isDark ? '#94a3b8' : '#64748b' },
+        margin: { t: 10, b: 10, l: 10, r: 10 },
+        showlegend: false,
+        height: 300,
+      }, { displayModeBar: false, responsive: true });
+
+      // News list
+      const newsList = document.getElementById('sentimentNewsList');
+      if (newsList && S.news && S.news.length) {
+        newsList.innerHTML = S.news.map(n => {
+          const sentClass = n.sentiment;
+          const scoreText = n.sentiment === 'positive' ? `+${n.score.toFixed(2)}` : n.sentiment === 'negative' ? `-${n.score.toFixed(2)}` : `${n.score.toFixed(2)}`;
+          const sentLabel = n.sentiment === 'positive' ? 'Positive' : n.sentiment === 'negative' ? 'Negative' : 'Neutral';
+          return `
+            <div class="news-item">
+              <div class="news-sentiment-dot ${sentClass}"></div>
+              <div class="news-content">
+                <a href="${n.url}" target="_blank" rel="noopener" class="news-title">${n.title}</a>
+                <div class="news-meta">
+                  <span>${n.source}</span>
+                  <span>${n.published}</span>
+                </div>
+              </div>
+              <div class="news-score ${sentClass}">${sentLabel} ${scoreText}</div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
     /* =============== REPLOT ALL =============== */
     function replotAll() {
       plotMainChart();
       plotComparison();
+      plotSentiment();
       plotFeatureImportance();
       plotResiduals();
       plotCorrelation();

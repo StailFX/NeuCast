@@ -21,6 +21,7 @@ from app.models import Role, User, Ticker, MarketData, Indicator, ModelInfo, Pre
 from app.prediction import (
     run_prediction, fetch_and_preprocess, SEQ_LEN, MODEL_COLS,
 )
+from app.sentiment import analyze_sentiment
 
 # ── Paths ──
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -251,6 +252,34 @@ async def predict(
         finally:
             _prediction_queue_count -= 1
 
+    # Sentiment analysis (run in executor, non-blocking)
+    loop = asyncio.get_event_loop()
+    try:
+        sentiment = await loop.run_in_executor(None, analyze_sentiment, ticker)
+        sentiment_data = {
+            "avg_score": sentiment.avg_score,
+            "positive_pct": sentiment.positive_pct,
+            "negative_pct": sentiment.negative_pct,
+            "neutral_pct": sentiment.neutral_pct,
+            "total_articles": sentiment.total_articles,
+            "signal": sentiment.signal,
+            "signal_strength": sentiment.signal_strength,
+            "news": [
+                {
+                    "title": n.title,
+                    "source": n.source,
+                    "published": n.published,
+                    "url": n.url,
+                    "sentiment": n.sentiment,
+                    "score": n.score,
+                    "sentiment_value": n.sentiment_value,
+                }
+                for n in sentiment.news
+            ],
+        }
+    except Exception:
+        sentiment_data = None
+
     # Save to DB
     db_ticker = db.query(Ticker).filter_by(symbol=ticker).first()
     if not db_ticker:
@@ -318,6 +347,7 @@ async def predict(
         "residuals": result["residuals"],
         "corr_data": result["corr_data"],
         "corr_labels": result["corr_labels"],
+        "sentiment": sentiment_data,
     }
 
     # Save full result to prediction history
@@ -453,6 +483,30 @@ async def predict_result(
     end_date = result.get("end_date", "")
     days_ahead = result.get("days_ahead", 0)
 
+    # Sentiment analysis for celery result
+    try:
+        sentiment = analyze_sentiment(ticker)
+        sentiment_data = {
+            "avg_score": sentiment.avg_score,
+            "positive_pct": sentiment.positive_pct,
+            "negative_pct": sentiment.negative_pct,
+            "neutral_pct": sentiment.neutral_pct,
+            "total_articles": sentiment.total_articles,
+            "signal": sentiment.signal,
+            "signal_strength": sentiment.signal_strength,
+            "news": [
+                {
+                    "title": n.title, "source": n.source,
+                    "published": n.published, "url": n.url,
+                    "sentiment": n.sentiment, "score": n.score,
+                    "sentiment_value": n.sentiment_value,
+                }
+                for n in sentiment.news
+            ],
+        }
+    except Exception:
+        sentiment_data = None
+
     # Save to DB
     db_ticker = db.query(Ticker).filter_by(symbol=ticker).first()
     if not db_ticker:
@@ -504,6 +558,7 @@ async def predict_result(
         "residuals": result["residuals"],
         "corr_data": result["corr_data"],
         "corr_labels": result["corr_labels"],
+        "sentiment": sentiment_data,
     }
 
     saved_context = {
