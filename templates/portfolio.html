@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuCast — Портфель Марковица</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0e17; --bg-card: rgba(15,23,42,0.8); --border: rgba(51,65,85,0.5);
+      --text: #e2e8f0; --text-dim: #94a3b8; --text-muted: #64748b;
+      --green: #10b981; --blue: #3b82f6; --amber: #f59e0b; --red: #ef4444; --purple: #a78bfa;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh;
+    }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: linear-gradient(rgba(16,185,129,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(16,185,129,0.02) 1px, transparent 1px);
+      background-size: 60px 60px; z-index: 0; pointer-events: none;
+    }
+    .navbar {
+      position: sticky; top: 0; z-index: 100;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.75rem 2rem; background: rgba(15,23,42,0.9);
+      border-bottom: 1px solid var(--border); backdrop-filter: blur(20px);
+    }
+    .navbar-brand { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; }
+    .navbar-logo { width: 32px; height: 32px; background: linear-gradient(135deg, #10b981, #3b82f6); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .navbar-logo svg { width: 16px; height: 16px; fill: white; }
+    .navbar-title { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+    .btn-nav { padding: 0.4rem 0.9rem; font-size: 0.8rem; font-weight: 500; border-radius: 8px; text-decoration: none; border: 1px solid var(--border); color: var(--text-dim); background: rgba(51,65,85,0.4); cursor: pointer; font-family: 'Inter'; }
+    .btn-nav:hover { color: var(--text); border-color: rgba(59,130,246,0.5); }
+
+    .page { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .page-sub { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 2rem; }
+
+    /* Form */
+    .form-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1.5rem; margin-bottom: 2rem; backdrop-filter: blur(20px);
+    }
+    .form-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; }
+    .form-group { flex: 1; min-width: 200px; }
+    .form-group label { display: block; font-size: 0.78rem; color: var(--text-dim); margin-bottom: 0.4rem; font-weight: 500; }
+    .form-group input {
+      width: 100%; padding: 0.6rem 0.8rem; background: rgba(15,23,42,0.6);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.85rem; font-family: 'Inter';
+    }
+    .form-group input:focus { outline: none; border-color: var(--green); }
+    .form-group .hint { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; }
+    .btn-submit {
+      padding: 0.6rem 1.5rem; background: linear-gradient(135deg, #10b981, #3b82f6);
+      border: none; border-radius: 8px; color: white; font-weight: 600;
+      font-size: 0.85rem; cursor: pointer; font-family: 'Inter'; white-space: nowrap;
+    }
+    .btn-submit:hover { opacity: 0.9; }
+    .error-msg { color: #ef4444; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 0.8rem; margin-bottom: 1rem; font-size: 0.85rem; }
+
+    /* Results */
+    .metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
+    .metric-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
+    .metric-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem; }
+    .metric-value { font-size: 1.3rem; font-weight: 700; }
+    .green { color: #10b981; } .blue { color: #3b82f6; } .amber { color: #f59e0b; } .red { color: #ef4444; }
+
+    .charts-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+    .chart-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; overflow: hidden; }
+    .chart-card.full { grid-column: 1 / -1; }
+    .chart-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+    .chart-card-title { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); }
+    .chart-badge { font-size: 0.7rem; padding: 0.2rem 0.6rem; border-radius: 6px; font-weight: 600; }
+
+    .alloc-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .alloc-table th { text-align: left; padding: 0.5rem; color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
+    .alloc-table td { padding: 0.5rem; border-bottom: 1px solid rgba(51,65,85,0.2); }
+    .alloc-table tr:hover { background: rgba(51,65,85,0.12); }
+    .weight-bar { height: 6px; border-radius: 3px; background: linear-gradient(90deg, #10b981, #3b82f6); margin-top: 0.3rem; }
+
+    .section-title { font-size: 1.1rem; font-weight: 700; margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem; }
+    .section-icon { width: 24px; height: 24px; background: linear-gradient(135deg, var(--green), var(--blue)); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; color: white; }
+
+    @media (max-width: 900px) {
+      .page { padding: 1rem; }
+      .charts-grid { grid-template-columns: 1fr; }
+      .form-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <a href="/" class="navbar-brand">
+      <div class="navbar-logo"><svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg></div>
+      <span class="navbar-title">NeuCast</span>
+    </a>
+    <div style="display:flex;gap:0.5rem;">
+      <a href="/dashboard" class="btn-nav">Dashboard</a>
+      <a href="/logout" class="btn-nav">Выход</a>
+    </div>
+  </nav>
+
+  <div class="page">
+    <h1 class="page-title">Портфель Марковица</h1>
+    <p class="page-sub">Оптимизация распределения активов для максимального Sharpe Ratio</p>
+
+    {% if error %}
+    <div class="error-msg">{{ error }}</div>
+    {% endif %}
+
+    <div class="form-card">
+      <form method="POST" action="/portfolio">
+        <div class="form-row">
+          <div class="form-group" style="flex:3;">
+            <label>Тикеры (через запятую)</label>
+            <input type="text" name="tickers" value="{{ tickers_str or 'AAPL, MSFT, GOOG, AMZN, TSLA' }}" placeholder="AAPL, MSFT, GOOG" required>
+            <div class="hint">От 2 до 15 тикеров. Пример: AAPL, MSFT, GOOG, AMZN, TSLA</div>
+          </div>
+          <div class="form-group">
+            <label>Бюджет ($)</label>
+            <input type="number" name="budget" value="{{ budget or 10000 }}" min="100" step="100">
+          </div>
+          <div class="form-group">
+            <label>Период</label>
+            <input type="text" name="period" value="{{ period or '1y' }}" placeholder="1y">
+            <div class="hint">1y, 2y, 6mo, ytd</div>
+          </div>
+          <button type="submit" class="btn-submit">Оптимизировать</button>
+        </div>
+      </form>
+    </div>
+
+    {% if result %}
+    <!-- Metrics -->
+    <div class="section-title"><div class="section-icon">&#9733;</div> Оптимальный портфель (Max Sharpe)</div>
+    <div class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">Годовая доходность</div>
+        <div class="metric-value green">{{ result.opt_return }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Волатильность</div>
+        <div class="metric-value amber">{{ result.opt_volatility }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Sharpe Ratio</div>
+        <div class="metric-value blue">{{ result.opt_sharpe }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Min-Var Доходность</div>
+        <div class="metric-value" style="color:var(--text-dim);">{{ result.min_return }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Min-Var Волатильность</div>
+        <div class="metric-value" style="color:var(--text-dim);">{{ result.min_volatility }}%</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Min-Var Sharpe</div>
+        <div class="metric-value" style="color:var(--text-dim);">{{ result.min_sharpe }}</div>
+      </div>
+    </div>
+
+    <!-- Allocation table + Pie chart -->
+    <div class="charts-grid">
+      <div class="chart-card" style="padding:1.25rem;">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Распределение активов</span>
+          <span class="chart-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">${{ "%.0f"|format(result.budget) }}</span>
+        </div>
+        <table class="alloc-table">
+          <thead><tr><th>Тикер</th><th>Компания</th><th>Доля</th><th>Сумма</th><th></th></tr></thead>
+          <tbody>
+            {% for a in result.opt_allocations %}
+            <tr>
+              <td style="font-weight:600;color:var(--text);">{{ a.ticker }}</td>
+              <td style="color:var(--text-dim);font-size:0.78rem;">{{ a.name[:30] }}</td>
+              <td style="font-weight:600;color:var(--green);">{{ a.weight }}%</td>
+              <td style="color:var(--text);">${{ "%.0f"|format(a.amount) }}</td>
+              <td style="width:100px;"><div class="weight-bar" style="width:{{ a.weight }}%;"></div></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Доли портфеля</span>
+        </div>
+        <div id="pie_chart" style="height:350px;"></div>
+      </div>
+    </div>
+
+    <!-- Efficient frontier + Equity curve -->
+    <div class="section-title"><div class="section-icon">&#8853;</div> Efficient Frontier</div>
+    <div class="chart-card full" style="margin-bottom:1rem;">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Risk vs Return (3000 случайных портфелей)</span>
+        <div style="display:flex;gap:0.5rem;">
+          <span class="chart-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">Max Sharpe</span>
+          <span class="chart-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6;">Min Variance</span>
+        </div>
+      </div>
+      <div id="frontier_chart" style="height:500px;"></div>
+    </div>
+
+    <div class="section-title"><div class="section-icon">&#9733;</div> Историческая доходность</div>
+    <div class="chart-card full" style="margin-bottom:1rem;">
+      <div class="chart-card-header">
+        <span class="chart-card-title">Optimal vs Equal Weight Portfolio</span>
+        <div style="display:flex;gap:0.5rem;">
+          <span class="chart-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">Optimal</span>
+          <span class="chart-badge" style="background:rgba(167,139,250,0.15);color:#a78bfa;">Equal Weight</span>
+        </div>
+      </div>
+      <div id="equity_chart" style="height:400px;"></div>
+    </div>
+
+    <!-- Correlation matrix -->
+    <div class="section-title"><div class="section-icon">&#9632;</div> Корреляция активов</div>
+    <div class="chart-card full">
+      <div id="corr_chart" style="height:400px;"></div>
+    </div>
+
+    <script>
+      const R = {{ result_json | safe }};
+      const BG = 'rgba(0,0,0,0)';
+      const layout = {
+        paper_bgcolor: BG, plot_bgcolor: BG,
+        font: { family: 'Inter', color: '#94a3b8', size: 11 },
+        xaxis: { gridcolor: '#1e293b', zerolinecolor: '#334155' },
+        yaxis: { gridcolor: '#1e293b', zerolinecolor: '#334155' },
+        margin: { l: 60, r: 30, t: 30, b: 50 },
+      };
+      const C = { displayModeBar: false, responsive: true };
+
+      // Pie chart
+      Plotly.newPlot('pie_chart', [{
+        values: R.opt_allocations.map(a => a.weight),
+        labels: R.opt_allocations.map(a => a.ticker),
+        type: 'pie', hole: 0.5,
+        marker: {
+          colors: ['#10b981','#3b82f6','#f59e0b','#ef4444','#a78bfa','#06b6d4','#f97316','#ec4899','#84cc16','#14b8a6','#6366f1','#e11d48','#eab308','#8b5cf6','#22d3ee'],
+          line: { color: '#0a0e17', width: 2 },
+        },
+        textinfo: 'label+percent', textfont: { size: 11, color: '#e2e8f0' },
+      }], { ...layout, showlegend: false, margin: { l: 10, r: 10, t: 10, b: 10 } }, C);
+
+      // Efficient frontier
+      Plotly.newPlot('frontier_chart', [
+        {
+          x: R.rand_volatilities, y: R.rand_returns, mode: 'markers', name: 'Random',
+          marker: { size: 3, color: R.rand_sharpes, colorscale: [[0,'#334155'],[0.5,'#3b82f6'],[1,'#10b981']], opacity: 0.4, colorbar: { title: 'Sharpe', thickness: 12, len: 0.5 } },
+          hovertemplate: 'Vol: %{x:.1f}%<br>Ret: %{y:.1f}%<extra></extra>',
+        },
+        {
+          x: R.frontier_volatilities, y: R.frontier_returns, mode: 'lines', name: 'Efficient Frontier',
+          line: { color: '#f59e0b', width: 3 },
+        },
+        {
+          x: [R.opt_volatility], y: [R.opt_return], mode: 'markers', name: 'Max Sharpe',
+          marker: { size: 16, color: '#10b981', symbol: 'star', line: { color: '#fff', width: 2 } },
+        },
+        {
+          x: [R.min_volatility], y: [R.min_return], mode: 'markers', name: 'Min Variance',
+          marker: { size: 14, color: '#3b82f6', symbol: 'diamond', line: { color: '#fff', width: 2 } },
+        },
+        ...R.tickers.map((t, i) => ({
+          x: [R.asset_volatility[i]], y: [R.asset_returns[i]], mode: 'markers+text', name: t,
+          marker: { size: 10, color: '#ef4444', opacity: 0.8 },
+          text: [t], textposition: 'top center', textfont: { size: 10, color: '#e2e8f0' },
+          showlegend: false,
+        })),
+      ], {
+        ...layout,
+        xaxis: { ...layout.xaxis, title: 'Волатильность (%)' },
+        yaxis: { ...layout.yaxis, title: 'Годовая доходность (%)' },
+        legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(0,0,0,0)', font: { size: 10 } },
+      }, C);
+
+      // Equity curve
+      Plotly.newPlot('equity_chart', [
+        { x: R.hist_dates, y: R.hist_opt_equity, name: 'Optimal', mode: 'lines', line: { color: '#10b981', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(16,185,129,0.05)' },
+        { x: R.hist_dates, y: R.hist_equal_equity, name: 'Equal Weight', mode: 'lines', line: { color: '#a78bfa', width: 2, dash: 'dot' } },
+      ], {
+        ...layout,
+        yaxis: { ...layout.yaxis, tickprefix: '$' },
+        legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(0,0,0,0)' },
+      }, C);
+
+      // Correlation heatmap
+      Plotly.newPlot('corr_chart', [{
+        z: R.correlation, x: R.tickers, y: R.tickers,
+        type: 'heatmap',
+        colorscale: [[0,'#ef4444'],[0.5,'#1e293b'],[1,'#10b981']],
+        zmin: -1, zmax: 1,
+        text: R.correlation.map(row => row.map(v => v.toFixed(2))),
+        texttemplate: '%{text}', textfont: { size: 11 },
+        colorbar: { title: 'r', thickness: 12 },
+      }], {
+        ...layout,
+        xaxis: { ...layout.xaxis, showgrid: false },
+        yaxis: { ...layout.yaxis, autorange: 'reversed', showgrid: false },
+        margin: { l: 60, r: 20, t: 20, b: 60 },
+      }, { displayModeBar: false, responsive: true });
+    </script>
+    {% endif %}
+  </div>
+</body>
+</html>

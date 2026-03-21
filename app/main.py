@@ -22,6 +22,7 @@ from app.prediction import (
     run_prediction, fetch_and_preprocess, SEQ_LEN, MODEL_COLS,
 )
 from app.sentiment import analyze_sentiment
+from app.portfolio import optimize_portfolio
 from app import telegram_bot
 
 # ── Paths ──
@@ -1004,6 +1005,57 @@ async def live_price(ticker: str = "GC=F"):
         return {"price": round(price, 2) if price else None, "change": change, "change_pct": change_pct, "ticker": ticker}
     except Exception:
         return {"price": None, "change": None, "change_pct": None, "ticker": ticker}
+
+
+# ── Portfolio optimization ──
+
+@app.get("/portfolio", response_class=HTMLResponse)
+async def portfolio_form(request: Request, role: str = Depends(get_current_role)):
+    if not role:
+        return RedirectResponse("/login")
+    return templates.TemplateResponse("portfolio.html", {"request": request})
+
+
+@app.post("/portfolio", response_class=HTMLResponse)
+async def portfolio_optimize(
+    request: Request,
+    tickers: str = Form(...),
+    budget: float = Form(10000),
+    period: str = Form("1y"),
+    role: str = Depends(get_current_role),
+):
+    if not role:
+        return RedirectResponse("/login")
+
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, optimize_portfolio, ticker_list, budget, period
+        )
+    except ValueError as e:
+        return templates.TemplateResponse("portfolio.html", {
+            "request": request, "error": str(e),
+            "tickers_str": tickers, "budget": budget, "period": period,
+        })
+    except Exception as e:
+        return templates.TemplateResponse("portfolio.html", {
+            "request": request, "error": f"Ошибка: {e}",
+            "tickers_str": tickers, "budget": budget, "period": period,
+        })
+
+    import dataclasses
+    result_dict = dataclasses.asdict(result)
+
+    return templates.TemplateResponse("portfolio.html", {
+        "request": request,
+        "result": result,
+        "result_json": json.dumps(result_dict),
+        "tickers_str": tickers,
+        "budget": budget,
+        "period": period,
+    })
 
 
 # ── Telegram integration ──
