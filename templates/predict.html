@@ -632,6 +632,20 @@
       </div>
     </div>
 
+    <!-- ========== SHAP EXPLAINABILITY ========== -->
+    <div class="section-title"><div class="section-icon">&#9881;</div> SHAP Explainability</div>
+
+    <div id="shap_section">
+      <!-- Waterfall charts (local explanation for last prediction) -->
+      <div class="charts-grid" id="shap_waterfall_grid"></div>
+
+      <!-- Global mean |SHAP| bar charts -->
+      <div class="charts-grid" id="shap_global_grid" style="margin-top:1rem;"></div>
+
+      <!-- Beeswarm plots -->
+      <div class="charts-grid" id="shap_beeswarm_grid" style="margin-top:1rem;"></div>
+    </div>
+
     <!-- ========== RESIDUAL ANALYSIS ========== -->
     <div class="section-title"><div class="section-icon">&#916;</div> Анализ остатков (Residuals)</div>
     <div class="charts-grid">
@@ -961,6 +975,163 @@
       }
     }
 
+    /* =============== SHAP EXPLAINABILITY =============== */
+    function plotShap() {
+      const S = D.shap_data;
+      if (!S || !Object.keys(S).length) {
+        const sec = document.getElementById('shap_section');
+        if (sec) sec.style.display = 'none';
+        return;
+      }
+
+      const isDark = html.getAttribute('data-theme') === 'dark';
+      const L = getPlotlyTheme();
+      const modelColors = { CatBoost: '#f59e0b', XGBoost: '#ef4444', LightGBM: '#8b5cf6' };
+
+      const wfGrid = document.getElementById('shap_waterfall_grid');
+      const glGrid = document.getElementById('shap_global_grid');
+      const bsGrid = document.getElementById('shap_beeswarm_grid');
+
+      for (const [model, sd] of Object.entries(S)) {
+        const color = modelColors[model] || '#3b82f6';
+
+        // --- Waterfall chart (local explanation) ---
+        const wfId = `shap_wf_${model}`;
+        const wfCard = document.createElement('div');
+        wfCard.className = 'chart-card';
+        wfCard.innerHTML = `
+          <div class="chart-card-header">
+            <span class="chart-card-title">SHAP Waterfall — ${model}</span>
+            <span class="chart-card-badge" style="background:${color}22;color:${color};border:1px solid ${color}44;">Last Prediction</span>
+          </div>
+          <div id="${wfId}" style="height:420px;"></div>
+        `;
+        wfGrid.appendChild(wfCard);
+
+        // Build waterfall: sort by absolute value, show as horizontal bar from base
+        const wfNames = [...sd.waterfall_names].reverse();
+        const wfVals = [...sd.waterfall_values].reverse();
+        const wfColors = wfVals.map(v => v >= 0 ? 'rgba(16,185,129,0.7)' : 'rgba(239,68,68,0.7)');
+
+        Plotly.newPlot(wfId, [{
+          y: wfNames,
+          x: wfVals,
+          type: 'bar',
+          orientation: 'h',
+          marker: { color: wfColors, line: { color: wfColors.map(c => c.replace('0.7', '1')), width: 1 } },
+          text: wfVals.map(v => (v >= 0 ? '+' : '') + v.toFixed(4)),
+          textposition: 'outside',
+          textfont: { size: 9, color: isDark ? '#94a3b8' : '#64748b' },
+          hovertemplate: '%{y}: %{x:.5f}<extra></extra>',
+        }], {
+          ...L,
+          yaxis: { ...L.yaxis, tickprefix: '', tickfont: { size: 9 } },
+          xaxis: { ...L.xaxis, title: 'SHAP value (impact on log-return)', zeroline: true, zerolinecolor: isDark ? '#475569' : '#cbd5e1', zerolinewidth: 2 },
+          margin: { l: 140, r: 80, t: 10, b: 50 },
+          annotations: [
+            { x: 0, y: 1.05, xref: 'paper', yref: 'paper', text: `E[f(x)] = ${sd.base_value.toFixed(5)}`, showarrow: false, font: { size: 10, color: isDark ? '#64748b' : '#94a3b8' } },
+            { x: 1, y: 1.05, xref: 'paper', yref: 'paper', text: `f(x) = ${sd.output_value.toFixed(5)}`, showarrow: false, font: { size: 10, color: color } },
+          ],
+        }, C);
+
+        // --- Global mean |SHAP| bar chart ---
+        const glId = `shap_gl_${model}`;
+        const glCard = document.createElement('div');
+        glCard.className = 'chart-card';
+        glCard.innerHTML = `
+          <div class="chart-card-header">
+            <span class="chart-card-title">Mean |SHAP| — ${model}</span>
+            <span class="chart-card-badge" style="background:${color}22;color:${color};border:1px solid ${color}44;">Global</span>
+          </div>
+          <div id="${glId}" style="height:420px;"></div>
+        `;
+        glGrid.appendChild(glCard);
+
+        const glNames = [...sd.global_names].reverse();
+        const glVals = [...sd.global_values].reverse();
+
+        Plotly.newPlot(glId, [{
+          y: glNames,
+          x: glVals,
+          type: 'bar',
+          orientation: 'h',
+          marker: { color: color, opacity: 0.75 },
+          text: glVals.map(v => v.toFixed(5)),
+          textposition: 'outside',
+          textfont: { size: 9, color: isDark ? '#94a3b8' : '#64748b' },
+          hovertemplate: '%{y}: %{x:.6f}<extra></extra>',
+        }], {
+          ...L,
+          yaxis: { ...L.yaxis, tickprefix: '', tickfont: { size: 9 } },
+          xaxis: { ...L.xaxis, title: 'mean |SHAP value|' },
+          margin: { l: 140, r: 70, t: 10, b: 50 },
+        }, C);
+
+        // --- Beeswarm plot (SHAP value vs feature value scatter) ---
+        if (sd.beeswarm_names && sd.beeswarm_shap) {
+          const bsId = `shap_bs_${model}`;
+          const bsCard = document.createElement('div');
+          bsCard.className = 'chart-card';
+          bsCard.style.gridColumn = '1 / -1';
+          bsCard.innerHTML = `
+            <div class="chart-card-header">
+              <span class="chart-card-title">SHAP Beeswarm — ${model}</span>
+              <span class="chart-card-badge" style="background:${color}22;color:${color};border:1px solid ${color}44;">Feature Impact</span>
+            </div>
+            <div id="${bsId}" style="height:450px;"></div>
+          `;
+          bsGrid.appendChild(bsCard);
+
+          const traces = [];
+          const nFeats = sd.beeswarm_names.length;
+
+          for (let fi = 0; fi < nFeats; fi++) {
+            const shapVals = sd.beeswarm_shap[fi];
+            const featVals = sd.beeswarm_feat[fi];
+            // Normalize feature values to 0-1 for color scale
+            const fMin = Math.min(...featVals);
+            const fMax = Math.max(...featVals);
+            const fRange = fMax - fMin || 1;
+            const normalized = featVals.map(v => (v - fMin) / fRange);
+
+            // Add jitter on y-axis
+            const yVals = shapVals.map(() => nFeats - 1 - fi + (Math.random() - 0.5) * 0.35);
+
+            traces.push({
+              x: shapVals,
+              y: yVals,
+              mode: 'markers',
+              type: 'scatter',
+              marker: {
+                size: 4,
+                color: normalized,
+                colorscale: [[0, '#3b82f6'], [0.5, '#94a3b8'], [1, '#ef4444']],
+                opacity: 0.6,
+                showscale: fi === 0,
+                colorbar: fi === 0 ? { title: 'Feature\nvalue', titleside: 'right', thickness: 12, len: 0.5 } : undefined,
+              },
+              hovertemplate: `${sd.beeswarm_names[fi]}<br>SHAP: %{x:.5f}<br>Value: ${sd.beeswarm_names[fi]}<extra></extra>`,
+              showlegend: false,
+            });
+          }
+
+          Plotly.newPlot(bsId, traces, {
+            ...L,
+            yaxis: {
+              ...L.yaxis,
+              tickprefix: '',
+              tickmode: 'array',
+              tickvals: Array.from({length: nFeats}, (_, i) => nFeats - 1 - i),
+              ticktext: sd.beeswarm_names,
+              tickfont: { size: 9 },
+            },
+            xaxis: { ...L.xaxis, title: 'SHAP value', zeroline: true, zerolinecolor: isDark ? '#475569' : '#cbd5e1', zerolinewidth: 2 },
+            margin: { l: 140, r: 80, t: 10, b: 50 },
+          }, C);
+        }
+      }
+    }
+
     /* =============== RESIDUAL ANALYSIS =============== */
     function plotResiduals() {
       const el1 = document.getElementById('residual_hist');
@@ -1250,6 +1421,7 @@
       plotComparison();
       plotSentiment();
       plotFeatureImportance();
+      plotShap();
       plotResiduals();
       plotCorrelation();
       plotOriginal();

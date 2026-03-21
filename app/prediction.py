@@ -357,6 +357,59 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         except Exception:
             pass
 
+    # SHAP explanations (TreeExplainer — fast for boosting models)
+    shap_data = {}
+    try:
+        import shap
+
+        # Use last test sample for waterfall, test set for beeswarm summary
+        X_bst_test = X_bst_all[train_seq_end:]
+        sample_idx = -1  # last prediction
+
+        boosting_models = {}
+        if cat_pred is not None:
+            boosting_models["CatBoost"] = cat
+        if xgb_pred is not None:
+            boosting_models["XGBoost"] = xgb_m
+        if lgb_pred is not None:
+            boosting_models["LightGBM"] = lgb_m
+
+        for model_label, model_obj in boosting_models.items():
+            try:
+                explainer = shap.TreeExplainer(model_obj)
+
+                # Global: mean |SHAP| across test set (top 15 features)
+                sv_test = explainer.shap_values(X_bst_test)
+                mean_abs = np.abs(sv_test).mean(axis=0)
+                top_idx = np.argsort(mean_abs)[::-1][:15]
+
+                # Local: SHAP for last prediction (waterfall)
+                sv_single = sv_test[sample_idx]
+                base_value = float(explainer.expected_value) if np.isscalar(explainer.expected_value) else float(explainer.expected_value[0])
+
+                shap_data[model_label] = {
+                    # Global bar chart (mean |SHAP|)
+                    "global_names": [feat_names[i] for i in top_idx],
+                    "global_values": [round(float(mean_abs[i]), 6) for i in top_idx],
+                    # Waterfall for last prediction
+                    "waterfall_names": [feat_names[i] for i in top_idx],
+                    "waterfall_values": [round(float(sv_single[i]), 6) for i in top_idx],
+                    "base_value": round(base_value, 6),
+                    "output_value": round(float(sv_single.sum() + base_value), 6),
+                    # Beeswarm data (top 10 features, sampled for performance)
+                    "beeswarm_names": [feat_names[i] for i in top_idx[:10]],
+                    "beeswarm_shap": [[round(float(sv_test[j, i]), 6)
+                                       for j in range(0, len(sv_test), max(1, len(sv_test) // 100))]
+                                      for i in top_idx[:10]],
+                    "beeswarm_feat": [[round(float(X_bst_test[j, i]), 6)
+                                       for j in range(0, len(X_bst_test), max(1, len(X_bst_test) // 100))]
+                                      for i in top_idx[:10]],
+                }
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
     y_pred_test = pred_prices[test_start:]
     residuals = (y_act_test - y_pred_test).tolist()
 
@@ -434,6 +487,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         "model_comparison": model_comparison,
         "model_metrics": model_metrics,
         "feature_importance": feature_importance,
+        "shap_data": shap_data,
         "residuals": residuals,
         "corr_data": corr_data,
         "corr_labels": corr_labels,
