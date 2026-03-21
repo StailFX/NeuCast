@@ -16,23 +16,32 @@ from app.layers import CUSTOM_OBJECTS
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
 
-# ── Load model and config ──
-base_model = load_model(os.path.join(WEIGHTS_DIR, "best_model.h5"), compile=False, custom_objects=CUSTOM_OBJECTS)
 SEQ_LEN = 60
-N_FEATURES = base_model.input_shape[-1]
-
 MODEL_COLS = ["Open", "High", "Low", "Close", "Volume", "MA_5", "MA_10", "MA_20", "MA_50"]
-
-MODEL_TYPE = "returns"
-IS_MULTITARGET = False
-_config_path = os.path.join(WEIGHTS_DIR, "model_config.json")
-if os.path.exists(_config_path):
-    with open(_config_path) as f:
-        model_cfg = json.load(f)
-        MODEL_TYPE = model_cfg.get("type", "returns")
-        IS_MULTITARGET = "direction" in model_cfg.get("outputs", [])
-
 TRAIN_RATIO = 0.8
+
+# ── Lazy model loading (critical for Celery prefork) ──
+_base_model = None
+_MODEL_TYPE = None
+_IS_MULTITARGET = None
+
+
+def _get_model():
+    global _base_model, _MODEL_TYPE, _IS_MULTITARGET
+    if _base_model is None:
+        _base_model = load_model(
+            os.path.join(WEIGHTS_DIR, "best_model.h5"),
+            compile=False, custom_objects=CUSTOM_OBJECTS,
+        )
+        _MODEL_TYPE = "returns"
+        _IS_MULTITARGET = False
+        config_path = os.path.join(WEIGHTS_DIR, "model_config.json")
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                cfg = json.load(f)
+                _MODEL_TYPE = cfg.get("type", "returns")
+                _IS_MULTITARGET = "direction" in cfg.get("outputs", [])
+    return _base_model, _MODEL_TYPE, _IS_MULTITARGET
 
 
 # ── Preprocessing ──
@@ -113,6 +122,8 @@ def make_boosting_features(data: np.ndarray) -> np.ndarray:
 
 
 def run_prediction(df: pd.DataFrame, days_ahead: int):
+    base_model, MODEL_TYPE, IS_MULTITARGET = _get_model()
+
     n_total = len(df)
     split_idx = int(n_total * TRAIN_RATIO)
 

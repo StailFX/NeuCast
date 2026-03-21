@@ -156,13 +156,14 @@
     }
 
     .step-icon {
-      width: 24px;
-      height: 24px;
+      width: 28px;
+      height: 28px;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 0.75rem;
+      font-weight: 600;
       flex-shrink: 0;
       border: 2px solid #334155;
       transition: all 0.3s;
@@ -171,7 +172,12 @@
     .step.active .step-icon {
       border-color: #10b981;
       background: rgba(16, 185, 129, 0.2);
-      animation: pulse 2s ease-in-out infinite;
+      animation: glow 2s ease-in-out infinite;
+    }
+
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 4px rgba(16, 185, 129, 0.3); }
+      50% { box-shadow: 0 0 12px rgba(16, 185, 129, 0.6); }
     }
 
     .step.done .step-icon {
@@ -235,7 +241,10 @@
 
   <script>
     const taskId = "{{ task_id }}";
-    const startTime = Date.now();
+    const storageKey = `neucast_start_${taskId}`;
+    const saved = sessionStorage.getItem(storageKey);
+    const startTime = saved ? parseInt(saved) : Date.now();
+    if (!saved) sessionStorage.setItem(storageKey, startTime);
     let pollInterval;
 
     function setStep(activeStep) {
