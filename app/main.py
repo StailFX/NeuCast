@@ -22,6 +22,7 @@ from app.prediction import (
     run_prediction, fetch_and_preprocess, SEQ_LEN, MODEL_COLS,
 )
 from app.sentiment import analyze_sentiment
+from app import telegram_bot
 
 # ── Paths ──
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -215,6 +216,7 @@ async def predict(
         task = celery_app.send_task(
             "neucast.predict",
             args=[ticker, start_date, end_date, days_ahead],
+            kwargs={"user_id": user.id if user else None},
             serializer="pickle",
         )
         return RedirectResponse(
@@ -945,6 +947,50 @@ async def live_price(ticker: str = "GC=F"):
         return {"price": round(price, 2) if price else None, "change": change, "change_pct": change_pct, "ticker": ticker}
     except Exception:
         return {"price": None, "change": None, "change_pct": None, "ticker": ticker}
+
+
+# ── Telegram integration ──
+
+@app.get("/api/telegram/link")
+async def telegram_link(request: Request, user: User = Depends(get_current_user)):
+    """Generate a Telegram link token for the current user."""
+    if not user:
+        return {"ok": False, "error": "Not authenticated"}
+    if not telegram_bot.is_configured():
+        return {"ok": False, "error": "Telegram bot not configured"}
+
+    token = telegram_bot.generate_link_token(user.id)
+    bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "NeuCastBot")
+    deep_link = f"https://t.me/{bot_username}?start={token}"
+    return {"ok": True, "url": deep_link, "linked": telegram_bot.is_linked(user.id)}
+
+
+@app.get("/api/telegram/status")
+async def telegram_status(user: User = Depends(get_current_user)):
+    if not user:
+        return {"configured": False, "linked": False}
+    return {
+        "configured": telegram_bot.is_configured(),
+        "linked": telegram_bot.is_linked(user.id),
+    }
+
+
+@app.post("/api/telegram/unlink")
+async def telegram_unlink(user: User = Depends(get_current_user)):
+    if user:
+        telegram_bot.unlink(user.id)
+    return {"ok": True}
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Incoming updates from Telegram Bot API webhook."""
+    try:
+        update = await request.json()
+        telegram_bot.process_update(update)
+    except Exception:
+        pass
+    return {"ok": True}
 
 
 if __name__ == "__main__":

@@ -201,6 +201,55 @@
       font-size: 0.8rem;
       margin-top: 1rem;
     }
+
+    .tg-notify {
+      margin-top: 1.5rem;
+    }
+
+    .tg-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1.2rem;
+      background: rgba(0, 136, 204, 0.1);
+      border: 1px solid rgba(0, 136, 204, 0.3);
+      border-radius: 8px;
+      color: #0088cc;
+      font-size: 0.85rem;
+      font-weight: 500;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+
+    .tg-btn:hover {
+      background: rgba(0, 136, 204, 0.2);
+      border-color: rgba(0, 136, 204, 0.5);
+    }
+
+    .tg-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: #0088cc;
+    }
+
+    .tg-btn.linked {
+      background: rgba(16, 185, 129, 0.1);
+      border-color: rgba(16, 185, 129, 0.3);
+      color: #10b981;
+      cursor: default;
+    }
+
+    .tg-btn.linked svg {
+      fill: #10b981;
+    }
+
+    .tg-hint {
+      font-size: 0.72rem;
+      color: #475569;
+      margin-top: 0.5rem;
+    }
   </style>
 </head>
 <body>
@@ -237,6 +286,14 @@
 
     <div class="error-msg" id="errorMsg"></div>
     <div class="time-elapsed" id="timeElapsed"></div>
+
+    <div class="tg-notify" id="tgNotify" style="display:none;">
+      <button class="tg-btn" id="tgBtn" onclick="linkTelegram()">
+        <svg viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.479.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+        <span>Уведомить в Telegram</span>
+      </button>
+      <div class="tg-hint" id="tgHint">Получите уведомление когда прогноз будет готов</div>
+    </div>
   </div>
 
   <script>
@@ -303,6 +360,50 @@
     pollStatus();
     pollInterval = setInterval(pollStatus, 1500);
     setInterval(updateTime, 1000);
+
+    // Telegram integration
+    async function checkTelegram() {
+      try {
+        const res = await fetch('/api/telegram/status');
+        const data = await res.json();
+        if (data.configured) {
+          document.getElementById('tgNotify').style.display = 'block';
+          if (data.linked) {
+            const btn = document.getElementById('tgBtn');
+            btn.classList.add('linked');
+            btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#10b981"/></svg><span>Telegram привязан</span>';
+            btn.onclick = null;
+            document.getElementById('tgHint').textContent = 'Уведомление придёт автоматически';
+          }
+        }
+      } catch(e) {}
+    }
+
+    async function linkTelegram() {
+      try {
+        const res = await fetch('/api/telegram/link');
+        const data = await res.json();
+        if (data.ok && data.url) {
+          window.open(data.url, '_blank');
+          document.getElementById('tgHint').textContent = 'Нажмите Start в Telegram, затем вернитесь сюда';
+          // Poll for link completion
+          const linkPoll = setInterval(async () => {
+            const s = await fetch('/api/telegram/status');
+            const st = await s.json();
+            if (st.linked) {
+              clearInterval(linkPoll);
+              const btn = document.getElementById('tgBtn');
+              btn.classList.add('linked');
+              btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#10b981"/></svg><span>Telegram привязан</span>';
+              btn.onclick = null;
+              document.getElementById('tgHint').textContent = 'Уведомление придёт автоматически';
+            }
+          }, 2000);
+        }
+      } catch(e) {}
+    }
+
+    checkTelegram();
   </script>
 </body>
 </html>
