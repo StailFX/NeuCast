@@ -302,7 +302,8 @@
     const saved = sessionStorage.getItem(storageKey);
     const startTime = saved ? parseInt(saved) : Date.now();
     if (!saved) sessionStorage.setItem(storageKey, startTime);
-    let pollInterval;
+    let pollInterval = null;
+    let wsConnected = false;
 
     function setStep(activeStep) {
       const steps = ['queue', 'fetch', 'predict', 'done'];
@@ -323,43 +324,90 @@
         min > 0 ? `${min} мин ${sec} сек` : `${sec} сек`;
     }
 
+    function handleUpdate(data) {
+      document.getElementById('statusText').textContent = data.status || data.state;
+
+      if (data.state === 'PENDING') {
+        setStep('queue');
+      } else if (data.state === 'FETCHING') {
+        setStep('fetch');
+      } else if (data.state === 'PREDICTING') {
+        setStep('predict');
+      } else if (data.state === 'SUCCESS') {
+        setStep('done');
+        document.getElementById('statusText').textContent = 'Перенаправление...';
+        if (pollInterval) clearInterval(pollInterval);
+        sessionStorage.removeItem(storageKey);
+        window.location.href = `/predict/result/${taskId}`;
+        return true; // done
+      } else if (data.state === 'FAILURE') {
+        if (pollInterval) clearInterval(pollInterval);
+        document.getElementById('statusText').textContent = 'Ошибка';
+        const errEl = document.getElementById('errorMsg');
+        errEl.textContent = data.error || 'Неизвестная ошибка';
+        errEl.style.display = 'block';
+        return true; // done
+      }
+      return false;
+    }
+
+    // ── WebSocket (primary) ──
+    function connectWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws/task/${taskId}`);
+
+      ws.onopen = () => {
+        wsConnected = true;
+        // Kill polling if it was running as fallback
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleUpdate(data);
+        } catch(e) {}
+        updateTime();
+      };
+
+      ws.onerror = () => {
+        // WebSocket failed — fall back to polling
+        if (!wsConnected) startPolling();
+      };
+
+      ws.onclose = () => {
+        wsConnected = false;
+        // If closed unexpectedly (not because task finished), fallback to polling
+        if (!document.getElementById('errorMsg').style.display &&
+            document.getElementById('statusText').textContent !== 'Перенаправление...') {
+          startPolling();
+        }
+      };
+    }
+
+    // ── HTTP Polling (fallback) ──
     async function pollStatus() {
       try {
         const res = await fetch(`/api/task/${taskId}`);
         const data = await res.json();
-
-        document.getElementById('statusText').textContent = data.status || data.state;
-
-        if (data.state === 'PENDING') {
-          setStep('queue');
-        } else if (data.state === 'FETCHING') {
-          setStep('fetch');
-        } else if (data.state === 'PREDICTING') {
-          setStep('predict');
-        } else if (data.state === 'SUCCESS') {
-          setStep('done');
-          document.getElementById('statusText').textContent = 'Перенаправление...';
-          clearInterval(pollInterval);
-          window.location.href = `/predict/result/${taskId}`;
-          return;
-        } else if (data.state === 'FAILURE') {
-          clearInterval(pollInterval);
-          document.getElementById('statusText').textContent = 'Ошибка';
-          const errEl = document.getElementById('errorMsg');
-          errEl.textContent = data.error || 'Неизвестная ошибка';
-          errEl.style.display = 'block';
-          return;
-        }
-      } catch (e) {
-        // Network error, retry silently
-      }
+        handleUpdate(data);
+      } catch (e) {}
       updateTime();
     }
 
+    function startPolling() {
+      if (pollInterval) return; // already polling
+      pollStatus();
+      pollInterval = setInterval(pollStatus, 1500);
+    }
+
+    // ── Init ──
     setStep('queue');
-    pollStatus();
-    pollInterval = setInterval(pollStatus, 1500);
     setInterval(updateTime, 1000);
+    connectWebSocket();
 
     // Telegram integration
     async function checkTelegram() {

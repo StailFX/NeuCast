@@ -20,3 +20,4 @@ redis>=5.0.0
 transformers>=4.30.0
 torch>=2.0.0
 shap>=0.43.0
+websockets>=12.0

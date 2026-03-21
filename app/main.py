@@ -10,7 +10,7 @@ import pandas as pd
 import yfinance as yf
 import uvicorn
 
-from fastapi import FastAPI, Request, Form, HTTPException, Depends
+from fastapi import FastAPI, Request, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -447,6 +447,59 @@ async def task_status(task_id: str):
         return {"state": "FAILURE", "error": str(result.info)}
     else:
         return {"state": result.state, "status": "Обработка..."}
+
+
+@app.websocket("/ws/task/{task_id}")
+async def ws_task_status(websocket: WebSocket, task_id: str):
+    """WebSocket endpoint for real-time task progress updates."""
+    await websocket.accept()
+
+    if not USE_CELERY or not celery_app:
+        await websocket.send_json({"state": "FAILURE", "error": "Celery not configured"})
+        await websocket.close()
+        return
+
+    from celery.result import AsyncResult
+
+    prev_state = None
+    try:
+        while True:
+            result = AsyncResult(task_id, app=celery_app)
+            state = result.state
+
+            # Only send update when state changes
+            if state != prev_state:
+                prev_state = state
+
+                if state == "PENDING":
+                    await websocket.send_json({"state": "PENDING", "status": "В очереди..."})
+                elif state == "FETCHING":
+                    await websocket.send_json({"state": "FETCHING", "status": "Загрузка данных..."})
+                elif state == "PREDICTING":
+                    await websocket.send_json({"state": "PREDICTING", "status": "Расчёт прогноза..."})
+                elif state == "SUCCESS":
+                    res = result.result
+                    if isinstance(res, dict) and "error" in res:
+                        await websocket.send_json({"state": "FAILURE", "error": res["error"]})
+                    else:
+                        await websocket.send_json({"state": "SUCCESS", "task_id": task_id})
+                    await websocket.close()
+                    return
+                elif state == "FAILURE":
+                    await websocket.send_json({"state": "FAILURE", "error": str(result.info)})
+                    await websocket.close()
+                    return
+                else:
+                    await websocket.send_json({"state": state, "status": "Обработка..."})
+
+            await asyncio.sleep(0.5)  # Check every 500ms (much faster than polling)
+    except WebSocketDisconnect:
+        pass  # Client closed tab — that's fine
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/predict/result/{task_id}", response_class=HTMLResponse)

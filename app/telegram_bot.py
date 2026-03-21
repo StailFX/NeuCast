@@ -27,21 +27,29 @@ _links: dict[int, int] = {}       # user_id -> chat_id
 _pending: dict[str, int] = {}     # link_token -> user_id
 
 
+_links_mtime = 0.0
+
+
 def _load_links():
-    global _links
+    global _links, _links_mtime
     try:
         if os.path.exists(_LINKS_FILE):
-            with open(_LINKS_FILE) as f:
-                raw = json.load(f)
-                _links = {int(k): int(v) for k, v in raw.items()}
+            mtime = os.path.getmtime(_LINKS_FILE)
+            if mtime != _links_mtime:
+                with open(_LINKS_FILE) as f:
+                    raw = json.load(f)
+                    _links = {int(k): int(v) for k, v in raw.items()}
+                _links_mtime = mtime
     except Exception as e:
         logger.warning(f"Failed to load telegram links: {e}")
 
 
 def _save_links():
+    global _links_mtime
     try:
         with open(_LINKS_FILE, "w") as f:
             json.dump({str(k): v for k, v in _links.items()}, f)
+        _links_mtime = os.path.getmtime(_LINKS_FILE)
     except Exception as e:
         logger.warning(f"Failed to save telegram links: {e}")
 
@@ -54,10 +62,12 @@ def is_configured() -> bool:
 
 
 def get_chat_id(user_id: int) -> int | None:
+    _load_links()  # re-read if file changed (cross-process sync)
     return _links.get(user_id)
 
 
 def is_linked(user_id: int) -> bool:
+    _load_links()
     return user_id in _links
 
 
@@ -218,9 +228,32 @@ def process_update(update: dict) -> str | None:
                 return "invalid_token"
         else:
             send_message(chat_id,
-                "<b>NeuCast Bot</b>\n\n"
-                "Для привязки аккаунта нажмите кнопку "
-                "«Telegram» на странице ожидания прогноза."
+                "<b>NeuCast</b> — AI-прогнозирование финансовых рынков\n\n"
+
+                "Стек из 4 моделей машинного обучения анализирует рынок "
+                "и даёт прогноз цены акций:\n\n"
+
+                "  <b>TCN</b> — Temporal Convolutional Network\n"
+                "  <b>CatBoost</b> — градиентный бустинг (Яндекс)\n"
+                "  <b>XGBoost</b> — экстремальный бустинг\n"
+                "  <b>LightGBM</b> — быстрый бустинг (Microsoft)\n\n"
+
+                "Все 4 модели объединяются в <b>Stacking Ensemble</b> "
+                "через Ridge-мета-модель. Прогноз на будущее строится "
+                "методом <b>Monte Carlo GBM</b> (1000 симуляций).\n\n"
+
+                "Дополнительно: <b>FinBERT NLP</b> анализирует тональность "
+                "последних новостей по тикеру.\n\n"
+
+                "<b>Как привязать Telegram:</b>\n"
+                "1. Откройте <a href=\"https://neucast.ru\">neucast.ru</a>\n"
+                "2. Запустите прогноз по любому тикеру\n"
+                "3. На странице ожидания нажмите «Уведомить в Telegram»\n"
+                "4. Когда прогноз будет готов — получите сюда отчёт\n\n"
+
+                "<b>Команды:</b>\n"
+                "/start — это сообщение\n"
+                "/unlink — отвязать аккаунт"
             )
             return "start"
 
