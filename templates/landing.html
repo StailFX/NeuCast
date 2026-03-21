@@ -3,9 +3,67 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NeuCast — AI-прогнозирование котировок</title>
+  <title>NeuCast — AI-прогнозирование котировок акций, золота, нефти и криптовалют</title>
+
+  <!-- SEO Meta -->
+  <meta name="description" content="NeuCast — веб-приложение для AI-прогнозирования финансовых рынков. Ансамбль TCN + CatBoost + XGBoost + LightGBM анализирует котировки акций, золота, нефти и криптовалют с точностью MAPE менее 1%. Бесплатный прогноз за минуту.">
+  <meta name="keywords" content="прогноз акций, AI прогнозирование, machine learning финансы, прогноз котировок, нейросеть акции, CatBoost, XGBoost, LightGBM, TCN, прогноз золота, прогноз нефти, прогноз криптовалют, технический анализ, FinBERT, SHAP, портфель Марковица, stock prediction, AI forecast">
+  <meta name="author" content="NeuCast">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://neucast.ru/">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://neucast.ru/">
+  <meta property="og:title" content="NeuCast — AI-прогнозирование финансовых рынков">
+  <meta property="og:description" content="Ансамбль из 4 моделей машинного обучения (TCN, CatBoost, XGBoost, LightGBM) прогнозирует котировки с MAPE &lt; 1%. FinBERT анализ новостей, SHAP объяснения, портфель Марковица.">
+  <meta property="og:image" content="https://neucast.ru/static/og-image.svg">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="NeuCast">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="NeuCast — AI-прогнозирование финансовых рынков">
+  <meta name="twitter:description" content="Ансамбль из 4 ML-моделей прогнозирует котировки акций, золота, нефти и криптовалют с точностью MAPE &lt; 1%.">
+  <meta name="twitter:image" content="https://neucast.ru/static/og-image.svg">
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "NeuCast",
+    "url": "https://neucast.ru",
+    "description": "AI-прогнозирование финансовых рынков с использованием ансамбля нейросетей и градиентного бустинга",
+    "applicationCategory": "FinanceApplication",
+    "operatingSystem": "Web",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "RUB"
+    },
+    "featureList": [
+      "Прогнозирование котировок акций, золота, нефти, криптовалют",
+      "Ансамбль моделей: TCN + CatBoost + XGBoost + LightGBM",
+      "Анализ тональности новостей FinBERT NLP",
+      "Monte Carlo симуляции (1000 сценариев)",
+      "SHAP объяснения предсказаний",
+      "Backtesting торговых стратегий",
+      "Портфельная оптимизация Марковица",
+      "Технический анализ: RSI, MACD, Bollinger Bands"
+    ],
+    "creator": {
+      "@type": "Organization",
+      "name": "NeuCast"
+    }
+  }
+  </script>
+
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"></noscript>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -21,7 +79,7 @@
       --bg-card: rgba(12, 20, 35, 0.85);
       --border: rgba(51, 65, 85, 0.35);
       --text: #e2e8f0;
-      --text-muted: #64748b;
+      --text-muted: #8493a8;
       --text-dim: #94a3b8;
     }
 
@@ -688,7 +746,7 @@
   <div class="particles" id="particles"></div>
 
   <!-- Navbar -->
-  <nav class="nav" id="navbar">
+  <nav class="nav" id="navbar" aria-label="Main navigation">
     <a href="/" class="nav-brand">
       <div class="nav-logo">
         <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
@@ -868,7 +926,14 @@
   </section>
 
   <footer>
-    NeuCast &copy; 2026 &mdash; TCN + CatBoost + XGBoost + LightGBM Ensemble &bull; Yahoo Finance Data
+    <div style="max-width:900px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;">
+      <div>NeuCast &copy; 2026 &mdash; AI-прогнозирование финансовых рынков</div>
+      <nav aria-label="Footer navigation" style="display:flex;gap:1.5rem;font-size:0.8rem;">
+        <a href="/#features" style="color:var(--text-muted);text-decoration:none;">Возможности</a>
+        <a href="/register" style="color:var(--text-muted);text-decoration:none;">Регистрация</a>
+        <a href="/login" style="color:var(--text-muted);text-decoration:none;">Вход</a>
+      </nav>
+    </div>
   </footer>
 
   <script>

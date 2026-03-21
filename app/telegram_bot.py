@@ -18,7 +18,7 @@ import urllib.parse
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "https://neucast.stailfx.ru")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://neucast.ru").rstrip("/")
 
 # In-memory store: user_id (int) -> telegram_chat_id (int)
 # For persistence, we also use a simple JSON file
@@ -161,7 +161,8 @@ def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str =
 def send_prediction_result(
     user_id: int,
     ticker: str,
-    prediction_id: int | None,
+    task_id: str | None = None,
+    prediction_id: int | None = None,
     pdf_bytes: bytes | None = None,
     mae: str = "",
     mape: str = "",
@@ -172,9 +173,17 @@ def send_prediction_result(
     """Send prediction notification with PDF to linked Telegram account."""
     chat_id = get_chat_id(user_id)
     if not chat_id:
+        logger.info(f"Telegram: no chat_id for user {user_id}")
         return False
 
-    link = f"{APP_BASE_URL}/prediction/{prediction_id}" if prediction_id else APP_BASE_URL
+    if task_id:
+        link = f"{APP_BASE_URL}/predict/result/{task_id}"
+    elif prediction_id:
+        link = f"{APP_BASE_URL}/prediction/{prediction_id}"
+    else:
+        link = APP_BASE_URL
+
+    logger.info(f"Telegram link: {link} (task_id={task_id}, prediction_id={prediction_id}, APP_BASE_URL={APP_BASE_URL})")
 
     text = (
         f"<b>NeuCast — Прогноз готов</b>\n\n"

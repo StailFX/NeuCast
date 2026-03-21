@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NeuCast — Портфель Марковица</title>
+  <title>NeuCast — Портфель Марковица | Оптимизация портфеля акций</title>
+  <meta name="description" content="Оптимизация инвестиционного портфеля по Марковицу. Efficient Frontier, Max Sharpe Ratio, Min Variance — визуализация и расчёт оптимального распределения активов.">
+  <meta name="robots" content="noindex, nofollow">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -32,12 +34,13 @@
     .navbar-logo { width: 32px; height: 32px; background: linear-gradient(135deg, #10b981, #3b82f6); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
     .navbar-logo svg { width: 16px; height: 16px; fill: white; }
     .navbar-title { font-size: 1.05rem; font-weight: 700; color: var(--text); }
-    .btn-nav { padding: 0.4rem 0.9rem; font-size: 0.8rem; font-weight: 500; border-radius: 8px; text-decoration: none; border: 1px solid var(--border); color: var(--text-dim); background: rgba(51,65,85,0.4); cursor: pointer; font-family: 'Inter'; }
+    .btn-nav { padding: 0.4rem 0.9rem; font-size: 0.8rem; font-weight: 500; border-radius: 8px; text-decoration: none; border: 1px solid var(--border); color: var(--text-dim); background: rgba(51,65,85,0.4); cursor: pointer; font-family: 'Inter'; transition: all 0.2s; }
     .btn-nav:hover { color: var(--text); border-color: rgba(59,130,246,0.5); }
 
     .page { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 2rem; }
-    .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
-    .page-sub { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 2rem; }
+    .page-header { margin-bottom: 2rem; }
+    .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.3rem; }
+    .page-sub { color: var(--text-dim); font-size: 0.9rem; }
 
     /* Form */
     .form-card {
@@ -50,28 +53,34 @@
     .form-group input {
       width: 100%; padding: 0.6rem 0.8rem; background: rgba(15,23,42,0.6);
       border: 1px solid var(--border); border-radius: 8px; color: var(--text);
-      font-size: 0.85rem; font-family: 'Inter';
+      font-size: 0.85rem; font-family: 'Inter'; transition: border-color 0.2s;
     }
     .form-group input:focus { outline: none; border-color: var(--green); }
     .form-group .hint { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; }
     .btn-submit {
-      padding: 0.6rem 1.5rem; background: linear-gradient(135deg, #10b981, #3b82f6);
+      padding: 0.65rem 1.8rem; background: linear-gradient(135deg, #10b981, #3b82f6);
       border: none; border-radius: 8px; color: white; font-weight: 600;
-      font-size: 0.85rem; cursor: pointer; font-family: 'Inter'; white-space: nowrap;
+      font-size: 0.85rem; cursor: pointer; font-family: 'Inter'; white-space: nowrap; transition: opacity 0.2s;
     }
     .btn-submit:hover { opacity: 0.9; }
     .error-msg { color: #ef4444; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 0.8rem; margin-bottom: 1rem; font-size: 0.85rem; }
 
     /* Results */
-    .metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
-    .metric-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
-    .metric-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem; }
-    .metric-value { font-size: 1.3rem; font-weight: 700; }
+    .metrics-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
+    .metric-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1rem; text-align: center; transition: border-color 0.2s;
+    }
+    .metric-card:hover { border-color: rgba(16,185,129,0.3); }
+    .metric-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem; }
+    .metric-value { font-size: 1.2rem; font-weight: 700; }
     .green { color: #10b981; } .blue { color: #3b82f6; } .amber { color: #f59e0b; } .red { color: #ef4444; }
 
-    .charts-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
-    .chart-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; overflow: hidden; }
-    .chart-card.full { grid-column: 1 / -1; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+    .chart-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.25rem; overflow: hidden;
+    }
     .chart-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
     .chart-card-title { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); }
     .chart-badge { font-size: 0.7rem; padding: 0.2rem 0.6rem; border-radius: 6px; font-weight: 600; }
@@ -82,12 +91,44 @@
     .alloc-table tr:hover { background: rgba(51,65,85,0.12); }
     .weight-bar { height: 6px; border-radius: 3px; background: linear-gradient(90deg, #10b981, #3b82f6); margin-top: 0.3rem; }
 
-    .section-title { font-size: 1.1rem; font-weight: 700; margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem; }
-    .section-icon { width: 24px; height: 24px; background: linear-gradient(135deg, var(--green), var(--blue)); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; color: white; }
+    .section-title {
+      font-size: 1.05rem; font-weight: 700; margin: 2rem 0 1rem;
+      padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .section-icon {
+      width: 24px; height: 24px; background: linear-gradient(135deg, var(--green), var(--blue));
+      border-radius: 6px; display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; color: white;
+    }
+
+    /* Empty state hint */
+    .empty-hint {
+      text-align: center; padding: 4rem 2rem; color: var(--text-muted);
+    }
+    .empty-hint-icon { font-size: 3rem; margin-bottom: 1rem; opacity: 0.3; }
+    .empty-hint-text { font-size: 0.95rem; line-height: 1.6; }
+
+    /* Min-var compare row */
+    .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+    .compare-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.25rem;
+    }
+    .compare-card-title {
+      font-size: 0.78rem; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .compare-card-title .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .compare-metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; }
+    .cm-item-label { font-size: 0.7rem; color: var(--text-muted); }
+    .cm-item-value { font-size: 1.1rem; font-weight: 700; margin-top: 0.15rem; }
 
     @media (max-width: 900px) {
       .page { padding: 1rem; }
-      .charts-grid { grid-template-columns: 1fr; }
+      .two-col { grid-template-columns: 1fr; }
+      .compare-grid { grid-template-columns: 1fr; }
       .form-row { flex-direction: column; }
     }
   </style>
@@ -105,15 +146,17 @@
   </nav>
 
   <div class="page">
-    <h1 class="page-title">Портфель Марковица</h1>
-    <p class="page-sub">Оптимизация распределения активов для максимального Sharpe Ratio</p>
+    <div class="page-header">
+      <h1 class="page-title">Портфель Марковица</h1>
+      <p class="page-sub">Оптимизация распределения активов для максимального Sharpe Ratio</p>
+    </div>
 
     {% if error %}
     <div class="error-msg">{{ error }}</div>
     {% endif %}
 
     <div class="form-card">
-      <form method="POST" action="/portfolio">
+      <form method="POST" action="/portfolio" id="portfolioForm">
         <div class="form-row">
           <div class="form-group" style="flex:3;">
             <label>Тикеры (через запятую)</label>
@@ -129,46 +172,66 @@
             <input type="text" name="period" value="{{ period or '1y' }}" placeholder="1y">
             <div class="hint">1y, 2y, 6mo, ytd</div>
           </div>
-          <button type="submit" class="btn-submit">Оптимизировать</button>
+          <button type="submit" class="btn-submit" id="submitBtn">Оптимизировать</button>
         </div>
       </form>
     </div>
 
+    {% if not result and not error %}
+    <div class="empty-hint">
+      <div class="empty-hint-icon">&#128202;</div>
+      <div class="empty-hint-text">
+        Введите тикеры интересующих вас акций и нажмите <b>Оптимизировать</b>.<br>
+        Алгоритм Марковица найдёт оптимальное распределение для максимизации Sharpe Ratio.
+      </div>
+    </div>
+    {% endif %}
+
     {% if result %}
-    <!-- Metrics -->
-    <div class="section-title"><div class="section-icon">&#9733;</div> Оптимальный портфель (Max Sharpe)</div>
-    <div class="metrics-row">
-      <div class="metric-card">
-        <div class="metric-label">Годовая доходность</div>
-        <div class="metric-value green">{{ result.opt_return }}%</div>
+    <!-- Compare: Max Sharpe vs Min Variance -->
+    <div class="compare-grid">
+      <div class="compare-card">
+        <div class="compare-card-title"><div class="dot" style="background:#10b981;"></div> Max Sharpe (оптимальный)</div>
+        <div class="compare-metrics">
+          <div>
+            <div class="cm-item-label">Доходность</div>
+            <div class="cm-item-value green">{{ result.opt_return }}%</div>
+          </div>
+          <div>
+            <div class="cm-item-label">Волатильность</div>
+            <div class="cm-item-value amber">{{ result.opt_volatility }}%</div>
+          </div>
+          <div>
+            <div class="cm-item-label">Sharpe Ratio</div>
+            <div class="cm-item-value blue">{{ result.opt_sharpe }}</div>
+          </div>
+        </div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">Волатильность</div>
-        <div class="metric-value amber">{{ result.opt_volatility }}%</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Sharpe Ratio</div>
-        <div class="metric-value blue">{{ result.opt_sharpe }}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Min-Var Доходность</div>
-        <div class="metric-value" style="color:var(--text-dim);">{{ result.min_return }}%</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Min-Var Волатильность</div>
-        <div class="metric-value" style="color:var(--text-dim);">{{ result.min_volatility }}%</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Min-Var Sharpe</div>
-        <div class="metric-value" style="color:var(--text-dim);">{{ result.min_sharpe }}</div>
+      <div class="compare-card">
+        <div class="compare-card-title"><div class="dot" style="background:#3b82f6;"></div> Min Variance (консервативный)</div>
+        <div class="compare-metrics">
+          <div>
+            <div class="cm-item-label">Доходность</div>
+            <div class="cm-item-value" style="color:var(--text-dim);">{{ result.min_return }}%</div>
+          </div>
+          <div>
+            <div class="cm-item-label">Волатильность</div>
+            <div class="cm-item-value" style="color:var(--text-dim);">{{ result.min_volatility }}%</div>
+          </div>
+          <div>
+            <div class="cm-item-label">Sharpe Ratio</div>
+            <div class="cm-item-value" style="color:var(--text-dim);">{{ result.min_sharpe }}</div>
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- Allocation table + Pie chart -->
-    <div class="charts-grid">
-      <div class="chart-card" style="padding:1.25rem;">
+    <div class="section-title"><div class="section-icon">&#9733;</div> Распределение активов</div>
+    <div class="two-col">
+      <div class="chart-card">
         <div class="chart-card-header">
-          <span class="chart-card-title">Распределение активов</span>
+          <span class="chart-card-title">Оптимальные доли</span>
           <span class="chart-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">${{ "%.0f"|format(result.budget) }}</span>
         </div>
         <table class="alloc-table">
@@ -190,25 +253,26 @@
         <div class="chart-card-header">
           <span class="chart-card-title">Доли портфеля</span>
         </div>
-        <div id="pie_chart" style="height:350px;"></div>
+        <div id="pie_chart" style="height:320px;"></div>
       </div>
     </div>
 
-    <!-- Efficient frontier + Equity curve -->
+    <!-- Efficient frontier -->
     <div class="section-title"><div class="section-icon">&#8853;</div> Efficient Frontier</div>
-    <div class="chart-card full" style="margin-bottom:1rem;">
+    <div class="chart-card" style="margin-bottom:1rem;">
       <div class="chart-card-header">
         <span class="chart-card-title">Risk vs Return (3000 случайных портфелей)</span>
         <div style="display:flex;gap:0.5rem;">
-          <span class="chart-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">Max Sharpe</span>
-          <span class="chart-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6;">Min Variance</span>
+          <span class="chart-badge" style="background:rgba(16,185,129,0.15);color:#10b981;">&#9733; Max Sharpe</span>
+          <span class="chart-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6;">&#9670; Min Variance</span>
         </div>
       </div>
-      <div id="frontier_chart" style="height:500px;"></div>
+      <div id="frontier_chart" style="height:450px;"></div>
     </div>
 
-    <div class="section-title"><div class="section-icon">&#9733;</div> Историческая доходность</div>
-    <div class="chart-card full" style="margin-bottom:1rem;">
+    <!-- Historical equity -->
+    <div class="section-title"><div class="section-icon">&#9650;</div> Историческая доходность</div>
+    <div class="chart-card" style="margin-bottom:1rem;">
       <div class="chart-card-header">
         <span class="chart-card-title">Optimal vs Equal Weight Portfolio</span>
         <div style="display:flex;gap:0.5rem;">
@@ -216,13 +280,13 @@
           <span class="chart-badge" style="background:rgba(167,139,250,0.15);color:#a78bfa;">Equal Weight</span>
         </div>
       </div>
-      <div id="equity_chart" style="height:400px;"></div>
+      <div id="equity_chart" style="height:350px;"></div>
     </div>
 
     <!-- Correlation matrix -->
     <div class="section-title"><div class="section-icon">&#9632;</div> Корреляция активов</div>
-    <div class="chart-card full">
-      <div id="corr_chart" style="height:400px;"></div>
+    <div class="chart-card" style="margin-bottom:2rem;">
+      <div id="corr_chart" style="height:380px;"></div>
     </div>
 
     <script>
@@ -233,7 +297,7 @@
         font: { family: 'Inter', color: '#94a3b8', size: 11 },
         xaxis: { gridcolor: '#1e293b', zerolinecolor: '#334155' },
         yaxis: { gridcolor: '#1e293b', zerolinecolor: '#334155' },
-        margin: { l: 60, r: 30, t: 30, b: 50 },
+        margin: { l: 60, r: 30, t: 20, b: 50 },
       };
       const C = { displayModeBar: false, responsive: true };
 
@@ -247,17 +311,18 @@
           line: { color: '#0a0e17', width: 2 },
         },
         textinfo: 'label+percent', textfont: { size: 11, color: '#e2e8f0' },
+        hovertemplate: '%{label}: %{percent}<br>$%{value:.0f}<extra></extra>',
       }], { ...layout, showlegend: false, margin: { l: 10, r: 10, t: 10, b: 10 } }, C);
 
       // Efficient frontier
       Plotly.newPlot('frontier_chart', [
         {
           x: R.rand_volatilities, y: R.rand_returns, mode: 'markers', name: 'Random',
-          marker: { size: 3, color: R.rand_sharpes, colorscale: [[0,'#334155'],[0.5,'#3b82f6'],[1,'#10b981']], opacity: 0.4, colorbar: { title: 'Sharpe', thickness: 12, len: 0.5 } },
+          marker: { size: 3, color: R.rand_sharpes, colorscale: [[0,'#1e293b'],[0.5,'#3b82f6'],[1,'#10b981']], opacity: 0.5, colorbar: { title: 'Sharpe', thickness: 12, len: 0.5, tickfont: { size: 9 } } },
           hovertemplate: 'Vol: %{x:.1f}%<br>Ret: %{y:.1f}%<extra></extra>',
         },
         {
-          x: R.frontier_volatilities, y: R.frontier_returns, mode: 'lines', name: 'Efficient Frontier',
+          x: R.frontier_volatilities, y: R.frontier_returns, mode: 'lines', name: 'Frontier',
           line: { color: '#f59e0b', width: 3 },
         },
         {
@@ -270,15 +335,16 @@
         },
         ...R.tickers.map((t, i) => ({
           x: [R.asset_volatility[i]], y: [R.asset_returns[i]], mode: 'markers+text', name: t,
-          marker: { size: 10, color: '#ef4444', opacity: 0.8 },
+          marker: { size: 9, color: '#ef4444', opacity: 0.8 },
           text: [t], textposition: 'top center', textfont: { size: 10, color: '#e2e8f0' },
           showlegend: false,
         })),
       ], {
         ...layout,
-        xaxis: { ...layout.xaxis, title: 'Волатильность (%)' },
-        yaxis: { ...layout.yaxis, title: 'Годовая доходность (%)' },
+        xaxis: { ...layout.xaxis, title: { text: 'Волатильность (%)', font: { size: 12 } } },
+        yaxis: { ...layout.yaxis, title: { text: 'Годовая доходность (%)', font: { size: 12 } } },
         legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(0,0,0,0)', font: { size: 10 } },
+        margin: { l: 60, r: 60, t: 20, b: 55 },
       }, C);
 
       // Equity curve
@@ -289,6 +355,7 @@
         ...layout,
         yaxis: { ...layout.yaxis, tickprefix: '$' },
         legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(0,0,0,0)' },
+        margin: { l: 65, r: 30, t: 10, b: 45 },
       }, C);
 
       // Correlation heatmap
@@ -299,15 +366,30 @@
         zmin: -1, zmax: 1,
         text: R.correlation.map(row => row.map(v => v.toFixed(2))),
         texttemplate: '%{text}', textfont: { size: 11 },
-        colorbar: { title: 'r', thickness: 12 },
+        colorbar: { title: 'r', thickness: 12, tickfont: { size: 9 } },
       }], {
         ...layout,
         xaxis: { ...layout.xaxis, showgrid: false },
         yaxis: { ...layout.yaxis, autorange: 'reversed', showgrid: false },
-        margin: { l: 60, r: 20, t: 20, b: 60 },
-      }, { displayModeBar: false, responsive: true });
+        margin: { l: 60, r: 20, t: 10, b: 60 },
+      }, C);
     </script>
     {% endif %}
   </div>
+
+  <script>
+    // Loading state on submit
+    const form = document.getElementById('portfolioForm');
+    if (form) {
+      form.addEventListener('submit', () => {
+        const btn = document.getElementById('submitBtn');
+        if (btn) {
+          btn.textContent = 'Оптимизация...';
+          btn.style.opacity = '0.6';
+          btn.style.pointerEvents = 'none';
+        }
+      });
+    }
+  </script>
 </body>
 </html>

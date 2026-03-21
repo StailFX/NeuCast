@@ -130,7 +130,7 @@ def _generate_mini_pdf(ticker: str, result: dict) -> bytes | None:
         return None
 
 
-def _send_telegram_notification(user_id: int, ticker: str, result: dict):
+def _send_telegram_notification(user_id: int, ticker: str, result: dict, task_id: str = None):
     """Send Telegram notification with prediction summary + PDF."""
     try:
         from app.telegram_bot import is_configured, is_linked, send_prediction_result
@@ -140,11 +140,12 @@ def _send_telegram_notification(user_id: int, ticker: str, result: dict):
             return
 
         pdf_bytes = _generate_mini_pdf(ticker, result)
+        logger.info(f"PDF generated: {len(pdf_bytes) if pdf_bytes else 0} bytes")
 
         send_prediction_result(
             user_id=user_id,
             ticker=ticker,
-            prediction_id=None,
+            task_id=task_id,
             pdf_bytes=pdf_bytes,
             mae=f"{result['mae']:.2f}",
             mape=f"{result['mape']:.2f}",
@@ -154,7 +155,7 @@ def _send_telegram_notification(user_id: int, ticker: str, result: dict):
         )
         logger.info(f"Telegram notification sent to user {user_id} for {ticker}")
     except Exception as e:
-        logger.warning(f"Failed to send Telegram notification: {e}")
+        logger.warning(f"Failed to send Telegram notification: {e}", exc_info=True)
 
 
 @celery_app.task(bind=True, name="neucast.predict")
@@ -174,7 +175,7 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
 
     # Send Telegram notification
     if user_id:
-        _send_telegram_notification(user_id, ticker, result)
+        _send_telegram_notification(user_id, ticker, result, task_id=self.request.id)
 
     # Convert numpy arrays to lists for serialization
     serializable = {}

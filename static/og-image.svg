@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00e676"/>
+      <stop offset="100%" stop-color="#2196f3"/>
+    </linearGradient>
+    <linearGradient id="chartLine" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00e676" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#2196f3" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="chartFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00e676" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#00e676" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1a2332" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="#0a0e17"/>
+
+  <!-- Grid pattern -->
+  <rect width="1200" height="630" fill="url(#grid)" opacity="0.6"/>
+
+  <!-- Decorative chart area fill -->
+  <path d="M 0 480 Q 120 460, 200 440 T 400 390 T 600 350 T 750 280 T 900 320 T 1050 250 T 1200 220 L 1200 630 L 0 630 Z" fill="url(#chartFill)"/>
+
+  <!-- Decorative chart line -->
+  <path d="M 0 480 Q 120 460, 200 440 T 400 390 T 600 350 T 750 280 T 900 320 T 1050 250 T 1200 220" fill="none" stroke="url(#chartLine)" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Logo square -->
+  <rect x="80" y="160" width="72" height="72" rx="14" fill="url(#logoGrad)"/>
+
+  <!-- Chart icon inside logo -->
+  <g transform="translate(80, 160)">
+    <rect x="16" y="38" width="8" height="18" rx="2" fill="#0a0e17" opacity="0.85"/>
+    <rect x="28" y="28" width="8" height="28" rx="2" fill="#0a0e17" opacity="0.85"/>
+    <rect x="40" y="18" width="8" height="38" rx="2" fill="#0a0e17" opacity="0.85"/>
+    <polyline points="16,34 28,24 40,14 52,8" fill="none" stroke="#0a0e17" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+    <circle cx="52" cy="8" r="3" fill="#0a0e17" opacity="0.7"/>
+  </g>
+
+  <!-- Title -->
+  <text x="170" y="195" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="46" font-weight="700" fill="#ffffff" letter-spacing="-0.5">
+    NeuCast
+  </text>
+  <text x="170" y="225" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="18" fill="#8892a4" letter-spacing="3" text-transform="uppercase">
+    NEURAL FORECASTING
+  </text>
+
+  <!-- Main heading -->
+  <text x="80" y="320" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="38" font-weight="600" fill="#e0e6ed">
+    AI прогнозирование
+  </text>
+  <text x="80" y="370" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="38" font-weight="600" fill="#e0e6ed">
+    финансовых рынков
+  </text>
+
+  <!-- Subtitle / tech stack -->
+  <text x="80" y="420" font-family="'SF Mono', 'Fira Code', 'Consolas', monospace" font-size="20" fill="url(#logoGrad)" opacity="0.9">
+    TCN + CatBoost + XGBoost + LightGBM Ensemble
+  </text>
+
+  <!-- Accent line under logo area -->
+  <rect x="80" y="260" width="120" height="3" rx="1.5" fill="url(#logoGrad)" opacity="0.6"/>
+
+  <!-- Subtle glow dots on chart -->
+  <circle cx="400" cy="390" r="3" fill="#00e676" opacity="0.5"/>
+  <circle cx="750" cy="280" r="3" fill="#00e676" opacity="0.5"/>
+  <circle cx="1050" cy="250" r="3" fill="#2196f3" opacity="0.5"/>
+
+  <!-- Bottom border accent -->
+  <rect x="0" y="625" width="1200" height="5" fill="url(#logoGrad)" opacity="0.4"/>
+</svg>

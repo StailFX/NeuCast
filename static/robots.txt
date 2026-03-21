@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin/
+Disallow: /ws/
+Disallow: /predict/result/
+Disallow: /logout
+
+Sitemap: https://neucast.ru/sitemap.xml

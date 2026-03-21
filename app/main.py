@@ -11,7 +11,7 @@ import yfinance as yf
 import uvicorn
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -179,6 +179,36 @@ async def logout():
     resp.delete_cookie("username")
     resp.delete_cookie("role")
     return resp
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt():
+    return (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/\n"
+        "Disallow: /admin/\n"
+        "Disallow: /ws/\n"
+        "Disallow: /predict/result/\n"
+        "Disallow: /logout\n"
+        "\n"
+        "Sitemap: https://neucast.ru/sitemap.xml\n"
+    )
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    pages = [
+        ("https://neucast.ru/", "1.0", "weekly"),
+        ("https://neucast.ru/login", "0.6", "monthly"),
+        ("https://neucast.ru/register", "0.7", "monthly"),
+    ]
+    for url, priority, freq in pages:
+        xml += f"  <url>\n    <loc>{url}</loc>\n    <priority>{priority}</priority>\n    <changefreq>{freq}</changefreq>\n  </url>\n"
+    xml += "</urlset>\n"
+    return Response(content=xml, media_type="application/xml")
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NeuCast — Результаты</title>
+  <title>NeuCast — Прогноз {{ ticker }} | AI-анализ котировок</title>
+  <meta name="description" content="AI-прогноз котировок {{ ticker }} — ансамбль TCN + CatBoost + XGBoost + LightGBM с Monte Carlo симуляциями.">
+  <meta name="robots" content="noindex, nofollow">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -637,11 +639,8 @@
     <div class="section-title"><div class="section-icon">&#9881;</div> SHAP Explainability</div>
 
     <div id="shap_section">
-      <!-- Waterfall charts (local explanation for last prediction) -->
-      <div class="charts-grid" id="shap_waterfall_grid"></div>
-
-      <!-- Global mean |SHAP| bar charts -->
-      <div class="charts-grid" id="shap_global_grid" style="margin-top:1rem;"></div>
+      <!-- Waterfall + Global mean |SHAP| side by side per model -->
+      <div class="charts-grid" id="shap_paired_grid"></div>
 
       <!-- Beeswarm plots -->
       <div class="charts-grid" id="shap_beeswarm_grid" style="margin-top:1rem;"></div>
@@ -1052,8 +1051,7 @@
       const L = getPlotlyTheme();
       const modelColors = { CatBoost: '#f59e0b', XGBoost: '#ef4444', LightGBM: '#8b5cf6' };
 
-      const wfGrid = document.getElementById('shap_waterfall_grid');
-      const glGrid = document.getElementById('shap_global_grid');
+      const pairedGrid = document.getElementById('shap_paired_grid');
       const bsGrid = document.getElementById('shap_beeswarm_grid');
 
       for (const [model, sd] of Object.entries(S)) {
@@ -1070,7 +1068,7 @@
           </div>
           <div id="${wfId}" style="height:420px;"></div>
         `;
-        wfGrid.appendChild(wfCard);
+        pairedGrid.appendChild(wfCard);
 
         // Build waterfall: sort by absolute value, show as horizontal bar from base
         const wfNames = [...sd.waterfall_names].reverse();
@@ -1098,7 +1096,7 @@
           ],
         }, C);
 
-        // --- Global mean |SHAP| bar chart ---
+        // --- Global mean |SHAP| bar chart (placed right next to waterfall) ---
         const glId = `shap_gl_${model}`;
         const glCard = document.createElement('div');
         glCard.className = 'chart-card';
@@ -1109,7 +1107,7 @@
           </div>
           <div id="${glId}" style="height:420px;"></div>
         `;
-        glGrid.appendChild(glCard);
+        pairedGrid.appendChild(glCard);
 
         const glNames = [...sd.global_names].reverse();
         const glVals = [...sd.global_values].reverse();
@@ -1488,41 +1486,56 @@
         badge.style.border = `1px solid ${color}33`;
       }
 
-      // Gauge chart
-      const gaugeVal = (S.avg_score + 1) / 2 * 100; // map -1..+1 → 0..100
-      Plotly.newPlot('sentimentGauge', [{
-        type: 'indicator',
-        mode: 'gauge+number+delta',
-        value: S.avg_score,
-        number: { suffix: '', font: { size: 36, color: isDark ? '#e2e8f0' : '#1e293b' }, valueformat: '+.3f' },
-        gauge: {
-          axis: { range: [-1, 1], tickwidth: 1, tickcolor: isDark ? '#334155' : '#cbd5e1', dtick: 0.25 },
-          bar: { color: S.signal === 'bullish' ? '#10b981' : S.signal === 'bearish' ? '#ef4444' : '#64748b', thickness: 0.3 },
-          bgcolor: isDark ? '#0f172a' : '#f1f5f9',
-          borderwidth: 1,
-          bordercolor: isDark ? '#334155' : '#cbd5e1',
-          steps: [
-            { range: [-1, -0.15], color: 'rgba(239,68,68,0.12)' },
-            { range: [-0.15, 0.15], color: 'rgba(100,116,139,0.08)' },
-            { range: [0.15, 1], color: 'rgba(16,185,129,0.12)' },
-          ],
-          threshold: {
-            line: { color: '#f59e0b', width: 3 },
-            thickness: 0.8,
-            value: S.avg_score,
-          },
-        },
-      }], {
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        font: { color: isDark ? '#94a3b8' : '#64748b', family: 'Inter' },
-        margin: { t: 30, b: 0, l: 40, r: 40 },
-        height: 260,
-        annotations: [
-          { x: 0.13, y: 0, text: 'Bearish', showarrow: false, font: { size: 11, color: '#ef4444' } },
-          { x: 0.5, y: 0, text: 'Neutral', showarrow: false, font: { size: 11, color: '#64748b' } },
-          { x: 0.87, y: 0, text: 'Bullish', showarrow: false, font: { size: 11, color: '#10b981' } },
-        ],
-      }, { displayModeBar: false, responsive: true });
+      // SVG arc gauge (replaces broken Plotly indicator)
+      const gaugeEl = document.getElementById('sentimentGauge');
+      if (gaugeEl) {
+        const score = S.avg_score; // -1 to +1
+        const pct = (score + 1) / 2; // 0 to 1
+        const needleColor = S.signal === 'bullish' ? '#10b981' : S.signal === 'bearish' ? '#ef4444' : '#64748b';
+        const scoreSign = score >= 0 ? '+' : '';
+
+        // Arc from 180° (left) to 0° (right), needle rotates
+        const needleAngle = 180 - pct * 180; // 180=bearish, 0=bullish
+        const cx = 150, cy = 120, r = 90;
+
+        // Pre-compute arc coordinates
+        const arcR = r; // 90
+        const bearEnd = [cx - arcR * Math.cos(Math.PI * 0.425), cy - arcR * Math.sin(Math.PI * 0.425)];
+        const bullStart = [cx + arcR * Math.cos(Math.PI * 0.425), cy - arcR * Math.sin(Math.PI * 0.425)];
+        const needleX = cx + (arcR - 18) * Math.cos(needleAngle * Math.PI / 180);
+        const needleY = cy - (arcR - 18) * Math.sin(needleAngle * Math.PI / 180);
+
+        gaugeEl.innerHTML = `
+          <svg viewBox="0 0 300 180" style="width:100%;max-width:300px;margin:0 auto;display:block;">
+            <!-- Background arc segments -->
+            <path d="M ${cx - arcR} ${cy} A ${arcR} ${arcR} 0 0 1 ${bearEnd[0]} ${bearEnd[1]}"
+                  fill="none" stroke="rgba(239,68,68,0.25)" stroke-width="16" stroke-linecap="round"/>
+            <path d="M ${bearEnd[0]} ${bearEnd[1]} A ${arcR} ${arcR} 0 0 1 ${bullStart[0]} ${bullStart[1]}"
+                  fill="none" stroke="rgba(100,116,139,0.2)" stroke-width="16"/>
+            <path d="M ${bullStart[0]} ${bullStart[1]} A ${arcR} ${arcR} 0 0 1 ${cx + arcR} ${cy}"
+                  fill="none" stroke="rgba(16,185,129,0.25)" stroke-width="16" stroke-linecap="round"/>
+
+            <!-- Needle -->
+            <line x1="${cx}" y1="${cy}" x2="${needleX}" y2="${needleY}"
+                  stroke="${needleColor}" stroke-width="2.5" stroke-linecap="round"/>
+            <circle cx="${cx}" cy="${cy}" r="5" fill="${needleColor}"/>
+            <circle cx="${cx}" cy="${cy}" r="2" fill="${isDark ? '#0f172a' : '#ffffff'}"/>
+
+            <!-- Zone labels on arc -->
+            <text x="${cx - arcR - 2}" y="${cy + 16}" text-anchor="middle" fill="#ef4444" font-size="9" font-family="Inter" font-weight="500">Bearish</text>
+            <text x="${cx}" y="${cy - arcR - 6}" text-anchor="middle" fill="#64748b" font-size="9" font-family="Inter" font-weight="500">Neutral</text>
+            <text x="${cx + arcR + 2}" y="${cy + 16}" text-anchor="middle" fill="#10b981" font-size="9" font-family="Inter" font-weight="500">Bullish</text>
+
+            <!-- Scale marks -->
+            <text x="${cx - arcR + 2}" y="${cy + 5}" text-anchor="middle" fill="${isDark ? '#475569' : '#94a3b8'}" font-size="7" font-family="Inter">-1</text>
+            <text x="${cx + arcR - 2}" y="${cy + 5}" text-anchor="middle" fill="${isDark ? '#475569' : '#94a3b8'}" font-size="7" font-family="Inter">+1</text>
+
+            <!-- Score value below gauge -->
+            <text x="${cx}" y="${cy + 42}" text-anchor="middle" fill="${needleColor}" font-size="26" font-family="Inter" font-weight="700">${scoreSign}${score.toFixed(3)}</text>
+            <text x="${cx}" y="${cy + 56}" text-anchor="middle" fill="${isDark ? '#475569' : '#94a3b8'}" font-size="9" font-family="Inter">avg sentiment score</text>
+          </svg>
+        `;
+      }
 
       // Stats under gauge
       const stats = document.getElementById('sentimentStats');
