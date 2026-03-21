@@ -158,8 +158,9 @@ processed_data/
 # Application-specific
 # =========================
 analytics.db
-best_model.h5
-best_model_backup.h5
+weights/*.h5
+weights/*.pkl
+weights/*.json
 
 # =========================
 # Flask / Django / web app

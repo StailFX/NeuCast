@@ -1,14 +1,14 @@
 import io
 import os
 import json
-import pickle
 import asyncio
-import pandas as pd
+import time
+import hashlib
+
 import numpy as np
+import pandas as pd
 import yfinance as yf
 import uvicorn
-import hashlib
-import tensorflow as tf
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
@@ -16,126 +16,25 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import load_model, clone_model
-from tensorflow.keras.layers import (
-    Layer, Conv1D, Dense, Dropout, GlobalAveragePooling1D,
-    LayerNormalization, Concatenate
+from app.db import Base, engine, SessionLocal
+from app.models import Role, User, Ticker, MarketData, Indicator, ModelInfo, Prediction, PredictionHistory
+from app.prediction import (
+    run_prediction, fetch_and_preprocess, SEQ_LEN, MODEL_COLS,
 )
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-
-# ── Custom layers for model loading ──
-
-class AttentionLayer(Layer):
-    """Bahdanau-style attention — kept for backward compatibility."""
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    def build(self, input_shape):
-        self.W = self.add_weight(name='att_W', shape=(input_shape[-1], input_shape[-1]),
-                                  initializer='glorot_uniform', trainable=True)
-        self.b = self.add_weight(name='att_b', shape=(input_shape[-1],),
-                                  initializer='zeros', trainable=True)
-        self.u = self.add_weight(name='att_u', shape=(input_shape[-1],),
-                                  initializer='glorot_uniform', trainable=True)
-
-    def call(self, x):
-        score = tf.nn.tanh(tf.tensordot(x, self.W, axes=1) + self.b)
-        weights = tf.nn.softmax(tf.tensordot(score, self.u, axes=1), axis=1)
-        return tf.reduce_sum(x * tf.expand_dims(weights, -1), axis=1)
-
-    def get_config(self):
-        return super().get_config()
-
-
-class SEBlock(Layer):
-    """Squeeze-and-Excitation block for TCN."""
-    def __init__(self, ratio=4, **kwargs):
-        super().__init__(**kwargs)
-        self.ratio = ratio
-
-    def build(self, input_shape):
-        ch = input_shape[-1]
-        self.squeeze = GlobalAveragePooling1D()
-        self.fc1 = Dense(ch // self.ratio, activation='relu')
-        self.fc2 = Dense(ch, activation='sigmoid')
-
-    def call(self, x):
-        se = self.squeeze(x)
-        se = self.fc1(se)
-        se = self.fc2(se)
-        se = tf.expand_dims(se, 1)
-        return x * se
-
-    def get_config(self):
-        config = super().get_config()
-        config["ratio"] = self.ratio
-        return config
-
-
-class TCNBlock(Layer):
-    """Temporal Convolutional Block with dilated causal convolutions."""
-    def __init__(self, filters, kernel_size, dilation_rate, dropout_rate=0.2, **kwargs):
-        super().__init__(**kwargs)
-        self.filters = filters
-        self.kernel_size = kernel_size
-        self.dilation_rate = dilation_rate
-        self.dropout_rate = dropout_rate
-
-    def build(self, input_shape):
-        self.conv1 = Conv1D(self.filters, self.kernel_size, dilation_rate=self.dilation_rate,
-                            padding='causal', activation=None)
-        self.bn1 = LayerNormalization()
-        self.conv2 = Conv1D(self.filters, self.kernel_size, dilation_rate=self.dilation_rate,
-                            padding='causal', activation=None)
-        self.bn2 = LayerNormalization()
-        self.dropout = Dropout(self.dropout_rate)
-        self.se = SEBlock(ratio=4)
-        if input_shape[-1] != self.filters:
-            self.residual_conv = Conv1D(self.filters, 1, padding='same')
-        else:
-            self.residual_conv = None
-
-    def call(self, x, training=None):
-        res = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = tf.nn.gelu(out)
-        out = self.dropout(out, training=training)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.se(out)
-        if self.residual_conv is not None:
-            res = self.residual_conv(res)
-        out = tf.nn.gelu(out + res)
-        return out
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "filters": self.filters,
-            "kernel_size": self.kernel_size,
-            "dilation_rate": self.dilation_rate,
-            "dropout_rate": self.dropout_rate,
-        })
-        return config
-
-from db import DATABASE_URL, Base, engine, SessionLocal
-from models import Role, User, Ticker, MarketData, Indicator, ModelInfo, Prediction, PredictionHistory
+# ── Paths ──
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 # Limit concurrent predictions to avoid OOM on VPS
 MAX_CONCURRENT_PREDICTIONS = 2
 _prediction_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PREDICTIONS)
-_prediction_queue_count = 0  # track waiting users
+_prediction_queue_count = 0
 
 # Simple TTL cache for predictions (key -> (result, timestamp))
-import time
 _prediction_cache: dict[str, tuple] = {}
 CACHE_TTL = 3600  # 1 hour
 
@@ -155,503 +54,9 @@ if USE_CELERY:
     except ImportError:
         USE_CELERY = False
 
-# ============================================================
-# Load model and config
-# ============================================================
-CUSTOM_OBJECTS = {
-    "AttentionLayer": AttentionLayer,
-    "SEBlock": SEBlock,
-    "TCNBlock": TCNBlock,
-}
-base_model = load_model("best_model.h5", compile=False, custom_objects=CUSTOM_OBJECTS)
-SEQ_LEN = 60
-N_FEATURES = base_model.input_shape[-1]
-
-MODEL_COLS = ["Open", "High", "Low", "Close", "Volume", "MA_5", "MA_10", "MA_20", "MA_50"]
-
-# Load model config to check type
-MODEL_TYPE = "returns"  # default to returns-based
-IS_MULTITARGET = False
-if os.path.exists("model_config.json"):
-    with open("model_config.json") as f:
-        model_cfg = json.load(f)
-        MODEL_TYPE = model_cfg.get("type", "returns")
-        IS_MULTITARGET = "direction" in model_cfg.get("outputs", [])
-
-TRAIN_RATIO = 0.8
-
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
-
-
-# ============================================================
-# Preprocessing
-# ============================================================
-def preprocess(df: pd.DataFrame) -> pd.DataFrame:
-    df = df[["Open", "High", "Low", "Close", "Volume"]].interpolate(method="time")
-
-    # RSI (14)
-    delta = df["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    df["RSI"] = 100 - (100 / (1 + avg_gain / avg_loss))
-
-    # MACD (12/26/9)
-    ema12 = df["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["Close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = ema12 - ema26
-    df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-
-    # Moving Averages
-    for w in (5, 10, 20, 50):
-        df[f"MA_{w}"] = df["Close"].rolling(w).mean()
-
-    # Bollinger Bands (20, 2)
-    df["BB_mid"] = df["Close"].rolling(20).mean()
-    df["BB_std"] = df["Close"].rolling(20).std()
-    df["BB_upper"] = df["BB_mid"] + 2 * df["BB_std"]
-    df["BB_lower"] = df["BB_mid"] - 2 * df["BB_std"]
-
-    # ATR (14)
-    high_low = df["High"] - df["Low"]
-    high_close = (df["High"] - df["Close"].shift()).abs()
-    low_close = (df["Low"] - df["Close"].shift()).abs()
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df["ATR"] = true_range.rolling(14).mean()
-
-    # Momentum features
-    df["ROC_5"] = df["Close"].pct_change(5)      # 5-day rate of change
-    df["ROC_10"] = df["Close"].pct_change(10)     # 10-day rate of change
-    df["Momentum"] = df["Close"] - df["Close"].shift(10)
-
-    # Volatility regime
-    df["Volatility_20"] = df["Close"].pct_change().rolling(20).std()
-
-    # Volume signal
-    df["Volume_MA_20"] = df["Volume"].rolling(20).mean()
-    df["Volume_Ratio"] = df["Volume"] / df["Volume_MA_20"]
-
-    # Price position within Bollinger Bands (0-1 range)
-    df["BB_pct"] = (df["Close"] - df["BB_lower"]) / (df["BB_upper"] - df["BB_lower"])
-
-    # Log returns
-    df["log_return"] = np.log(df["Close"] / df["Close"].shift(1))
-
-    df = df.dropna()
-    if len(df) < SEQ_LEN + 1:
-        raise ValueError("Недостаточно данных. Нужно минимум ~120 торговых дней.")
-    return df
-
-
-def make_sequences_X(arr: np.ndarray) -> np.ndarray:
-    X = []
-    for i in range(SEQ_LEN, len(arr)):
-        X.append(arr[i - SEQ_LEN: i])
-    return np.array(X)
-
-
-def make_sequences_Xy(scaled, returns):
-    X, y = [], []
-    for i in range(SEQ_LEN, len(scaled)):
-        X.append(scaled[i - SEQ_LEN: i])
-        y.append(returns[i])
-    return np.array(X), np.array(y)
-
-
-def make_boosting_features(data: np.ndarray) -> np.ndarray:
-    X = []
-    for i in range(SEQ_LEN, len(data)):
-        window = data[i - SEQ_LEN: i]
-        feats = []
-        for col in range(window.shape[1]):
-            col_data = window[:, col]
-            feats.extend([
-                col_data[-1], col_data.mean(), col_data.std(),
-                col_data[-1] - col_data[0], col_data[-5:].mean(),
-                np.min(col_data), np.max(col_data),
-            ])
-        X.append(feats)
-    return np.array(X)
-
-
-# ============================================================
-# Core prediction — returns-based approach
-# ============================================================
-def run_prediction(df: pd.DataFrame, days_ahead: int):
-    """
-    Returns-based pipeline:
-    1. Scale features (for TCN input)
-    2. TCN predicts log_return(t+1)
-    3. Reconstruct price: price(t) = price(t-1) * exp(predicted_return)
-    4. Train/test split for honest metrics
-    5. CatBoost + XGBoost ensemble on top
-    """
-    n_total = len(df)
-    split_idx = int(n_total * TRAIN_RATIO)
-
-    # Scale features on train only
-    scaler = MinMaxScaler((0, 1))
-    scaler.fit(df.iloc[:split_idx][MODEL_COLS])
-    scaled_all = scaler.transform(df[MODEL_COLS])
-
-    log_returns = df["log_return"].values
-    close_prices = df["Close"].values
-
-    # LSTM sequences
-    X_all, y_all = make_sequences_Xy(scaled_all, log_returns)
-    train_seq_end = split_idx - SEQ_LEN
-
-    X_train = X_all[:train_seq_end]
-    y_train = y_all[:train_seq_end]
-
-    # Fine-tune TCN on train data
-    fine_model = clone_model(base_model)
-    fine_model.set_weights(base_model.get_weights())
-
-    # Direction targets for multi-target model
-    direction_all = (log_returns[SEQ_LEN:] > 0).astype(np.float32)
-    dir_train = direction_all[:train_seq_end]
-
-    if IS_MULTITARGET:
-        fine_model.compile(
-            optimizer=tf.keras.optimizers.Adam(0.0003),
-            loss={'return_output': 'mse', 'direction_output': 'binary_crossentropy'},
-            loss_weights={'return_output': 1.0, 'direction_output': 0.5},
-        )
-    else:
-        fine_model.compile(optimizer=tf.keras.optimizers.Adam(0.0003), loss="mse")
-
-    if len(X_train) > SEQ_LEN:
-        val_size = max(0.1, SEQ_LEN / len(X_train))
-        if IS_MULTITARGET:
-            fine_model.fit(
-                X_train,
-                {'return_output': y_train, 'direction_output': dir_train},
-                epochs=10, batch_size=32,
-                validation_split=val_size,
-                callbacks=[
-                    EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=0),
-                ],
-                verbose=0,
-            )
-        else:
-            fine_model.fit(
-                X_train, y_train,
-                epochs=10, batch_size=32,
-                validation_split=val_size,
-                callbacks=[
-                    EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=0),
-                ],
-                verbose=0,
-            )
-
-    # Predict returns for all data
-    raw_pred = fine_model.predict(X_all, verbose=0)
-    if IS_MULTITARGET:
-        tcn_pred_returns = raw_pred[0].flatten()
-        tcn_direction_pred = raw_pred[1].flatten()
-    else:
-        tcn_pred_returns = raw_pred.flatten()
-        tcn_direction_pred = None
-
-    # CatBoost + XGBoost ensemble
-    X_bst_all = make_boosting_features(scaled_all)
-    X_bst_train = X_bst_all[:train_seq_end]
-    y_bst_train = y_all[:train_seq_end]
-
-    cat_pred = None
-    xgb_pred = None
-    lgb_pred = None
-    model_names = ["TCN"]
-
-    try:
-        from catboost import CatBoostRegressor
-        cat = CatBoostRegressor(
-            iterations=1000, learning_rate=0.03, depth=7, l2_leaf_reg=3,
-            random_strength=0.5, bagging_temperature=0.3,
-            verbose=0, early_stopping_rounds=80,
-        )
-        cat.fit(X_bst_train, y_bst_train,
-                eval_set=(X_bst_all[train_seq_end:], y_all[train_seq_end:]),
-                verbose=0)
-        cat_pred = cat.predict(X_bst_all)
-        model_names.append("CatBoost")
-    except Exception:
-        pass
-
-    try:
-        import xgboost as xgb
-        xgb_m = xgb.XGBRegressor(
-            n_estimators=1000, learning_rate=0.03, max_depth=7,
-            subsample=0.8, colsample_bytree=0.7,
-            reg_alpha=0.1, reg_lambda=1.0,
-            early_stopping_rounds=80, verbosity=0,
-        )
-        xgb_m.fit(X_bst_train, y_bst_train,
-                  eval_set=[(X_bst_all[train_seq_end:], y_all[train_seq_end:])],
-                  verbose=0)
-        xgb_pred = xgb_m.predict(X_bst_all)
-        model_names.append("XGBoost")
-    except Exception:
-        pass
-
-    try:
-        import lightgbm as lgbm
-        lgb_m = lgbm.LGBMRegressor(
-            n_estimators=1000, learning_rate=0.03, max_depth=7,
-            num_leaves=63, subsample=0.8, colsample_bytree=0.7,
-            reg_alpha=0.1, reg_lambda=1.0,
-            verbose=-1,
-        )
-        lgb_m.fit(X_bst_train, y_bst_train,
-                  eval_set=[(X_bst_all[train_seq_end:], y_all[train_seq_end:])],
-                  callbacks=[lgbm.early_stopping(80, verbose=False), lgbm.log_evaluation(0)])
-        lgb_pred = lgb_m.predict(X_bst_all)
-        model_names.append("LightGBM")
-    except Exception:
-        pass
-
-    # Stacking
-    from sklearn.linear_model import Ridge
-
-    stack_train = [tcn_pred_returns[:train_seq_end]]
-    stack_all = [tcn_pred_returns]
-
-    if cat_pred is not None:
-        stack_train.append(cat_pred[:train_seq_end])
-        stack_all.append(cat_pred)
-    if xgb_pred is not None:
-        stack_train.append(xgb_pred[:train_seq_end])
-        stack_all.append(xgb_pred)
-    if lgb_pred is not None:
-        stack_train.append(lgb_pred[:train_seq_end])
-        stack_all.append(lgb_pred)
-
-    if len(stack_train) > 1:
-        X_meta_train = np.column_stack(stack_train)
-        meta = Ridge(alpha=1.0)
-        meta.fit(X_meta_train, y_bst_train)
-        X_meta_all = np.column_stack(stack_all)
-        pred_returns = meta.predict(X_meta_all)
-        model_name = f"Ensemble ({'+'.join(model_names)})"
-    else:
-        pred_returns = tcn_pred_returns
-        model_name = "TCN"
-
-    # If multi-target, use direction head to adjust return sign
-    if tcn_direction_pred is not None:
-        adjusted_returns = pred_returns.copy()
-        for i in range(len(adjusted_returns)):
-            if tcn_direction_pred[i] > 0.6 and adjusted_returns[i] < 0:
-                adjusted_returns[i] = abs(adjusted_returns[i]) * 0.5
-            elif tcn_direction_pred[i] < 0.4 and adjusted_returns[i] > 0:
-                adjusted_returns[i] = -abs(adjusted_returns[i]) * 0.5
-        pred_returns = adjusted_returns
-
-    # Convert predicted returns → prices
-    # price[t] = price[t-1] * exp(predicted_return[t])
-    prev_prices = close_prices[SEQ_LEN - 1: -1]  # price at t-1
-    actual_prices = close_prices[SEQ_LEN:]         # actual price at t
-    pred_prices = prev_prices * np.exp(pred_returns)
-
-    dates = df.index[SEQ_LEN:].strftime("%Y-%m-%d").tolist()
-
-    # Per-model price predictions for comparison
-    model_comparison = {}
-    tcn_prices = prev_prices * np.exp(tcn_pred_returns)
-    model_comparison["TCN"] = tcn_prices.tolist()
-    if cat_pred is not None:
-        cat_prices = prev_prices * np.exp(cat_pred)
-        model_comparison["CatBoost"] = cat_prices.tolist()
-    if xgb_pred is not None:
-        xgb_prices = prev_prices * np.exp(xgb_pred)
-        model_comparison["XGBoost"] = xgb_prices.tolist()
-    if lgb_pred is not None:
-        lgb_prices = prev_prices * np.exp(lgb_pred)
-        model_comparison["LightGBM"] = lgb_prices.tolist()
-    model_comparison["Ensemble"] = pred_prices.tolist()
-
-    # Per-model metrics on test set
-    test_start = train_seq_end
-    y_act_test = actual_prices[test_start:]
-
-    def calc_metrics(y_true, y_pred_arr):
-        _mae = mean_absolute_error(y_true, y_pred_arr)
-        _rmse = float(np.sqrt(mean_squared_error(y_true, y_pred_arr)))
-        _mape = float(np.mean(np.abs((y_true - y_pred_arr) / y_true)) * 100)
-        ss_r = np.sum((y_true - y_pred_arr) ** 2)
-        ss_t = np.sum((y_true - np.mean(y_true)) ** 2)
-        _r2 = float(1 - ss_r / ss_t) if ss_t > 0 else 0.0
-        return {"mae": round(_mae, 2), "rmse": round(_rmse, 2), "mape": round(_mape, 2), "r2": round(_r2, 4)}
-
-    model_metrics = {}
-    model_metrics["TCN"] = calc_metrics(y_act_test, tcn_prices[test_start:])
-    if cat_pred is not None:
-        model_metrics["CatBoost"] = calc_metrics(y_act_test, cat_prices[test_start:])
-    if xgb_pred is not None:
-        model_metrics["XGBoost"] = calc_metrics(y_act_test, xgb_prices[test_start:])
-    if lgb_pred is not None:
-        model_metrics["LightGBM"] = calc_metrics(y_act_test, lgb_prices[test_start:])
-    model_metrics["Ensemble"] = calc_metrics(y_act_test, pred_prices[test_start:])
-
-    # Feature importance from boosting models
-    feature_importance = {}
-    feat_names = []
-    for col_idx in range(len(MODEL_COLS)):
-        for stat in ["last", "mean", "std", "diff", "ma5", "min", "max"]:
-            feat_names.append(f"{MODEL_COLS[col_idx]}_{stat}")
-
-    if cat_pred is not None:
-        try:
-            cat_imp = cat.get_feature_importance()
-            top_idx = np.argsort(cat_imp)[::-1][:15]
-            feature_importance["CatBoost"] = {
-                "names": [feat_names[i] for i in top_idx],
-                "values": [round(float(cat_imp[i]), 2) for i in top_idx],
-            }
-        except Exception:
-            pass
-    if xgb_pred is not None:
-        try:
-            xgb_imp = xgb_m.feature_importances_
-            top_idx = np.argsort(xgb_imp)[::-1][:15]
-            feature_importance["XGBoost"] = {
-                "names": [feat_names[i] for i in top_idx],
-                "values": [round(float(xgb_imp[i]), 4) for i in top_idx],
-            }
-        except Exception:
-            pass
-    if lgb_pred is not None:
-        try:
-            lgb_imp = lgb_m.feature_importances_.astype(float)
-            top_idx = np.argsort(lgb_imp)[::-1][:15]
-            feature_importance["LightGBM"] = {
-                "names": [feat_names[i] for i in top_idx],
-                "values": [round(float(lgb_imp[i]), 2) for i in top_idx],
-            }
-        except Exception:
-            pass
-
-    # Residuals (test only)
-    y_pred_test = pred_prices[test_start:]
-    residuals = (y_act_test - y_pred_test).tolist()
-
-    # Metrics on TEST only (ensemble)
-    mae = model_metrics["Ensemble"]["mae"]
-    rmse = model_metrics["Ensemble"]["rmse"]
-    mape = model_metrics["Ensemble"]["mape"]
-    r2 = model_metrics["Ensemble"]["r2"]
-
-    # Direction accuracy
-    actual_dir = (actual_prices[test_start:] > prev_prices[test_start:]).astype(int)
-    pred_dir = (pred_prices[test_start:] > prev_prices[test_start:]).astype(int)
-    dir_acc = float(np.mean(actual_dir == pred_dir) * 100)
-
-    # If multi-target model, use direction head to improve predictions
-    if tcn_direction_pred is not None:
-        dir_cls = tcn_direction_pred[test_start:]
-        pred_dir_cls = (dir_cls > 0.5).astype(int)
-        dir_acc_cls = float(np.mean(actual_dir == pred_dir_cls) * 100)
-        # Use the better direction accuracy
-        if dir_acc_cls > dir_acc:
-            dir_acc = dir_acc_cls
-
-    # Correlation matrix of features
-    corr_cols = ["Close", "Volume", "RSI", "MACD", "MA_5", "MA_20", "MA_50", "ATR", "BB_upper", "BB_lower"]
-    corr_data = df[corr_cols].corr().round(3).values.tolist()
-    corr_labels = corr_cols
-
-    # Future forecast: GBM (Geometric Brownian Motion) + model signal
-    #
-    # The model reliably predicts 1-day returns (MAPE <1%).
-    # For multi-day forecast, we use Monte Carlo GBM:
-    #   S(t+1) = S(t) * exp((mu - σ²/2)*dt + σ*sqrt(dt)*Z)
-    # where:
-    #   mu = model's predicted drift (from last prediction)
-    #   σ  = historical volatility (annualized, from recent returns)
-    #   Z  = random normal
-    #
-    # This is standard in quantitative finance (Black-Scholes framework).
-    future_dates, future_preds, future_upper, future_lower = [], [], [], []
-    future_p50, future_p5, future_p95 = [], [], []
-
-    if days_ahead > 0:
-        N_SIM = 1000
-        last_price = close_prices[-1]
-
-        # Historical daily returns for volatility estimation (last 60 days)
-        recent_returns = log_returns[-60:]
-        mu_hist = float(np.mean(recent_returns))   # historical daily drift
-        sigma_daily = float(np.std(recent_returns))  # daily volatility
-
-        # Model's predicted drift: use the ensemble's last prediction as signal
-        model_signal = float(pred_returns[-1])
-
-        # Blend: 70% model signal + 30% historical mean for drift
-        mu = 0.7 * model_signal + 0.3 * mu_hist
-        dt = 1.0  # 1 day
-
-        # Generate trajectories
-        np.random.seed(42)
-        Z = np.random.standard_normal((N_SIM, days_ahead))
-        daily_returns = (mu - 0.5 * sigma_daily**2) * dt + sigma_daily * np.sqrt(dt) * Z
-        cum_returns = np.cumsum(daily_returns, axis=1)
-        trajectories = last_price * np.exp(cum_returns)
-
-        future_dates = pd.bdate_range(
-            start=df.index[-1] + pd.Timedelta(1, "d"), periods=days_ahead
-        ).strftime("%Y-%m-%d").tolist()
-
-        # Percentiles across simulations
-        future_preds = np.median(trajectories, axis=0).tolist()        # median
-        future_p5 = np.percentile(trajectories, 5, axis=0).tolist()    # 5th percentile
-        future_p95 = np.percentile(trajectories, 95, axis=0).tolist()  # 95th percentile
-        future_upper = np.percentile(trajectories, 75, axis=0).tolist() # 75th
-        future_lower = np.percentile(trajectories, 25, axis=0).tolist() # 25th
-
-    return {
-        "dates": dates,
-        "y_act": actual_prices,
-        "y_pred": pred_prices,
-        "train_size": train_seq_end,
-        "mae": mae,
-        "rmse": rmse,
-        "mape": mape,
-        "r2": r2,
-        "dir_acc": dir_acc,
-        "model_name": model_name,
-        "future_dates": future_dates,
-        "future_preds": future_preds,
-        "future_upper": future_upper,
-        "future_lower": future_lower,
-        "future_p5": future_p5,
-        "future_p95": future_p95,
-        "rsi": df["RSI"].values[SEQ_LEN:].round(2).tolist(),
-        "macd": df["MACD"].values[SEQ_LEN:].round(2).tolist(),
-        "signal": df["Signal"].values[SEQ_LEN:].round(2).tolist(),
-        "bb_upper": df["BB_upper"].values[SEQ_LEN:].round(2).tolist(),
-        "bb_lower": df["BB_lower"].values[SEQ_LEN:].round(2).tolist(),
-        "atr": df["ATR"].values[SEQ_LEN:].round(2).tolist(),
-        "date_index": df.index[SEQ_LEN:],
-        "model_comparison": model_comparison,
-        "model_metrics": model_metrics,
-        "feature_importance": feature_importance,
-        "residuals": residuals,
-        "corr_data": corr_data,
-        "corr_labels": corr_labels,
-    }
-
-
-def fetch_and_preprocess(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    df_raw = yf.download(ticker, start=start_date, end=end_date, interval="1d", progress=False)
-    if df_raw.empty:
-        raise HTTPException(404, "Нет данных по указанному тикеру и диапазону дат")
-    if isinstance(df_raw.columns, pd.MultiIndex):
-        df_raw.columns = df_raw.columns.get_level_values(0)
-    return preprocess(df_raw)
 
 
 # ============================================================
@@ -973,7 +378,6 @@ async def predict_status_page(
     days_ahead: int = 0,
     role: str = Depends(get_current_role),
 ):
-    """Waiting page that polls task status via JS."""
     if not role:
         return RedirectResponse("/login")
     return templates.TemplateResponse("waiting.html", {
@@ -988,7 +392,6 @@ async def predict_status_page(
 
 @app.get("/api/task/{task_id}")
 async def task_status(task_id: str):
-    """API endpoint to check Celery task status."""
     if not USE_CELERY or not celery_app:
         return {"state": "FAILURE", "error": "Celery not configured"}
 
@@ -1020,7 +423,6 @@ async def predict_result(
     role: str = Depends(get_current_role),
     user: User = Depends(get_current_user),
 ):
-    """Render prediction result from completed Celery task."""
     if not role:
         return RedirectResponse("/login")
     if not USE_CELERY or not celery_app:
@@ -1051,7 +453,7 @@ async def predict_result(
     end_date = result.get("end_date", "")
     days_ahead = result.get("days_ahead", 0)
 
-    # Save to DB (same logic as sync predict)
+    # Save to DB
     db_ticker = db.query(Ticker).filter_by(symbol=ticker).first()
     if not db_ticker:
         db_ticker = Ticker(symbol=ticker)
@@ -1308,25 +710,20 @@ def download_pdf(ticker: str, start_date: str, end_date: str, days_ahead: int = 
     plt.close(fig)
     chart_files.append(f4.name)
 
-    LOGO_PATH = os.path.join(os.path.dirname(__file__), "static", "logo.png")
+    LOGO_PATH = os.path.join(BASE_DIR, "static", "logo.png")
 
     # --- Build PDF ---
     class StyledPDF(FPDF):
         def header(self):
-            # Dark navbar background
             self.set_fill_color(15, 23, 42)
             self.rect(0, 0, 210, 18, "F")
-            # Bottom border
             self.set_fill_color(51, 65, 85)
             self.rect(0, 18, 210, 0.3, "F")
-            # Logo image
             self.image(LOGO_PATH, x=10, y=3, h=12)
-            # Brand
             self.set_font("Helvetica", "B", 11)
             self.set_text_color(241, 245, 249)
             self.set_xy(24, 3)
             self.cell(40, 12, "NeuCast")
-            # Right text
             self.set_font("Helvetica", "", 7.5)
             self.set_text_color(100, 116, 139)
             self.set_xy(150, 4)
@@ -1335,13 +732,10 @@ def download_pdf(ticker: str, start_date: str, end_date: str, days_ahead: int = 
 
         def footer(self):
             self.set_y(-13)
-            # Dark footer
             self.set_fill_color(15, 23, 42)
             self.rect(0, self.get_y(), 210, 16, "F")
-            # Top border
             self.set_fill_color(51, 65, 85)
             self.rect(0, self.get_y(), 210, 0.3, "F")
-            # Logo mini
             self.image(LOGO_PATH, x=10, y=self.get_y() + 2.5, h=7)
             self.set_xy(19, self.get_y() + 1)
             self.set_font("Helvetica", "B", 6.5)
@@ -1374,7 +768,6 @@ def download_pdf(ticker: str, start_date: str, end_date: str, days_ahead: int = 
     # ====== PAGE 1: Overview ======
     pdf.add_page()
 
-    # Title card
     ticker_names = {"GC=F": "Gold Futures (XAU/USD)", "SI=F": "Silver Futures", "CL=F": "Crude Oil WTI"}
     full_name = ticker_names.get(ticker, ticker)
 
@@ -1471,7 +864,6 @@ def download_pdf(ticker: str, start_date: str, end_date: str, days_ahead: int = 
 
 @app.get("/api/queue_status")
 async def queue_status():
-    """Return prediction queue status."""
     return {
         "active": MAX_CONCURRENT_PREDICTIONS - _prediction_semaphore._value,
         "waiting": max(0, _prediction_queue_count - MAX_CONCURRENT_PREDICTIONS),
@@ -1481,7 +873,6 @@ async def queue_status():
 
 @app.get("/api/live_price")
 async def live_price(ticker: str = "GC=F"):
-    """Return current price for the live ticker in navbar."""
     try:
         t = yf.Ticker(ticker)
         info = t.fast_info
@@ -1502,4 +893,4 @@ async def live_price(ticker: str = "GC=F"):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

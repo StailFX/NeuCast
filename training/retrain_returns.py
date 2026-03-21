@@ -127,7 +127,7 @@ def main():
     parser.add_argument("--end", default="2026-03-21")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--output", default="best_model.h5")
+    parser.add_argument("--output", default=os.path.join(os.path.dirname(__file__), "..", "weights", "best_model.h5"))
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -255,11 +255,12 @@ def main():
         "seq_len": SEQ_LEN,
         "n_features": len(MODEL_COLS),
     }
-    with open("model_config.json", "w") as f:
+    config_path = os.path.join(os.path.dirname(__file__), "..", "weights", "model_config.json")
+    with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
 
     print(f"\n  Model saved: {args.output}")
-    print(f"  Config saved: model_config.json")
+    print(f"  Config saved: {config_path}")
     print(f"\n  Restart app.py to use the new model.")
 
 

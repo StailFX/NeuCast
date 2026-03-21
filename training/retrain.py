@@ -131,10 +131,11 @@ history = model.fit(
 )
 
 # Save model
-model.save("best_model.h5")
+WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "..", "weights")
+model.save(os.path.join(WEIGHTS_DIR, "best_model.h5"))
 
 # Save scaler
-with open("scaler.pkl", "wb") as f:
+with open(os.path.join(WEIGHTS_DIR, "scaler.pkl"), "wb") as f:
     pickle.dump(scaler, f)
 
 # Save config
@@ -145,12 +146,12 @@ config = {
     "seq_len": SEQ_LEN,
     "n_features": len(FEATURES),
 }
-with open("model_config.json", "w") as f:
+with open(os.path.join(WEIGHTS_DIR, "model_config.json"), "w") as f:
     json.dump(config, f, indent=2)
 
-print("\nМодель сохранена: best_model.h5")
-print("Scaler сохранён: scaler.pkl")
-print("Конфиг: model_config.json")
+print(f"\nМодель сохранена: {WEIGHTS_DIR}/best_model.h5")
+print(f"Scaler сохранён: {WEIGHTS_DIR}/scaler.pkl")
+print(f"Конфиг: {WEIGHTS_DIR}/model_config.json")
 
 # ---- Evaluate on test set ----
 # For test: reconstruct prices from predicted returns

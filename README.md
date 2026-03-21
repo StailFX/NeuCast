@@ -84,26 +84,26 @@ export REDIS_URL="redis://localhost:6379/0"
 export USE_CELERY=1
 
 # Запуск Celery worker (отдельный терминал):
-celery -A celery_worker worker --loglevel=info --concurrency=2
+celery -A app.celery_worker worker --loglevel=info --concurrency=2
 
 # Запуск приложения:
-uvicorn app:app --host 0.0.0.0 --port 8100
+uvicorn app.main:app --host 0.0.0.0 --port 8100
 ```
 
 ## Обучение модели
 
 ```bash
 # Multi-target TCN (основная):
-python retrain_tcn.py --epochs 120
+python training/retrain_tcn.py --epochs 120
 
 # LSTM + Attention (для сравнения):
-python retrain_returns.py --epochs 80
+python training/retrain_returns.py --epochs 80
 ```
 
 Параметры:
 - `--ticker` — тикер Yahoo Finance (default: `GC=F` — золото)
 - `--start` / `--end` — период данных
-- `--output` — путь к файлу модели
+- `--output` — путь к файлу модели (default: `weights/best_model.h5`)
 
 ## Метрики (Gold GC=F, тестовая выборка)
 
@@ -118,24 +118,33 @@ python retrain_returns.py --epochs 80
 
 ```
 .
-├── app.py               # FastAPI приложение
-├── celery_worker.py     # Celery задачи для фоновых прогнозов
-├── db.py                # SQLAlchemy подключение к БД
-├── models.py            # ORM модели (User, Ticker, Prediction...)
-├── retrain_tcn.py       # Обучение multi-target TCN
-├── retrain_returns.py   # Обучение LSTM (baseline)
-├── best_model.h5        # Обученная модель (не в git)
-├── model_config.json    # Конфигурация модели
-├── requirements.txt     # Python зависимости
-├── Dockerfile
-├── docker-compose.yml
-├── nginx/               # Конфиг Nginx
-├── templates/           # Jinja2 шаблоны
-│   ├── landing.html     # Лендинг
-│   ├── form.html        # Форма прогноза
-│   ├── predict.html     # Результаты
-│   ├── waiting.html     # Страница ожидания (Celery)
+├── app/                     # Основной пакет приложения
+│   ├── __init__.py          # Экспорт FastAPI app
+│   ├── main.py              # FastAPI роуты, middleware, startup
+│   ├── prediction.py        # ML pipeline (TCN + Ensemble + Monte Carlo)
+│   ├── celery_worker.py     # Celery задачи для фоновых прогнозов
+│   ├── db.py                # SQLAlchemy подключение к БД
+│   ├── models.py            # ORM модели (User, Ticker, Prediction...)
+│   └── layers.py            # Кастомные Keras слои (TCNBlock, SEBlock, Attention)
+├── weights/                 # Обученные модели (не в git)
+│   ├── best_model.h5        # Основная TCN модель
+│   ├── model_config.json    # Конфигурация модели
+│   └── scaler.pkl           # Скейлер признаков
+├── training/                # Скрипты обучения
+│   ├── retrain_tcn.py       # Multi-target TCN обучение
+│   ├── retrain_returns.py   # LSTM baseline обучение
+│   ├── retrain.py           # Простое обучение
+│   └── train_model.py       # Ensemble training pipeline
+├── templates/               # Jinja2 шаблоны
+│   ├── landing.html         # Лендинг
+│   ├── form.html            # Форма прогноза
+│   ├── predict.html         # Результаты с графиками
+│   ├── waiting.html         # Страница ожидания (Celery)
 │   ├── login.html
 │   └── register.html
-└── static/              # Статика (logo, favicon)
+├── static/                  # Статика (logo, favicon)
+├── nginx/                   # Конфиг Nginx
+├── requirements.txt
+├── Dockerfile
+└── docker-compose.yml
 ```

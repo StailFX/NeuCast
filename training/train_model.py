@@ -208,7 +208,7 @@ def main():
     parser.add_argument("--end", default="2025-12-31")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--output", default="best_model.h5")
+    parser.add_argument("--output", default=os.path.join(os.path.dirname(__file__), "..", "weights", "best_model.h5"))
     args = parser.parse_args()
 
     # ---- Load data ----
@@ -402,7 +402,8 @@ def main():
         pickle.dump(meta_model, f)
 
     # Save scaler
-    with open("scaler.pkl", "wb") as f:
+    weights_dir = os.path.join(os.path.dirname(__file__), "..", "weights")
+    with open(os.path.join(weights_dir, "scaler.pkl"), "wb") as f:
         pickle.dump(scaler, f)
 
     # Save ensemble config

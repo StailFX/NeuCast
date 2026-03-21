@@ -40,8 +40,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       USE_CELERY: "1"
     volumes:
-      - ./best_model.h5:/app/best_model.h5
-      - ./model_config.json:/app/model_config.json
+      - ./weights:/app/weights
     ports:
       - "8100:8100"
     depends_on:
@@ -54,13 +53,12 @@ services:
   celery:
     build: .
     restart: always
-    command: celery -A celery_worker worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
+    command: celery -A app.celery_worker worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
     environment:
       DATABASE_URL: postgresql://neucast:${POSTGRES_PASSWORD:-changeme}@postgres:5432/neucast
       REDIS_URL: redis://redis:6379/0
     volumes:
-      - ./best_model.h5:/app/best_model.h5
-      - ./model_config.json:/app/model_config.json
+      - ./weights:/app/weights
     depends_on:
       postgres:
         condition: service_healthy
