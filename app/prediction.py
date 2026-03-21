@@ -121,6 +121,131 @@ def make_boosting_features(data: np.ndarray) -> np.ndarray:
     return np.array(X)
 
 
+def _run_backtest(dates, actual_prices, pred_returns, prev_prices, initial_capital=10000.0):
+    """
+    Simulate a long/short strategy on test set based on model signals.
+
+    Strategy:
+    - If predicted return > 0 → BUY (long)
+    - If predicted return < 0 → SELL (short)
+    - Position size: 100% of capital each day (fully invested)
+
+    Returns dict with equity curve, metrics, and trade log.
+    """
+    n = len(dates)
+    if n < 2:
+        return None
+
+    capital = initial_capital
+    equity = [capital]
+    positions = []        # list of {date, action, price, pnl, capital}
+    daily_returns = []
+    wins = 0
+    losses = 0
+
+    actual_daily_returns = np.diff(actual_prices) / actual_prices[:-1]
+
+    for i in range(n - 1):
+        signal = pred_returns[i]
+        actual_ret = actual_daily_returns[i]
+
+        # Long if positive signal, short if negative
+        if signal > 0:
+            action = "LONG"
+            pnl = capital * actual_ret
+        else:
+            action = "SHORT"
+            pnl = capital * (-actual_ret)
+
+        capital += pnl
+        equity.append(capital)
+        daily_returns.append(pnl / equity[-2] if equity[-2] > 0 else 0)
+
+        if pnl > 0:
+            wins += 1
+        elif pnl < 0:
+            losses += 1
+
+        positions.append({
+            "date": dates[i],
+            "action": action,
+            "price": round(float(actual_prices[i]), 2),
+            "signal": round(float(signal), 6),
+            "pnl": round(float(pnl), 2),
+            "capital": round(float(capital), 2),
+        })
+
+    # Buy & Hold comparison
+    bnh_equity = [initial_capital]
+    for i in range(n - 1):
+        bnh_equity.append(bnh_equity[-1] * (1 + actual_daily_returns[i]))
+
+    total_trades = wins + losses
+    total_return = (capital - initial_capital) / initial_capital * 100
+    bnh_return = (bnh_equity[-1] - initial_capital) / initial_capital * 100
+
+    # Sharpe ratio (annualized, assuming 252 trading days)
+    dr = np.array(daily_returns)
+    sharpe = float(np.mean(dr) / np.std(dr) * np.sqrt(252)) if len(dr) > 1 and np.std(dr) > 0 else 0.0
+
+    # Max drawdown
+    eq = np.array(equity)
+    peak = np.maximum.accumulate(eq)
+    drawdown = (eq - peak) / peak
+    max_drawdown = float(np.min(drawdown) * 100)
+
+    # Profit factor
+    gross_profit = sum(d for d in daily_returns if d > 0)
+    gross_loss = abs(sum(d for d in daily_returns if d < 0))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+    # Win streak / loss streak
+    max_win_streak = 0
+    max_loss_streak = 0
+    cur_win = 0
+    cur_loss = 0
+    for d in daily_returns:
+        if d > 0:
+            cur_win += 1
+            cur_loss = 0
+            max_win_streak = max(max_win_streak, cur_win)
+        elif d < 0:
+            cur_loss += 1
+            cur_win = 0
+            max_loss_streak = max(max_loss_streak, cur_loss)
+        else:
+            cur_win = 0
+            cur_loss = 0
+
+    # Average win / average loss
+    win_returns = [d for d in daily_returns if d > 0]
+    loss_returns = [d for d in daily_returns if d < 0]
+    avg_win = float(np.mean(win_returns) * 100) if win_returns else 0.0
+    avg_loss = float(np.mean(loss_returns) * 100) if loss_returns else 0.0
+
+    return {
+        "equity": [round(e, 2) for e in equity],
+        "bnh_equity": [round(e, 2) for e in bnh_equity],
+        "dates": dates,
+        "total_return": round(total_return, 2),
+        "bnh_return": round(bnh_return, 2),
+        "sharpe": round(sharpe, 2),
+        "max_drawdown": round(max_drawdown, 2),
+        "win_rate": round(wins / total_trades * 100, 1) if total_trades > 0 else 0,
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": losses,
+        "profit_factor": round(profit_factor, 2) if profit_factor != float('inf') else 999.99,
+        "max_win_streak": max_win_streak,
+        "max_loss_streak": max_loss_streak,
+        "avg_win": round(avg_win, 2),
+        "avg_loss": round(avg_loss, 2),
+        "final_capital": round(capital, 2),
+        "initial_capital": initial_capital,
+        "trades": positions[-20:],  # last 20 trades for display
+    }
+
+
 def run_prediction(df: pd.DataFrame, days_ahead: int):
     base_model, MODEL_TYPE, IS_MULTITARGET = _get_model()
 
@@ -463,6 +588,14 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         future_upper = np.percentile(trajectories, 75, axis=0).tolist()
         future_lower = np.percentile(trajectories, 25, axis=0).tolist()
 
+    # ── Backtesting (test set only) ──
+    backtest = _run_backtest(
+        dates[test_start:],
+        actual_prices[test_start:],
+        pred_returns[test_start:],
+        close_prices[SEQ_LEN + test_start - 1: SEQ_LEN + len(actual_prices) - 1],  # prev prices for test
+    )
+
     return {
         "dates": dates,
         "y_act": actual_prices,
@@ -491,6 +624,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int):
         "residuals": residuals,
         "corr_data": corr_data,
         "corr_labels": corr_labels,
+        "backtest": backtest,
     }
 
 

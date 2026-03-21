@@ -646,6 +646,69 @@
       <div class="charts-grid" id="shap_beeswarm_grid" style="margin-top:1rem;"></div>
     </div>
 
+    <!-- ========== BACKTESTING ========== -->
+    <div class="section-title"><div class="section-icon">&#9733;</div> Backtesting</div>
+
+    <div id="backtest_section">
+      <!-- Backtest metrics row -->
+      <div class="metrics-row" id="bt_metrics" style="margin-bottom:1rem;">
+        <div class="metric-card">
+          <div class="metric-label">Strategy Return</div>
+          <div class="metric-value" id="btReturn">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Buy & Hold</div>
+          <div class="metric-value" id="btBnH">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Sharpe Ratio</div>
+          <div class="metric-value" id="btSharpe">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Max Drawdown</div>
+          <div class="metric-value" id="btDrawdown">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Win Rate</div>
+          <div class="metric-value" id="btWinRate">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Profit Factor</div>
+          <div class="metric-value" id="btPF">—</div>
+        </div>
+      </div>
+
+      <!-- Equity curve chart -->
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">Equity Curve: Strategy vs Buy & Hold</span>
+          <div class="chart-badges">
+            <span class="chart-card-badge badge-green">Strategy</span>
+            <span class="chart-card-badge badge-blue">Buy & Hold</span>
+          </div>
+        </div>
+        <div id="bt_equity_chart" style="height:400px;"></div>
+      </div>
+
+      <!-- Stats + Trade log -->
+      <div class="charts-grid" style="margin-top:1rem;">
+        <div class="chart-card" style="padding:1.25rem;">
+          <div class="chart-card-header">
+            <span class="chart-card-title">Статистика стратегии</span>
+            <span class="chart-card-badge badge-green">Summary</span>
+          </div>
+          <div id="bt_stats" style="font-size:0.85rem;line-height:2;color:var(--text-dim);"></div>
+        </div>
+        <div class="chart-card" style="padding:1.25rem;">
+          <div class="chart-card-header">
+            <span class="chart-card-title">Последние сделки</span>
+            <span class="chart-card-badge badge-amber">Trade Log</span>
+          </div>
+          <div id="bt_trades" style="max-height:400px;overflow-y:auto;"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- ========== RESIDUAL ANALYSIS ========== -->
     <div class="section-title"><div class="section-icon">&#916;</div> Анализ остатков (Residuals)</div>
     <div class="charts-grid">
@@ -1132,6 +1195,115 @@
       }
     }
 
+    /* =============== BACKTESTING =============== */
+    function plotBacktest() {
+      const B = D.backtest;
+      if (!B) {
+        const sec = document.getElementById('backtest_section');
+        if (sec) sec.style.display = 'none';
+        return;
+      }
+
+      const isDark = html.getAttribute('data-theme') === 'dark';
+      const L = getPlotlyTheme();
+
+      // Metrics cards
+      const retColor = B.total_return >= 0 ? '#10b981' : '#ef4444';
+      const bnhColor = B.bnh_return >= 0 ? '#10b981' : '#ef4444';
+      document.getElementById('btReturn').innerHTML = `<span style="color:${retColor}">${B.total_return >= 0 ? '+' : ''}${B.total_return}%</span>`;
+      document.getElementById('btBnH').innerHTML = `<span style="color:${bnhColor}">${B.bnh_return >= 0 ? '+' : ''}${B.bnh_return}%</span>`;
+      document.getElementById('btSharpe').innerHTML = `<span style="color:${B.sharpe >= 1 ? '#10b981' : B.sharpe >= 0 ? '#f59e0b' : '#ef4444'}">${B.sharpe}</span>`;
+      document.getElementById('btDrawdown').innerHTML = `<span style="color:#ef4444">${B.max_drawdown}%</span>`;
+      document.getElementById('btWinRate').innerHTML = `<span style="color:${B.win_rate >= 50 ? '#10b981' : '#ef4444'}">${B.win_rate}%</span>`;
+      document.getElementById('btPF').innerHTML = `<span style="color:${B.profit_factor >= 1 ? '#10b981' : '#ef4444'}">${B.profit_factor}</span>`;
+
+      // Equity curve
+      Plotly.newPlot('bt_equity_chart', [
+        {
+          x: B.dates,
+          y: B.equity,
+          name: 'Strategy',
+          mode: 'lines',
+          line: { color: '#10b981', width: 2 },
+          fill: 'tozeroy',
+          fillcolor: 'rgba(16,185,129,0.05)',
+        },
+        {
+          x: B.dates,
+          y: B.bnh_equity,
+          name: 'Buy & Hold',
+          mode: 'lines',
+          line: { color: '#3b82f6', width: 2, dash: 'dot' },
+        },
+        {
+          x: [B.dates[0], B.dates[B.dates.length - 1]],
+          y: [B.initial_capital, B.initial_capital],
+          name: 'Initial Capital',
+          mode: 'lines',
+          line: { color: '#64748b', width: 1, dash: 'dash' },
+          showlegend: false,
+        },
+      ], {
+        ...L,
+        yaxis: { ...L.yaxis, tickprefix: '$' },
+        legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(0,0,0,0)', font: { size: 11 } },
+      }, C);
+
+      // Stats block
+      const alpha = B.total_return - B.bnh_return;
+      const alphaColor = alpha >= 0 ? '#10b981' : '#ef4444';
+      document.getElementById('bt_stats').innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.25rem 1.5rem;">
+          <span>Initial Capital:</span><span style="color:var(--text);font-weight:600;">$${B.initial_capital.toLocaleString()}</span>
+          <span>Final Capital:</span><span style="color:${retColor};font-weight:600;">$${B.final_capital.toLocaleString()}</span>
+          <span>Strategy Return:</span><span style="color:${retColor};font-weight:600;">${B.total_return >= 0 ? '+' : ''}${B.total_return}%</span>
+          <span>Buy & Hold Return:</span><span style="color:${bnhColor};">${B.bnh_return >= 0 ? '+' : ''}${B.bnh_return}%</span>
+          <span>Alpha:</span><span style="color:${alphaColor};font-weight:600;">${alpha >= 0 ? '+' : ''}${alpha.toFixed(2)}%</span>
+          <span>Sharpe Ratio:</span><span style="color:var(--text);">${B.sharpe}</span>
+          <span>Max Drawdown:</span><span style="color:#ef4444;">${B.max_drawdown}%</span>
+          <span>Profit Factor:</span><span style="color:var(--text);">${B.profit_factor}</span>
+          <span>Total Trades:</span><span style="color:var(--text);">${B.total_trades}</span>
+          <span>Win / Loss:</span><span style="color:var(--text);">${B.wins} / ${B.losses}</span>
+          <span>Win Streak:</span><span style="color:#10b981;">${B.max_win_streak}</span>
+          <span>Loss Streak:</span><span style="color:#ef4444;">${B.max_loss_streak}</span>
+          <span>Avg Win:</span><span style="color:#10b981;">${B.avg_win}%</span>
+          <span>Avg Loss:</span><span style="color:#ef4444;">${B.avg_loss}%</span>
+        </div>
+      `;
+
+      // Trade log
+      const tradesEl = document.getElementById('bt_trades');
+      if (tradesEl && B.trades) {
+        tradesEl.innerHTML = `
+          <table style="width:100%;font-size:0.78rem;border-collapse:collapse;">
+            <thead>
+              <tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:0.4rem;">Date</th>
+                <th style="text-align:center;padding:0.4rem;">Action</th>
+                <th style="text-align:right;padding:0.4rem;">Price</th>
+                <th style="text-align:right;padding:0.4rem;">PnL</th>
+                <th style="text-align:right;padding:0.4rem;">Capital</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${B.trades.map(t => `
+                <tr style="border-bottom:1px solid var(--border);transition:background 0.15s;" onmouseover="this.style.background='var(--row-hover)'" onmouseout="this.style.background=''">
+                  <td style="padding:0.4rem;color:var(--text-dim);">${t.date}</td>
+                  <td style="padding:0.4rem;text-align:center;">
+                    <span style="padding:0.15rem 0.5rem;border-radius:4px;font-weight:600;font-size:0.7rem;
+                      ${t.action === 'LONG' ? 'background:rgba(16,185,129,0.15);color:#10b981;' : 'background:rgba(239,68,68,0.15);color:#ef4444;'}">${t.action}</span>
+                  </td>
+                  <td style="padding:0.4rem;text-align:right;color:var(--text);">$${t.price}</td>
+                  <td style="padding:0.4rem;text-align:right;font-weight:600;color:${t.pnl >= 0 ? '#10b981' : '#ef4444'};">${t.pnl >= 0 ? '+' : ''}$${t.pnl}</td>
+                  <td style="padding:0.4rem;text-align:right;color:var(--text-dim);">$${t.capital.toLocaleString()}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+    }
+
     /* =============== RESIDUAL ANALYSIS =============== */
     function plotResiduals() {
       const el1 = document.getElementById('residual_hist');
@@ -1422,6 +1594,7 @@
       plotSentiment();
       plotFeatureImportance();
       plotShap();
+      plotBacktest();
       plotResiduals();
       plotCorrelation();
       plotOriginal();
