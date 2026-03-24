@@ -4,6 +4,7 @@ import json
 import asyncio
 import time
 import hashlib
+import secrets
 
 import numpy as np
 import pandas as pd
@@ -69,19 +70,9 @@ def hash_password(password: str) -> str:
 def startup_event():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
-    admin_role = db.query(Role).filter_by(name="admin").first()
-    if not admin_role:
-        admin_role = Role(name="admin")
-        user_role = Role(name="user")
-        db.add_all([admin_role, user_role])
+    if not db.query(Role).filter_by(name="admin").first():
+        db.add_all([Role(name="admin"), Role(name="user")])
         db.commit()
-    else:
-        user_role = db.query(Role).filter_by(name="user").first()
-    if not db.query(User).filter_by(username="admin").first():
-        db.add(User(username="<redacted>", password=hash_password("<redacted>"), role_id=admin_role.id))
-    if not db.query(User).filter_by(username="user").first():
-        db.add(User(username="<redacted>", password=hash_password("<redacted>"), role_id=user_role.id))
-    db.commit()
     db.close()
 
 
@@ -93,19 +84,16 @@ def get_db():
         db.close()
 
 
-async def get_current_role(request: Request, db: Session = Depends(get_db)):
-    username = request.cookies.get("username")
-    if not username:
-        return None
-    user = db.query(User).filter(User.username == username).first()
-    return user.role.name if user else None
-
-
 async def get_current_user(request: Request, db: Session = Depends(get_db)):
-    username = request.cookies.get("username")
-    if not username:
+    token = request.cookies.get("session")
+    if not token:
         return None
-    return db.query(User).filter(User.username == username).first()
+    return db.query(User).filter(User.session_token == token).first()
+
+
+async def get_current_role(request: Request, db: Session = Depends(get_db)):
+    user = await get_current_user(request, db)
+    return user.role.name if user else None
 
 
 # ============================================================
@@ -125,9 +113,11 @@ async def login_post(
 ):
     user = db.query(User).filter(User.username == username).first()
     if user and user.password == hash_password(password):
+        token = secrets.token_hex(32)
+        user.session_token = token
+        db.commit()
         resp = RedirectResponse("/dashboard", status_code=302)
-        resp.set_cookie("username", username, httponly=True)
-        resp.set_cookie("role", user.role.name, httponly=True)
+        resp.set_cookie("session", token, httponly=True, samesite="lax")
         return resp
     return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин или пароль"})
 
@@ -165,19 +155,25 @@ async def register_post(
         password=hash_password(password),
         role_id=user_role.id,
     )
+    token = secrets.token_hex(32)
+    new_user.session_token = token
     db.add(new_user)
     db.commit()
     resp = RedirectResponse("/dashboard", status_code=302)
-    resp.set_cookie("username", username, httponly=True)
-    resp.set_cookie("role", "user", httponly=True)
+    resp.set_cookie("session", token, httponly=True, samesite="lax")
     return resp
 
 
 @app.get("/logout")
-async def logout():
+async def logout(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get("session")
+    if token:
+        user = db.query(User).filter(User.session_token == token).first()
+        if user:
+            user.session_token = None
+            db.commit()
     resp = RedirectResponse("/login", status_code=302)
-    resp.delete_cookie("username")
-    resp.delete_cookie("role")
+    resp.delete_cookie("session")
     return resp
 
 
@@ -198,6 +194,8 @@ async def robots_txt():
 
 @app.get("/sitemap.xml")
 async def sitemap_xml():
+    from datetime import date
+    today = date.today().isoformat()
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
     xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
     pages = [
@@ -206,7 +204,7 @@ async def sitemap_xml():
         ("https://neucast.ru/register", "0.7", "monthly"),
     ]
     for url, priority, freq in pages:
-        xml += f"  <url>\n    <loc>{url}</loc>\n    <priority>{priority}</priority>\n    <changefreq>{freq}</changefreq>\n  </url>\n"
+        xml += f"  <url>\n    <loc>{url}</loc>\n    <lastmod>{today}</lastmod>\n    <priority>{priority}</priority>\n    <changefreq>{freq}</changefreq>\n  </url>\n"
     xml += "</urlset>\n"
     return Response(content=xml, media_type="application/xml")
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.db import Base
@@ -16,6 +16,7 @@ class User(Base):
     email = Column(String, nullable=True)
     password = Column(String)
     role_id = Column(Integer, ForeignKey('roles.id'))
+    session_token = Column(Text, nullable=True, unique=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     role = relationship('Role', back_populates='users')
     prediction_history = relationship('PredictionHistory', back_populates='user')
