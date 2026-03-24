@@ -12,6 +12,60 @@
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://neucast.ru/">
 
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://neucast.ru/#website",
+        "url": "https://neucast.ru/",
+        "name": "NeuCast",
+        "description": "AI-прогнозирование котировок акций, золота, нефти и криптовалют",
+        "inLanguage": "ru",
+        "publisher": { "@id": "https://neucast.ru/#organization" }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://neucast.ru/#organization",
+        "name": "NeuCast",
+        "url": "https://neucast.ru/",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://neucast.ru/static/favicon-192.png",
+          "width": 192,
+          "height": 192
+        },
+        "sameAs": []
+      },
+      {
+        "@type": "SoftwareApplication",
+        "name": "NeuCast",
+        "url": "https://neucast.ru/",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "inLanguage": "ru",
+        "description": "Ансамбль нейросетей TCN + CatBoost + XGBoost + LightGBM для прогнозирования котировок золота, серебра, нефти и криптовалют на основе данных Yahoo Finance.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "RUB"
+        },
+        "featureList": [
+          "Прогноз котировок акций",
+          "Прогноз цены золота и серебра",
+          "Прогноз нефти",
+          "Прогноз криптовалют",
+          "Портфель Марковица",
+          "SHAP-объяснения модели"
+        ],
+        "publisher": { "@id": "https://neucast.ru/#organization" }
+      }
+    ]
+  }
+  </script>
+
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://neucast.ru/">
@@ -59,11 +113,11 @@
   }
   </script>
 
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png"><link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png"><link rel="apple-touch-icon" href="/static/favicon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"></noscript>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet"></noscript>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -79,14 +133,14 @@
       --bg-card: rgba(12, 20, 35, 0.85);
       --border: rgba(51, 65, 85, 0.35);
       --text: #e2e8f0;
-      --text-muted: #8493a8;
-      --text-dim: #94a3b8;
+      --text-muted: #b0bdd0;
+      --text-dim: #b8c4d6;
     }
 
     html { scroll-behavior: smooth; }
 
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
       color: var(--text);
       overflow-x: hidden;
@@ -113,6 +167,9 @@
       pointer-events: none;
       z-index: 0;
       animation: orbFloat 20s ease-in-out infinite;
+      will-change: transform;
+      transform: translateZ(0);
+      backface-visibility: hidden;
     }
     .orb-1 {
       width: 600px; height: 600px;
@@ -152,19 +209,19 @@
     .reveal.visible {
       opacity: 1;
       transform: translateY(0);
+      will-change: auto;
     }
-    /* Hero elements appear instantly on load, not on scroll */
+    /* Hero elements appear instantly — no transform to avoid CLS */
     .reveal-instant {
-      opacity: 0;
-      transform: translateY(20px);
-      animation: revealIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      animation: revealIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
     }
     .reveal-instant.d1 { animation-delay: 0.1s; }
     .reveal-instant.d2 { animation-delay: 0.25s; }
     .reveal-instant.d3 { animation-delay: 0.4s; }
 
     @keyframes revealIn {
-      to { opacity: 1; transform: translateY(0); }
+      from { opacity: 0; }
+      to { opacity: 1; }
     }
 
     .reveal-delay-1 { transition-delay: 0.08s; }
@@ -183,14 +240,19 @@
       justify-content: space-between;
       align-items: center;
       padding: 1rem 3rem;
-      background: rgba(6, 10, 19, 0.6);
-      backdrop-filter: blur(24px);
+      background: rgba(6, 10, 19, 0.85);
       border-bottom: 1px solid transparent;
-      transition: all 0.3s;
+      transition: border-color 0.3s, background 0.3s;
     }
     .nav.scrolled {
       border-bottom-color: var(--border);
-      background: rgba(6, 10, 19, 0.9);
+      background: rgba(6, 10, 19, 0.95);
+    }
+    @supports (backdrop-filter: blur(1px)) {
+      @media (min-width: 769px) {
+        .nav { backdrop-filter: blur(24px); background: rgba(6, 10, 19, 0.6); }
+        .nav.scrolled { background: rgba(6, 10, 19, 0.9); }
+      }
     }
 
     .nav-brand {
@@ -258,6 +320,7 @@
       position: relative;
       z-index: 2;
       max-width: 860px;
+      min-height: 320px;
     }
 
     /* Animated chart canvas behind hero text */
@@ -316,12 +379,6 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      animation: shimmer 4s ease-in-out infinite;
-    }
-
-    @keyframes shimmer {
-      0%, 100% { background-position: 0% center; }
-      50% { background-position: 100% center; }
     }
 
     .hero-sub {
@@ -364,9 +421,8 @@
 
     .btn-demo {
       color: var(--text-dim);
-      background: rgba(15, 23, 42, 0.5);
+      background: rgba(15, 23, 42, 0.9);
       border: 1px solid var(--border);
-      backdrop-filter: blur(8px);
     }
     .btn-demo:hover { color: #f1f5f9; border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.06); }
 
@@ -388,11 +444,10 @@
     .stats {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      background: var(--bg-card);
+      background: rgba(12, 20, 35, 0.95);
       border: 1px solid var(--border);
       border-radius: 20px;
       padding: 2.5rem 2rem;
-      backdrop-filter: blur(16px);
     }
 
     .stat {
@@ -483,14 +538,14 @@
     }
 
     .feature-card {
-      background: var(--bg-card);
+      background: rgba(12, 20, 35, 0.95);
       border: 1px solid var(--border);
       border-radius: 20px;
       padding: 2.2rem;
-      backdrop-filter: blur(10px);
-      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: border-color 0.4s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s;
       position: relative;
       overflow: hidden;
+      contain: layout style;
     }
 
     .feature-card::before {
@@ -585,7 +640,7 @@
       border: 2px solid rgba(16, 185, 129, 0.15);
     }
 
-    .step h4 {
+    .step h3 {
       font-size: 0.95rem;
       font-weight: 700;
       color: #f1f5f9;
@@ -612,14 +667,13 @@
       align-items: center;
       gap: 0.5rem;
       padding: 0.65rem 1.3rem;
-      background: var(--bg-card);
+      background: rgba(12, 20, 35, 0.95);
       border: 1px solid var(--border);
       border-radius: 50px;
       font-size: 0.82rem;
       color: var(--text-dim);
       font-weight: 500;
-      transition: all 0.3s;
-      backdrop-filter: blur(8px);
+      transition: border-color 0.3s, color 0.3s, transform 0.3s, box-shadow 0.3s;
     }
     .tech-pill:hover { border-color: rgba(16, 185, 129, 0.4); color: #f1f5f9; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
 
@@ -641,10 +695,9 @@
       max-width: 750px;
       margin: 0 auto;
       padding: 4rem;
-      background: var(--bg-card);
+      background: rgba(12, 20, 35, 0.95);
       border: 1px solid var(--border);
       border-radius: 28px;
-      backdrop-filter: blur(16px);
       position: relative;
       overflow: hidden;
     }
@@ -678,7 +731,7 @@
       text-align: center;
       padding: 2.5rem 2rem;
       border-top: 1px solid var(--border);
-      color: #334155;
+      color: #8896a8;
       font-size: 0.78rem;
       font-weight: 500;
     }
@@ -699,6 +752,10 @@
       background: rgba(16, 185, 129, 0.4);
       border-radius: 50%;
       animation: particleFloat linear infinite;
+      will-change: transform, opacity;
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      contain: strict;
     }
 
     @keyframes particleFloat {
@@ -735,6 +792,10 @@
       .stat { padding: 0.75rem 0; }
     }
   </style>
+  <!-- Yandex.Metrika -->
+  <script type="text/javascript">(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};m[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})(window,document,"script","https://mc.yandex.ru/metrika/tag.js?id=108203672","ym");ym(108203672,"init",{ssr:true,webvisor:true,clickmap:true,ecommerce:"dataLayer",referrer:document.referrer,url:location.href,accurateTrackBounce:true,trackLinks:true});</script>
+  <noscript><div><img src="https://mc.yandex.ru/watch/108203672" style="position:absolute;left:-9999px;" alt=""/></div></noscript>
+  <!-- /Yandex.Metrika -->
 </head>
 <body>
   <!-- Floating orbs -->
@@ -764,6 +825,7 @@
     </div>
   </nav>
 
+  <main>
   <!-- Hero -->
   <section class="hero">
     <canvas class="hero-chart" id="heroChart"></canvas>
@@ -868,22 +930,22 @@
     <div class="steps">
       <div class="step reveal reveal-delay-1">
         <div class="step-num">1</div>
-        <h4>Загрузка данных</h4>
+        <h3>Загрузка данных</h3>
         <p>Котировки загружаются с Yahoo Finance в реальном времени. OHLCV данные за любой период.</p>
       </div>
       <div class="step reveal reveal-delay-2">
         <div class="step-num">2</div>
-        <h4>Feature Engineering</h4>
+        <h3>Feature Engineering</h3>
         <p>Рассчитываются 9+ признаков: MA, RSI, MACD, Bollinger, ATR. Из каждого окна извлекаются 7 статистик.</p>
       </div>
       <div class="step reveal reveal-delay-3">
         <div class="step-num">3</div>
-        <h4>Ensemble Prediction</h4>
+        <h3>Ensemble Prediction</h3>
         <p>TCN + CatBoost + XGBoost + LightGBM обучаются на train-данных. Ridge-стекинг комбинирует прогнозы.</p>
       </div>
       <div class="step reveal reveal-delay-4">
         <div class="step-num">4</div>
-        <h4>Визуализация</h4>
+        <h3>Визуализация</h3>
         <p>Интерактивный дашборд с графиками, метриками, PDF-отчёт и экспорт в CSV.</p>
       </div>
     </div>
@@ -925,6 +987,8 @@
     </div>
   </section>
 
+  </main>
+
   <footer>
     <div style="max-width:900px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;">
       <div>NeuCast &copy; 2026 &mdash; AI-прогнозирование финансовых рынков</div>
@@ -939,9 +1003,16 @@
   <script>
     // ── Navbar scroll effect ──
     const nav = document.getElementById('navbar');
+    let ticking = false;
     window.addEventListener('scroll', () => {
-      nav.classList.toggle('scrolled', window.scrollY > 40);
-    });
+      if (!ticking) {
+        requestAnimationFrame(() => {
+          nav.classList.toggle('scrolled', window.scrollY > 40);
+          ticking = false;
+        });
+        ticking = true;
+      }
+    }, { passive: true });
 
     // ── Scroll reveal (IntersectionObserver) ──
     const revealEls = document.querySelectorAll('.reveal');
@@ -955,34 +1026,24 @@
     }, { threshold: 0.05, rootMargin: '0px 0px -20px 0px' });
     revealEls.forEach(el => observer.observe(el));
 
-    // Fallback: reveal any elements already in viewport on load (fast scroll / anchor jump)
-    requestAnimationFrame(() => {
-      revealEls.forEach(el => {
-        const rect = el.getBoundingClientRect();
-        if (rect.top < window.innerHeight && rect.bottom > 0) {
-          el.classList.add('visible');
-          observer.unobserve(el);
-        }
-      });
-    });
+    // Fallback: IntersectionObserver fires asynchronously, no forced layout needed
 
-    // ── Floating particles ──
-    (function createParticles() {
+    // ── Floating particles (deferred to avoid forced layout) ──
+    requestAnimationFrame(() => {
       const container = document.getElementById('particles');
-      const count = 25;
+      const isMobile = matchMedia('(max-width:767px)').matches;
+      const count = isMobile ? 6 : 15;
+      const frag = document.createDocumentFragment();
       for (let i = 0; i < count; i++) {
         const p = document.createElement('div');
         p.className = 'particle';
-        p.style.left = Math.random() * 100 + '%';
-        p.style.animationDuration = (12 + Math.random() * 18) + 's';
-        p.style.animationDelay = (Math.random() * 20) + 's';
-        p.style.width = p.style.height = (1.5 + Math.random() * 2) + 'px';
-        p.style.opacity = 0.2 + Math.random() * 0.4;
+        p.style.cssText = 'left:' + (Math.random()*100) + '%;animation-duration:' + (12+Math.random()*18) + 's;animation-delay:' + (Math.random()*20) + 's;width:' + (1.5+Math.random()*2) + 'px;height:' + (1.5+Math.random()*2) + 'px;opacity:' + (0.2+Math.random()*0.4);
         if (Math.random() > 0.6) p.style.background = 'rgba(59,130,246,0.35)';
-        if (Math.random() > 0.85) p.style.background = 'rgba(167,139,250,0.35)';
-        container.appendChild(p);
+        else if (Math.random() > 0.85) p.style.background = 'rgba(167,139,250,0.35)';
+        frag.appendChild(p);
       }
-    })();
+      container.appendChild(frag);
+    });
 
     // ── Hero animated chart (canvas) ──
     (function drawHeroChart() {
@@ -994,7 +1055,6 @@
       canvas.height = 400 * dpr;
       ctx.scale(dpr, dpr);
 
-      // Generate smooth price-like path
       let points = [];
       let y = 200;
       for (let x = 0; x <= 700; x += 3) {
@@ -1004,11 +1064,19 @@
       }
 
       let offset = 0;
+      let isVisible = true;
+      let rafId = null;
+
+      const chartObserver = new IntersectionObserver((entries) => {
+        isVisible = entries[0].isIntersecting;
+        if (isVisible && !rafId) draw();
+      }, { threshold: 0 });
+      chartObserver.observe(canvas);
 
       function draw() {
+        if (!isVisible) { rafId = null; return; }
         ctx.clearRect(0, 0, 700, 400);
 
-        // Draw line
         ctx.beginPath();
         ctx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
         ctx.lineWidth = 2;
@@ -1019,7 +1087,6 @@
         });
         ctx.stroke();
 
-        // Gradient fill under line
         const grad = ctx.createLinearGradient(0, 0, 0, 400);
         grad.addColorStop(0, 'rgba(16, 185, 129, 0.15)');
         grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
@@ -1030,7 +1097,7 @@
         ctx.fill();
 
         offset += 0.8;
-        requestAnimationFrame(draw);
+        rafId = requestAnimationFrame(draw);
       }
       draw();
     })();

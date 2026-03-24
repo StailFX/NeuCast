@@ -348,7 +348,7 @@ const doc = new Document({
           [
             ["Web Server", "FastAPI + Uvicorn", "HTTP API, SSR шаблоны, REST endpoints"],
             ["Task Queue", "Celery + Redis", "Фоновые ML задачи, прогресс-трекинг"],
-            ["Database", "PostgreSQL / SQLite", "Пользователи, история прогнозов, котировки"],
+            ["Database", "PostgreSQL", "Пользователи, история прогнозов, котировки"],
             ["ML Engine", "TensorFlow + Sklearn", "TCN, бустинг, стекинг, Monte Carlo"],
             ["Data Source", "Yahoo Finance API", "Исторические котировки (OHLCV)"],
             ["Reverse Proxy", "Nginx + Let's Encrypt", "SSL, кэширование, балансировка"],
