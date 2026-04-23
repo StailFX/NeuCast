@@ -124,23 +124,36 @@ def _get_model():
 
 
 def _fetch_macro_features(start_date, end_date) -> pd.DataFrame:
-    """Fetch cross-asset macro features: VIX, DXY, S&P500, TNX, VIX term structure, FRED data."""
+    """Fetch cross-asset macro features: VIX, DXY, S&P500, TNX, VIX term structure, FRED data.
+
+    P2+: все yfinance-загрузки выполняются параллельно через ThreadPoolExecutor
+    (yfinance использует requests → GIL релизится на I/O). Экономит ~2-3 сек при
+    холодном кэше, когда надо стянуть 5 тикеров подряд.
+    """
     macro = pd.DataFrame()
-    for name, ticker in _MACRO_TICKERS.items():
+
+    def _fetch_one(item):
+        name, ticker = item
         try:
             data = yf.download(ticker, start=start_date, end=end_date,
                                interval="1d", progress=False)
             if data.empty:
-                continue
+                return name, None
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
-            col = data["Close"]
-            if name == "SP500":
-                macro["SP500_ret"] = col.pct_change()
-            else:
-                macro[name] = col
+            return name, data["Close"]
         except Exception as e:
             logger.warning(f"Failed to fetch macro {name} ({ticker}): {e}")
+            return name, None
+
+    with ThreadPoolExecutor(max_workers=len(_MACRO_TICKERS)) as pool:
+        for name, series in pool.map(_fetch_one, _MACRO_TICKERS.items()):
+            if series is None:
+                continue
+            if name == "SP500":
+                macro["SP500_ret"] = series.pct_change()
+            else:
+                macro[name] = series
 
     # VIX term structure (backwardation = stress signal)
     if "VIX" in macro.columns and "VIX3M" in macro.columns:

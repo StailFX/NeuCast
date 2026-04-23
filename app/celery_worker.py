@@ -3,6 +3,8 @@ Celery worker for NeuCast — runs heavy prediction tasks in background.
 """
 import os
 import json
+import hashlib
+import pickle
 import logging
 import numpy as np
 import pandas as pd
@@ -15,6 +17,10 @@ from app.prediction import run_prediction, fetch_and_preprocess
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6380/0")
+# Short-TTL cache для повторных запросов того же (ticker, start, end, days).
+# Позволяет перезагружать страницу результатов или запускать тот же расчёт
+# подряд без повторной тренировки моделей.
+PRED_RESULT_CACHE_TTL = int(os.getenv("PRED_RESULT_CACHE_TTL", "300"))  # 5 мин
 
 celery_app = Celery("neucast", broker=REDIS_URL, backend=REDIS_URL)
 celery_app.conf.update(
@@ -177,10 +183,58 @@ def _send_telegram_notification(user_id: int, ticker: str, result: dict, task_id
         logger.warning(f"Failed to send Telegram notification: {e}", exc_info=True)
 
 
+def _pred_cache_key(ticker: str, start_date: str, end_date: str, days_ahead: int) -> str:
+    raw = f"{ticker}|{start_date}|{end_date}|{days_ahead}".encode()
+    return "neucast:pred:" + hashlib.md5(raw).hexdigest()
+
+
+def _pred_cache_get(key: str):
+    try:
+        import redis
+        r = redis.from_url(REDIS_URL, socket_timeout=1, socket_connect_timeout=1)
+        data = r.get(key)
+        return pickle.loads(data) if data else None
+    except Exception as e:
+        logger.debug(f"pred cache_get fail: {e}")
+        return None
+
+
+def _pred_cache_set(key: str, value, ttl: int):
+    try:
+        import redis
+        r = redis.from_url(REDIS_URL, socket_timeout=1, socket_connect_timeout=1)
+        r.setex(key, ttl, pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL))
+    except Exception as e:
+        logger.debug(f"pred cache_set fail: {e}")
+
+
 @celery_app.task(bind=True, name="neucast.predict")
 def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
                         days_ahead: int, user_id: int = None):
     """Heavy prediction task — runs in Celery worker process."""
+
+    # ── Полный result-cache (PRED_RESULT_CACHE_TTL=5 мин по умолчанию) ──
+    # Ключ: (ticker, start, end, days). user_id НЕ в ключе — результат один и тот же,
+    # только Telegram-уведомление идёт конкретному пользователю.
+    cache_key = _pred_cache_key(ticker, start_date, end_date, days_ahead)
+    cached = _pred_cache_get(cache_key)
+    if cached is not None:
+        logger.info(f"Prediction CACHE HIT: {ticker} {start_date}..{end_date} +{days_ahead}d")
+        self.update_state(state="PREDICTING", meta={"status": "Результат из кэша..."})
+        # Telegram нотификация всё равно уходит — чтобы каждый пользователь получил своё.
+        if user_id:
+            # Восстановим result-dict из serializable для notification
+            try:
+                result_for_tg = {
+                    k: v for k, v in cached.items()
+                    if k in ("mape", "mae", "rmse", "r2", "dir_acc", "model_name",
+                             "backtest", "model_metrics")
+                }
+                _send_telegram_notification(user_id, ticker, result_for_tg, task_id=self.request.id)
+            except Exception as e:
+                logger.warning(f"TG notify from cache failed: {e}")
+        return cached
+
     self.update_state(state="FETCHING", meta={"status": "Загрузка данных с Yahoo Finance..."})
 
     try:
@@ -211,5 +265,8 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
     serializable["start_date"] = start_date
     serializable["end_date"] = end_date
     serializable["days_ahead"] = days_ahead
+
+    # Кэшируем финальный сериализуемый результат — повторные запросы = мгновенно.
+    _pred_cache_set(cache_key, serializable, PRED_RESULT_CACHE_TTL)
 
     return serializable
