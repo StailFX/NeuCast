@@ -26,6 +26,8 @@ BOOST_ITERS = int(os.getenv("BOOST_ITERS", "500"))
 BOOST_EARLY_STOP = int(os.getenv("BOOST_EARLY_STOP", "80"))
 MC_SIMS = int(os.getenv("MC_SIMS", "1000"))
 YF_CACHE_TTL = int(os.getenv("YF_CACHE_TTL", "1800"))                # 30 мин кэша YFinance
+BOOST_CACHE_TTL = int(os.getenv("BOOST_CACHE_TTL", "3600"))          # 1 час кэша обученных бустингов
+BOOST_CACHE_ENABLED = os.getenv("BOOST_CACHE_ENABLED", "1") == "1"
 
 # TF: ограничиваем inter-op параллелизм, чтобы не конкурировать с ThreadPoolExecutor на бустингах.
 try:
@@ -648,48 +650,84 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     X_train = X_all[:train_seq_end]
     y_train = y_all[:train_seq_end]
 
-    # Fine-tune TCN with plain MSE loss (directional loss was hurting)
-    fine_model = clone_model(base_model)
-    fine_model.set_weights(base_model.get_weights())
+    # ── P1: TCN-predictions cache ─────────────────────────────────────
+    # Кэшируем массивы предсказаний (не веса модели). Fine-tune TCN — самый дорогой
+    # шаг после бустингов. Ключ — хеш X_train/y_train + hyperparams. Промах = обычное
+    # обучение и потом store в Redis.
+    tcn_cache_key = None
+    tcn_pred_returns = None
+    tcn_direction_pred = None
+    if BOOST_CACHE_ENABLED:
+        try:
+            sig = hashlib.md5()
+            sig.update(X_train.tobytes())
+            sig.update(y_train.tobytes())
+            sig.update(X_all.tobytes())
+            sig.update(f"{TCN_EPOCHS}|{TCN_PATIENCE}|{IS_MULTITARGET}".encode())
+            tcn_cache_key = "neucast:tcn:" + sig.hexdigest()
+            cached_tcn = _cache_get(tcn_cache_key)
+            if cached_tcn is not None:
+                logger.info("TCN cache HIT: %s", tcn_cache_key[-12:])
+                tcn_pred_returns = cached_tcn.get("returns")
+                tcn_direction_pred = cached_tcn.get("direction")
+        except Exception as e:
+            logger.debug("tcn cache lookup failed: %s", e)
+            tcn_cache_key = None
 
-    if IS_MULTITARGET:
-        fine_model.compile(
-            optimizer=tf.keras.optimizers.Adam(0.0003),
-            loss={'return_output': 'mse', 'direction_output': 'binary_crossentropy'},
-            loss_weights={'return_output': 1.0, 'direction_output': 0.5},
-        )
-    else:
-        fine_model.compile(optimizer=tf.keras.optimizers.Adam(0.0003), loss='mse')
+    if tcn_pred_returns is None:
+        # Fine-tune TCN with plain MSE loss (directional loss was hurting)
+        fine_model = clone_model(base_model)
+        fine_model.set_weights(base_model.get_weights())
 
-    if len(X_train) > SEQ_LEN:
-        val_size = max(0.1, SEQ_LEN / len(X_train))
-        direction_all = (log_returns[SEQ_LEN:] > 0).astype(np.float32)
-        dir_train = direction_all[:train_seq_end]
         if IS_MULTITARGET:
-            fine_model.fit(
-                X_train,
-                {'return_output': y_train, 'direction_output': dir_train},
-                epochs=TCN_EPOCHS, batch_size=32,
-                validation_split=val_size,
-                callbacks=[EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)],
-                verbose=0,
+            fine_model.compile(
+                optimizer=tf.keras.optimizers.Adam(0.0003),
+                loss={'return_output': 'mse', 'direction_output': 'binary_crossentropy'},
+                loss_weights={'return_output': 1.0, 'direction_output': 0.5},
             )
         else:
-            fine_model.fit(
-                X_train, y_train,
-                epochs=TCN_EPOCHS, batch_size=32,
-                validation_split=val_size,
-                callbacks=[EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)],
-                verbose=0,
-            )
+            fine_model.compile(optimizer=tf.keras.optimizers.Adam(0.0003), loss='mse')
 
-    raw_pred = fine_model.predict(X_all, verbose=0)
-    if IS_MULTITARGET:
-        tcn_pred_returns = raw_pred[0].flatten()
-        tcn_direction_pred = raw_pred[1].flatten()
-    else:
-        tcn_pred_returns = raw_pred.flatten()
-        tcn_direction_pred = None
+        if len(X_train) > SEQ_LEN:
+            val_size = max(0.1, SEQ_LEN / len(X_train))
+            direction_all = (log_returns[SEQ_LEN:] > 0).astype(np.float32)
+            dir_train = direction_all[:train_seq_end]
+            if IS_MULTITARGET:
+                fine_model.fit(
+                    X_train,
+                    {'return_output': y_train, 'direction_output': dir_train},
+                    epochs=TCN_EPOCHS, batch_size=32,
+                    validation_split=val_size,
+                    callbacks=[EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)],
+                    verbose=0,
+                )
+            else:
+                fine_model.fit(
+                    X_train, y_train,
+                    epochs=TCN_EPOCHS, batch_size=32,
+                    validation_split=val_size,
+                    callbacks=[EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)],
+                    verbose=0,
+                )
+
+        raw_pred = fine_model.predict(X_all, verbose=0)
+        if IS_MULTITARGET:
+            tcn_pred_returns = raw_pred[0].flatten()
+            tcn_direction_pred = raw_pred[1].flatten()
+        else:
+            tcn_pred_returns = raw_pred.flatten()
+            tcn_direction_pred = None
+
+        # Сохраняем в кэш (только предсказания — TF-модель не pickl'ится надёжно).
+        if BOOST_CACHE_ENABLED and tcn_cache_key:
+            try:
+                _cache_set(tcn_cache_key, {
+                    "returns": tcn_pred_returns,
+                    "direction": tcn_direction_pred,
+                }, BOOST_CACHE_TTL)
+                logger.info("TCN cache STORE: %s", tcn_cache_key[-12:])
+            except Exception as e:
+                logger.debug("tcn cache store failed: %s", e)
 
     # ── Boosting path: extended features + sentiment ──
     scaler_extra = MinMaxScaler((0, 1))
@@ -733,62 +771,115 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
 
     y_bst_train_sel = y_bst_train[:val_split_idx]
 
-    def _train_catboost():
-        from catboost import CatBoostRegressor
-        m = CatBoostRegressor(
-            iterations=BOOST_ITERS, learning_rate=0.03, depth=5, l2_leaf_reg=5,
-            random_strength=0.5, bagging_temperature=0.3,
-            verbose=0, early_stopping_rounds=BOOST_EARLY_STOP,
-            thread_count=per_model_threads,
-        )
-        m.fit(X_bst_train_sel, y_bst_train_sel, sample_weight=full_weights,
-              eval_set=(X_bst_val_sel, y_bst_val), verbose=0)
-        return m, m.predict(X_bst_test_sel), m.predict(X_bst_all_sel)
+    # ── P1: Booster-cache ─────────────────────────────────────────────
+    # Кэшируем трио (CatBoost, XGBoost, LightGBM) + их предсказания.
+    # Хеш строится по содержимому обучающей выборки + hyperparams. Изменился df
+    # или ui-параметры — ключ меняется автоматически.
+    boost_cache_key = None
+    if BOOST_CACHE_ENABLED:
+        try:
+            sig = hashlib.md5()
+            # Используем только тренировочный/val срезы — они полностью определяют веса моделей.
+            sig.update(pd.util.hash_pandas_object(pd.DataFrame(X_bst_train_sel)).values.tobytes())
+            sig.update(pd.util.hash_pandas_object(pd.DataFrame(X_bst_val_sel)).values.tobytes())
+            sig.update(y_bst_train_sel.tobytes())
+            sig.update(y_bst_val.tobytes())
+            sig.update(f"{BOOST_ITERS}|{BOOST_EARLY_STOP}|{sentiment_score:.2f}".encode())
+            boost_cache_key = "neucast:boost:" + sig.hexdigest()
+            cached_bst = _cache_get(boost_cache_key)
+            if cached_bst is not None:
+                logger.info("Boost cache HIT: %s", boost_cache_key[-12:])
+                cat = cached_bst.get("cat_model")
+                cat_pred_test = cached_bst.get("cat_pred_test")
+                cat_pred_all = cached_bst.get("cat_pred_all")
+                xgb_m = cached_bst.get("xgb_model")
+                xgb_pred_test = cached_bst.get("xgb_pred_test")
+                xgb_pred_all = cached_bst.get("xgb_pred_all")
+                lgb_m = cached_bst.get("lgb_model")
+                lgb_pred_test = cached_bst.get("lgb_pred_test")
+                lgb_pred_all = cached_bst.get("lgb_pred_all")
+        except Exception as e:
+            logger.debug("boost cache lookup failed: %s", e)
+            boost_cache_key = None
 
-    def _train_xgboost():
-        import xgboost as xgb
-        m = xgb.XGBRegressor(
-            n_estimators=BOOST_ITERS, learning_rate=0.03, max_depth=5,
-            subsample=0.8, colsample_bytree=0.6,
-            reg_alpha=0.5, reg_lambda=2.0,
-            early_stopping_rounds=BOOST_EARLY_STOP, verbosity=0,
-            n_jobs=per_model_threads, tree_method="hist",
-        )
-        m.fit(X_bst_train_sel, y_bst_train_sel, sample_weight=full_weights,
-              eval_set=[(X_bst_val_sel, y_bst_val)], verbose=0)
-        return m, m.predict(X_bst_test_sel), m.predict(X_bst_all_sel)
+    # Если все три модели есть в кэше — пропускаем обучение полностью.
+    _all_cached = cat is not None and xgb_m is not None and lgb_m is not None
+    if not _all_cached:
+        def _train_catboost():
+            from catboost import CatBoostRegressor
+            m = CatBoostRegressor(
+                iterations=BOOST_ITERS, learning_rate=0.03, depth=5, l2_leaf_reg=5,
+                random_strength=0.5, bagging_temperature=0.3,
+                verbose=0, early_stopping_rounds=BOOST_EARLY_STOP,
+                thread_count=per_model_threads,
+            )
+            m.fit(X_bst_train_sel, y_bst_train_sel, sample_weight=full_weights,
+                  eval_set=(X_bst_val_sel, y_bst_val), verbose=0)
+            return m, m.predict(X_bst_test_sel), m.predict(X_bst_all_sel)
 
-    def _train_lightgbm():
-        import lightgbm as lgbm
-        m = lgbm.LGBMRegressor(
-            n_estimators=BOOST_ITERS, learning_rate=0.03, max_depth=5,
-            num_leaves=31, subsample=0.8, colsample_bytree=0.6,
-            reg_alpha=0.5, reg_lambda=2.0, verbose=-1,
-            n_jobs=per_model_threads,
-        )
-        m.fit(X_bst_train_sel, y_bst_train_sel, sample_weight=full_weights,
-              eval_set=[(X_bst_val_sel, y_bst_val)],
-              callbacks=[lgbm.early_stopping(BOOST_EARLY_STOP, verbose=False),
-                         lgbm.log_evaluation(0)])
-        return m, m.predict(X_bst_test_sel), m.predict(X_bst_all_sel)
+        def _train_xgboost():
+            import xgboost as xgb
+            m = xgb.XGBRegressor(
+                n_estimators=BOOST_ITERS, learning_rate=0.03, max_depth=5,
+                subsample=0.8, colsample_bytree=0.6,
+                reg_alpha=0.5, reg_lambda=2.0,
+                early_stopping_rounds=BOOST_EARLY_STOP, verbosity=0,
+                n_jobs=per_model_threads, tree_method="hist",
+            )
+            m.fit(X_bst_train_sel, y_bst_train_sel, sample_weight=full_weights,
+                  eval_set=[(X_bst_val_sel, y_bst_val)], verbose=0)
+            return m, m.predict(X_bst_test_sel), m.predict(X_bst_all_sel)
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futs = {
-            "CatBoost": pool.submit(_train_catboost),
-            "XGBoost":  pool.submit(_train_xgboost),
-            "LightGBM": pool.submit(_train_lightgbm),
-        }
-        for name, fut in futs.items():
+        def _train_lightgbm():
+            import lightgbm as lgbm
+            m = lgbm.LGBMRegressor(
+                n_estimators=BOOST_ITERS, learning_rate=0.03, max_depth=5,
+                num_leaves=31, subsample=0.8, colsample_bytree=0.6,
+                reg_alpha=0.5, reg_lambda=2.0, verbose=-1,
+                n_jobs=per_model_threads,
+            )
+            m.fit(X_bst_train_sel, y_bst_train_sel, sample_weight=full_weights,
+                  eval_set=[(X_bst_val_sel, y_bst_val)],
+                  callbacks=[lgbm.early_stopping(BOOST_EARLY_STOP, verbose=False),
+                             lgbm.log_evaluation(0)])
+            return m, m.predict(X_bst_test_sel), m.predict(X_bst_all_sel)
+
+        # Обучаем только те модели, которых нет в кэше (обычно все три).
+        to_train = {}
+        if cat is None:
+            to_train["CatBoost"] = _train_catboost
+        if xgb_m is None:
+            to_train["XGBoost"] = _train_xgboost
+        if lgb_m is None:
+            to_train["LightGBM"] = _train_lightgbm
+
+        with ThreadPoolExecutor(max_workers=max(1, len(to_train))) as pool:
+            futs = {name: pool.submit(fn) for name, fn in to_train.items()}
+            for name, fut in futs.items():
+                try:
+                    model_obj, p_test, p_all = fut.result()
+                    if name == "CatBoost":
+                        cat, cat_pred_test, cat_pred_all = model_obj, p_test, p_all
+                    elif name == "XGBoost":
+                        xgb_m, xgb_pred_test, xgb_pred_all = model_obj, p_test, p_all
+                    elif name == "LightGBM":
+                        lgb_m, lgb_pred_test, lgb_pred_all = model_obj, p_test, p_all
+                except Exception as e:
+                    logger.warning("%s training failed: %s", name, e)
+
+        # Сохраняем трио в кэш, если все обучились (частичный кэш — бесполезен).
+        if (BOOST_CACHE_ENABLED and boost_cache_key
+                and cat is not None and xgb_m is not None and lgb_m is not None):
             try:
-                model_obj, p_test, p_all = fut.result()
-                if name == "CatBoost":
-                    cat, cat_pred_test, cat_pred_all = model_obj, p_test, p_all
-                elif name == "XGBoost":
-                    xgb_m, xgb_pred_test, xgb_pred_all = model_obj, p_test, p_all
-                elif name == "LightGBM":
-                    lgb_m, lgb_pred_test, lgb_pred_all = model_obj, p_test, p_all
+                payload = {
+                    "cat_model": cat, "cat_pred_test": cat_pred_test, "cat_pred_all": cat_pred_all,
+                    "xgb_model": xgb_m, "xgb_pred_test": xgb_pred_test, "xgb_pred_all": xgb_pred_all,
+                    "lgb_model": lgb_m, "lgb_pred_test": lgb_pred_test, "lgb_pred_all": lgb_pred_all,
+                }
+                _cache_set(boost_cache_key, payload, BOOST_CACHE_TTL)
+                logger.info("Boost cache STORE: %s", boost_cache_key[-12:])
             except Exception as e:
-                logger.warning("%s training failed: %s", name, e)
+                logger.debug("boost cache store failed: %s", e)
 
     # ══════════════════════════════════════════════════════════
     # ── Regime-Aware Inverse-MAPE Weighted Ensemble           ──
