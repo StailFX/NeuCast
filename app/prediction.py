@@ -48,6 +48,27 @@ BACKTEST_COOLDOWN_DAYS = int(os.getenv("BACKTEST_COOLDOWN_DAYS", "3"))         #
 BACKTEST_VOL_CAP_QUANTILE = float(os.getenv("BACKTEST_VOL_CAP_QUANTILE", "0.85"))  # только верхние 15%
 BACKTEST_VOL_CAP_SCALE = float(os.getenv("BACKTEST_VOL_CAP_SCALE", "0.6"))      # коэф. снижения позиции
 
+# ── Trailing stop ────────────────────────────────────────────────────
+# Ratchet-стоп: пока позиция в прибыли, двигаем "точку тревоги" за ценой.
+# Активируется только после ACTIVATE_PCT прибыли (чтобы не выбивать на шуме входа).
+# Срабатывает при просадке TRAIL_PCT от достигнутого high (LONG) / low (SHORT).
+# Это превращает unrealized profit в realized — без него тренд может развернуться
+# и съесть всю накопленную прибыль до тех пор, пока stop-loss/гистерезис не сработают.
+BACKTEST_TRAIL_ACTIVATE_PCT = float(os.getenv("BACKTEST_TRAIL_ACTIVATE_PCT", "1.5"))  # %, минимум прибыли для активации
+BACKTEST_TRAIL_STOP_PCT = float(os.getenv("BACKTEST_TRAIL_STOP_PCT", "2.0"))           # %, просадка от high/low
+
+# ── Multi-horizon target для бустингов ───────────────────────────────
+# Вместо чистого one-step target log_return[t+1] обучаем бустинги на смесь
+# горизонтов: y_mh[t] = mean_h( sum(returns[t+1..t+h])/h ) для h in [1,2,3].
+# Эффект: даём модели "сглаженный" target — меньше шума одного дня → меньше
+# overfitting на отдельных выбросах. Direction-аккурасия на тесте обычно растёт,
+# magnitude слегка падает (модель усреднена по горизонтам), но это компенсируется
+# z-score нормализацией в backtest.
+MULTIHORIZON_ENABLED = os.getenv("MULTIHORIZON_ENABLED", "1") == "1"
+MULTIHORIZON_HORIZONS = tuple(
+    int(x) for x in os.getenv("MULTIHORIZON_HORIZONS", "1,2,3").split(",") if x.strip()
+)
+
 # TF: ограничиваем inter-op параллелизм, чтобы не конкурировать с ThreadPoolExecutor на бустингах.
 try:
     tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -394,6 +415,34 @@ def make_sequences_Xy(scaled, returns):
     return np.array(X), np.array(y)
 
 
+def _apply_multihorizon_target(y: np.ndarray, horizons=(1, 2, 3)) -> np.ndarray:
+    """
+    Multi-horizon усреднённый daily-equivalent target.
+    y[t] обычно = log_return at step t. На выходе:
+        y_mh[t] = mean_h( sum(y[t : t+h]) / h ),  h ∈ horizons
+    Длина результата = len(y) - max(horizons) + 1 (последние max_h-1 точек
+    отбрасываются — для них нет полных будущих данных). Проверки на крайние
+    случаи: если данных меньше max_h+1, возвращаем оригинал y[:1] (caller сам
+    решит, что делать).
+    """
+    if not horizons or max(horizons) == 1:
+        return np.asarray(y, dtype=np.float64).copy()
+    n = len(y)
+    max_h = max(horizons)
+    if n < max_h:
+        return np.asarray(y, dtype=np.float64).copy()
+    out_len = n - max_h + 1
+    # cumret[i] = sum(y[:i]); cumret[i+h] - cumret[i] = sum(y[i:i+h])
+    cumret = np.concatenate([[0.0], np.cumsum(np.asarray(y, dtype=np.float64))])
+    target = np.zeros(out_len, dtype=np.float64)
+    for h in horizons:
+        # h-step return at position i for i ∈ [0, out_len): cumret[i+h] - cumret[i]
+        h_ret = (cumret[h: h + out_len] - cumret[: out_len]) / h
+        target += h_ret
+    target /= len(horizons)
+    return target
+
+
 def make_boosting_features(data: np.ndarray) -> np.ndarray:
     X = []
     for i in range(SEQ_LEN, len(data)):
@@ -552,13 +601,21 @@ def _run_backtest(
     losses = 0
     total_costs = 0.0
     num_trades = 0
-    stop_outs = 0  # счётчик срабатываний stop-loss (для UI)
+    stop_outs = 0   # счётчик срабатываний stop-loss (для UI)
+    trail_outs = 0  # счётчик срабатываний trailing stop (для UI)
 
     # actual_daily_returns уже посчитан выше для vol-adjusted Kelly
 
     current_position = "FLAT"  # FLAT / LONG / SHORT
     cooldown_remaining = 0     # > 0 → запрет на новые входы (после stop-loss)
     stop_loss_threshold = BACKTEST_STOP_LOSS_PCT / 100.0  # -0.03 для -3%
+
+    # Trailing-stop state
+    position_entry_price = None  # цена входа в текущую позу
+    position_high = None         # max цена с момента входа (для LONG)
+    position_low = None          # min цена с момента входа (для SHORT)
+    trail_activate = BACKTEST_TRAIL_ACTIVATE_PCT / 100.0  # 0.015 для 1.5%
+    trail_stop = BACKTEST_TRAIL_STOP_PCT / 100.0          # 0.02 для 2.0%
 
     for i in range(n - 1):
         signal = z_signals[i]
@@ -606,6 +663,15 @@ def _run_backtest(
                 trade_cost += capital * position_size * one_way_cost  # enter new
             num_trades += 1
             current_position = desired
+            # Reset trailing-stop state on entry / flip
+            if current_position != "FLAT":
+                position_entry_price = float(actual_prices[i])
+                position_high = position_entry_price
+                position_low = position_entry_price
+            else:
+                position_entry_price = None
+                position_high = None
+                position_low = None
 
         # PnL based on current position
         if current_position == "LONG":
@@ -626,7 +692,45 @@ def _run_backtest(
         daily_pct = net_pnl / equity[-2] if equity[-2] > 0 else 0
         daily_returns.append(daily_pct)
 
-        # ── Stop-loss check (после применения дневного PnL) ────────
+        # ── Trailing-stop check (после применения PnL) ─────────────
+        # Цена на конец дня i — это actual_prices[i+1] (мы только что применили
+        # actual_daily_returns[i]). Обновляем high/low от entry; если позиция уже
+        # в прибыли >= trail_activate и просела от high/low на >= trail_stop —
+        # фиксируем профит. Без cooldown — это не катастрофа, а нормальный exit.
+        if (current_position != "FLAT" and position_entry_price is not None
+                and i + 1 < n):
+            cur_price = float(actual_prices[i + 1])
+            triggered_trail = False
+            if current_position == "LONG":
+                if position_high is None or cur_price > position_high:
+                    position_high = cur_price
+                profit_pct = (position_high - position_entry_price) / position_entry_price
+                if profit_pct >= trail_activate:
+                    drawdown_pct = (position_high - cur_price) / position_high
+                    if drawdown_pct >= trail_stop:
+                        triggered_trail = True
+            else:  # SHORT
+                if position_low is None or cur_price < position_low:
+                    position_low = cur_price
+                profit_pct = (position_entry_price - position_low) / position_entry_price
+                if profit_pct >= trail_activate:
+                    rebound_pct = (cur_price - position_low) / position_low
+                    if rebound_pct >= trail_stop:
+                        triggered_trail = True
+
+            if triggered_trail:
+                exit_cost = capital * position_size * one_way_cost
+                capital -= exit_cost
+                equity[-1] = capital
+                total_costs += exit_cost
+                trail_outs += 1
+                action = "TRAIL"
+                current_position = "FLAT"
+                position_entry_price = None
+                position_high = None
+                position_low = None
+
+        # ── Stop-loss check (после trailing) ───────────────────────
         # Если дневной убыток превысил порог И мы были не во FLAT → форсим выход
         # на следующем шаге через cooldown. Это не вернёт сегодняшний убыток, но
         # защитит от классики "потерял на LONG → завтра флипнул в SHORT → потерял
@@ -642,6 +746,9 @@ def _run_backtest(
             total_costs += exit_cost
             stop_outs += 1
             action = "STOP"
+            position_entry_price = None
+            position_high = None
+            position_low = None
         elif cooldown_remaining > 0:
             cooldown_remaining -= 1
 
@@ -734,6 +841,7 @@ def _run_backtest(
         "slippage_pct": slippage_pct,
         "avg_kelly": round(float(np.mean(kelly_sizes)) * 100, 1),
         "stop_outs": stop_outs,
+        "trail_outs": trail_outs,
         "trades": positions[-20:],  # last 20 trades for display
     }
 
@@ -858,6 +966,31 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     # Sample weights for training set
     full_weights = _temporal_weights(val_split_idx)
 
+    y_bst_train_sel = y_bst_train[:val_split_idx]
+
+    # ── Multi-horizon target transform (если включён) ──
+    # Сглаживаем target по 2-3 горизонтам → меньше overfitting на шуме одного дня.
+    # Транформ применяем только к labels для train+val. Inference (X_bst_test_sel
+    # / X_bst_all_sel) выдаёт MH-equivalent predictions — далее они идут в NNLS,
+    # который оптимизирует под actual one-day returns. Ансамбль автоматически
+    # подстроится под новый "stretch" magnitude через coefs.
+    # Длина train/val укорачивается на (MAX_H - 1); X тоже урезается с конца.
+    if MULTIHORIZON_ENABLED and len(MULTIHORIZON_HORIZONS) > 1:
+        max_h = max(MULTIHORIZON_HORIZONS)
+        # train slice
+        y_train_mh = _apply_multihorizon_target(y_bst_train_sel, MULTIHORIZON_HORIZONS)
+        if len(y_train_mh) >= 50:  # минимум разумно для обучения
+            y_bst_train_sel = y_train_mh
+            X_bst_train_sel = X_bst_train_sel[: len(y_train_mh)]
+            full_weights = full_weights[: len(y_train_mh)]
+        # val slice
+        y_val_mh = _apply_multihorizon_target(y_bst_val, MULTIHORIZON_HORIZONS)
+        if len(y_val_mh) >= 10:
+            y_bst_val = y_val_mh
+            X_bst_val_sel = X_bst_val_sel[: len(y_val_mh)]
+        logger.info(f"Multi-horizon target enabled: horizons={MULTIHORIZON_HORIZONS} "
+                    f"(train_n={len(y_bst_train_sel)}, val_n={len(y_bst_val)})")
+
     # ══════════════════════════════════════════════════════
     # ── Train boosting models on train set (parallel P2) ──
     # ══════════════════════════════════════════════════════
@@ -877,8 +1010,6 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     ncpu = max(1, os.cpu_count() or 2)
     per_model_threads = max(1, ncpu // 3)
 
-    y_bst_train_sel = y_bst_train[:val_split_idx]
-
     # ── P1: Booster-cache ─────────────────────────────────────────────
     # Кэшируем трио (CatBoost, XGBoost, LightGBM) + их предсказания.
     # Хеш строится по содержимому обучающей выборки + hyperparams. Изменился df
@@ -892,7 +1023,10 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             sig.update(pd.util.hash_pandas_object(pd.DataFrame(X_bst_val_sel)).values.tobytes())
             sig.update(y_bst_train_sel.tobytes())
             sig.update(y_bst_val.tobytes())
-            sig.update(f"{BOOST_ITERS}|{BOOST_EARLY_STOP}|{sentiment_score:.2f}".encode())
+            sig.update(
+                f"{BOOST_ITERS}|{BOOST_EARLY_STOP}|{sentiment_score:.2f}|"
+                f"mh{int(MULTIHORIZON_ENABLED)}-{','.join(map(str, MULTIHORIZON_HORIZONS))}".encode()
+            )
             boost_cache_key = "neucast:boost:" + sig.hexdigest()
             cached_bst = _cache_get(boost_cache_key)
             if cached_bst is not None:
@@ -990,23 +1124,18 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
                 logger.debug("boost cache store failed: %s", e)
 
     # ══════════════════════════════════════════════════════════
-    # ── Smart Ensemble: NNLS Stacking + Anti-Skill Filter     ──
+    # ── Smart Ensemble: Rolling-NNLS + Anti-Skill Filter      ──
     # ══════════════════════════════════════════════════════════
     # Эволюция логики:
-    #  v1 (старая, leaky):   1/MAPE на test-фолде → утечка → завышенные метрики
-    #  v2 (val-MAPE):        1/MAPE на val-фолде → честно, но не учитывает направление
-    #                         модель с низким MAPE и dir_acc<50% (anti-skill)
-    #                         могла получить ВЫСОКИЙ вес → ансамбль предсказывал
-    #                         не ту сторону → dir_acc<50% на тесте.
-    #  v3 (текущая):         (a) anti-skill filter: модели с dir_acc<50% на val
-    #                            получают вес 0 — они хуже монетки, в ансамбле
-    #                            только вредят
-    #                        (b) NNLS stacking: scipy.optimize.nnls находит
-    #                            оптимальную линейную комбинацию predicted_returns
-    #                            под истинные log_returns на val-фолде
-    #                            (non-negative weights → нет короткой продажи модели)
-    #                        (c) fallback: если stacking даёт нулевую сумму
-    #                            (все модели плохи) → (1/MAPE)×dir_edge
+    #  v1 (leaky):   1/MAPE на test-фолде → утечка → завышенные метрики
+    #  v2 (val-MAPE):1/MAPE на val-фолде → честно, но не учитывает направление
+    #  v3 (NNLS):    NNLS на одном val-окне → переобучается на режим этого окна
+    #  v4 (текущая): (a) anti-skill filter: модели с dir_acc<50% на val → вес 0
+    #                (b) Rolling-NNLS: считаем NNLS на нескольких подокнах val
+    #                    (30/60/100/all дней) и усредняем coef. Прокси walk-forward
+    #                    без K-кратной перетренировки. Веса должны работать на
+    #                    разных горизонтах → robust к смене режима (bull→bear etc).
+    #                (c) fallback: если все окна дали нулевые coef → (1/MAPE)×dir_edge
 
     prev_prices_full = close_prices[SEQ_LEN - 1: -1]
 
@@ -1060,29 +1189,52 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
 
     base_weights = {n: 0.0 for n in val_preds_ret}
 
-    # ── Primary: NNLS stacking ──
+    # ── Primary: Rolling-NNLS multi-window stacking ──
     # X = матрица val-предсказаний (рядов = val_n, колонок = n_models)
     # y = истинные log-returns
-    # NNLS даёт неотрицательные веса w >= 0, минимизирует ||Xw - y||
+    # NNLS на каждом окне даёт неотрицательные w >= 0, минимизирует ||Xw - y||.
+    # Усредняем coef по окнам разной длины — модель должна быть стабильна на
+    # 30/60/100-дневных горизонтах одновременно.
     stacking_used = False
     if len(val_actual_prices) >= 20 and len(eligible) >= 1:
         try:
             from scipy.optimize import nnls
-            stack_X = np.column_stack([val_preds_ret[n] for n in eligible])
-            stack_y = val_y_logret
+            stack_X_full = np.column_stack([val_preds_ret[n] for n in eligible])
+            stack_y_full = val_y_logret
             # Защита от NaN (могут возникнуть в Kalman/regime фичах на ранней истории)
-            mask = np.isfinite(stack_X).all(axis=1) & np.isfinite(stack_y)
-            if mask.sum() >= 20:
-                coef, _ = nnls(stack_X[mask], stack_y[mask])
-                if coef.sum() > 1e-9:
-                    coef = coef / coef.sum()  # нормализуем сумму до 1
-                    for i, n in enumerate(eligible):
-                        base_weights[n] = float(coef[i])
-                    stacking_used = True
-                    logger.info(f"Stacking weights (NNLS, n={mask.sum()}): "
-                                f"{ {n: round(base_weights[n], 3) for n in eligible} }")
+            mask = np.isfinite(stack_X_full).all(axis=1) & np.isfinite(stack_y_full)
+            stack_X = stack_X_full[mask]
+            stack_y = stack_y_full[mask]
+            n_val = len(stack_X)
+
+            if n_val >= 20:
+                # Окна берем с конца (наиболее свежие данные).
+                # Минимум 20 точек на окно для надёжного NNLS.
+                window_sizes = sorted(set(
+                    w for w in [30, 60, 100, n_val] if 20 <= w <= n_val
+                ))
+
+                coefs_list = []
+                for w in window_sizes:
+                    coef_w, _ = nnls(stack_X[-w:], stack_y[-w:])
+                    if coef_w.sum() > 1e-9:
+                        coefs_list.append(coef_w / coef_w.sum())
+
+                if coefs_list:
+                    avg_coef = np.mean(coefs_list, axis=0)
+                    s = avg_coef.sum()
+                    if s > 1e-9:
+                        avg_coef = avg_coef / s
+                        for i, n in enumerate(eligible):
+                            base_weights[n] = float(avg_coef[i])
+                        stacking_used = True
+                        logger.info(
+                            f"Stacking weights (rolling-NNLS, k={len(coefs_list)} "
+                            f"windows={window_sizes}): "
+                            f"{ {n: round(base_weights[n], 3) for n in eligible} }"
+                        )
         except Exception as e:
-            logger.debug(f"NNLS stacking failed: {e}")
+            logger.debug(f"Rolling NNLS stacking failed: {e}")
 
     # ── Fallback: (1/MAPE) × directional edge ──
     # Срабатывает если NNLS не сошёлся или дал нулевые коэф-ты
