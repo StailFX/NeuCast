@@ -57,6 +57,25 @@ BACKTEST_VOL_CAP_SCALE = float(os.getenv("BACKTEST_VOL_CAP_SCALE", "0.6"))      
 BACKTEST_TRAIL_ACTIVATE_PCT = float(os.getenv("BACKTEST_TRAIL_ACTIVATE_PCT", "1.5"))  # %, минимум прибыли для активации
 BACKTEST_TRAIL_STOP_PCT = float(os.getenv("BACKTEST_TRAIL_STOP_PCT", "2.0"))           # %, просадка от high/low
 
+# ── ATR-adaptive risk ─────────────────────────────────────────────────
+# Stop-loss/trailing адаптируются к ATR% актива. BTC (~4% ATR/Close) и
+# AAPL (~1.5% ATR/Close) получают разные пороги — фикс -3% слишком узок для
+# крипто и слишком широк для blue-chip.
+# Если выключено → используем фиксированные BACKTEST_STOP_LOSS_PCT и др.
+ATR_ADAPTIVE_ENABLED = os.getenv("ATR_ADAPTIVE_ENABLED", "1") == "1"
+ATR_MULT_STOP = float(os.getenv("ATR_MULT_STOP", "1.8"))               # stop = 1.8 × ATR%
+ATR_MULT_TRAIL_STOP = float(os.getenv("ATR_MULT_TRAIL_STOP", "1.2"))    # trail = 1.2 × ATR%
+ATR_MULT_TRAIL_ACTIVATE = float(os.getenv("ATR_MULT_TRAIL_ACTIVATE", "0.8"))  # activate = 0.8 × ATR%
+ATR_MIN_STOP_PCT = float(os.getenv("ATR_MIN_STOP_PCT", "1.5"))          # нижняя граница stop
+ATR_MAX_STOP_PCT = float(os.getenv("ATR_MAX_STOP_PCT", "8.0"))          # верхняя граница stop
+
+# ── Embargo period для train/val split ──────────────────────────────
+# Между train и val ставим gap из EMBARGO_DAYS точек. Это устраняет утечку
+# через rolling-window features (RSI, MACD, MA_20 на момент val_split_idx
+# знают данные из train_seq_end - 19 дней train). Стандартная практика в
+# financial ML (Lopez de Prado).
+EMBARGO_DAYS = int(os.getenv("EMBARGO_DAYS", "5"))
+
 # ── Multi-horizon target для бустингов ───────────────────────────────
 # Вместо чистого one-step target log_return[t+1] обучаем бустинги на смесь
 # горизонтов: y_mh[t] = mean_h( sum(returns[t+1..t+h])/h ) для h in [1,2,3].
@@ -308,14 +327,22 @@ def _detect_regime(returns: np.ndarray, volatility: np.ndarray, n_regimes: int =
 
 
 # ── Temporal Sample Weights ──
-def _temporal_weights(n: int, half_life: int = 120) -> np.ndarray:
+def _temporal_weights(n: int, half_life: int = 120,
+                      vol_pct: np.ndarray = None) -> np.ndarray:
     """
-    Exponential decay: recent samples weighted more heavily.
-    half_life=120 trading days ~ 6 months.
-    Normalized so mean weight = 1.0 (doesn't change effective sample size).
+    Exponential decay: recent samples weighted more heavily (half_life=120 ≈ 6 мес).
+    Опционально: vol-aware downweight — точки в high-vol periods получают меньший
+    вес, потому что signal/noise там хуже (price-action driven by macro shocks,
+    не предсказуемой паттерн). Если vol_pct передан (длина n), множим веса на
+    1/(1 + 5×clip(vol, 0, 0.2)). Эффект: точка с vol 5% получает ×0.8, с vol 10%
+    получает ×0.67. На calm днях — без штрафа.
+    Normalized so mean weight = 1.0.
     """
     decay = np.log(2) / half_life
     weights = np.exp(decay * np.arange(n))
+    if vol_pct is not None and len(vol_pct) == n:
+        downweight = 1.0 / (1.0 + 5.0 * np.clip(vol_pct, 0.0, 0.2))
+        weights = weights * downweight
     return weights / weights.mean()
 
 
@@ -516,6 +543,7 @@ def _run_backtest(
     slippage_pct=0.02,       # 0.02% slippage (2 bps)
     use_kelly=True,
     pred_std=None,           # per-step std across active models (confidence)
+    atr_pct=None,            # ATR/Close ratio per step → adaptive stop/trail
 ):
     """
     Realistic long/short backtest with:
@@ -526,6 +554,7 @@ def _run_backtest(
     - Confidence filter: skip new entries when model disagreement (pred_std) is high
     - Stop-loss + cooldown: force FLAT after big daily loss, block entries N days
     - Vol-adjusted Kelly: halve position size when realized vol is in top quartile
+    - ATR-adaptive stop/trail: пороги масштабируются от atr_pct (если передан)
     """
     n = len(dates)
     if n < 2:
@@ -608,14 +637,31 @@ def _run_backtest(
 
     current_position = "FLAT"  # FLAT / LONG / SHORT
     cooldown_remaining = 0     # > 0 → запрет на новые входы (после stop-loss)
-    stop_loss_threshold = BACKTEST_STOP_LOSS_PCT / 100.0  # -0.03 для -3%
+
+    # ── Per-step risk thresholds: фиксированные или ATR-adaptive ────
+    # Если ATR_ADAPTIVE_ENABLED и atr_pct передан → пороги растут вместе с
+    # волатильностью актива (BTC vs AAPL получают разные значения). Фолбэк
+    # к константным BACKTEST_*_PCT если ATR недоступен.
+    if (ATR_ADAPTIVE_ENABLED and atr_pct is not None and len(atr_pct) == n
+            and np.isfinite(atr_pct).all() and (atr_pct > 0).any()):
+        atr_safe = np.clip(atr_pct, 0.005, 0.15)  # safety: 0.5%..15% per day
+        stop_loss_arr = -np.clip(
+            ATR_MULT_STOP * atr_safe,
+            ATR_MIN_STOP_PCT / 100.0, ATR_MAX_STOP_PCT / 100.0,
+        )  # negative (loss thresholds)
+        trail_stop_arr = ATR_MULT_TRAIL_STOP * atr_safe
+        trail_activate_arr = ATR_MULT_TRAIL_ACTIVATE * atr_safe
+        atr_adaptive_used = True
+    else:
+        stop_loss_arr = np.full(n, BACKTEST_STOP_LOSS_PCT / 100.0)
+        trail_stop_arr = np.full(n, BACKTEST_TRAIL_STOP_PCT / 100.0)
+        trail_activate_arr = np.full(n, BACKTEST_TRAIL_ACTIVATE_PCT / 100.0)
+        atr_adaptive_used = False
 
     # Trailing-stop state
     position_entry_price = None  # цена входа в текущую позу
     position_high = None         # max цена с момента входа (для LONG)
     position_low = None          # min цена с момента входа (для SHORT)
-    trail_activate = BACKTEST_TRAIL_ACTIVATE_PCT / 100.0  # 0.015 для 1.5%
-    trail_stop = BACKTEST_TRAIL_STOP_PCT / 100.0          # 0.02 для 2.0%
 
     for i in range(n - 1):
         signal = z_signals[i]
@@ -697,25 +743,28 @@ def _run_backtest(
         # actual_daily_returns[i]). Обновляем high/low от entry; если позиция уже
         # в прибыли >= trail_activate и просела от high/low на >= trail_stop —
         # фиксируем профит. Без cooldown — это не катастрофа, а нормальный exit.
+        # Пороги per-step из массивов trail_activate_arr/trail_stop_arr (ATR-adaptive).
         if (current_position != "FLAT" and position_entry_price is not None
                 and i + 1 < n):
             cur_price = float(actual_prices[i + 1])
+            cur_trail_activate = float(trail_activate_arr[i])
+            cur_trail_stop = float(trail_stop_arr[i])
             triggered_trail = False
             if current_position == "LONG":
                 if position_high is None or cur_price > position_high:
                     position_high = cur_price
                 profit_pct = (position_high - position_entry_price) / position_entry_price
-                if profit_pct >= trail_activate:
+                if profit_pct >= cur_trail_activate:
                     drawdown_pct = (position_high - cur_price) / position_high
-                    if drawdown_pct >= trail_stop:
+                    if drawdown_pct >= cur_trail_stop:
                         triggered_trail = True
             else:  # SHORT
                 if position_low is None or cur_price < position_low:
                     position_low = cur_price
                 profit_pct = (position_entry_price - position_low) / position_entry_price
-                if profit_pct >= trail_activate:
+                if profit_pct >= cur_trail_activate:
                     rebound_pct = (cur_price - position_low) / position_low
-                    if rebound_pct >= trail_stop:
+                    if rebound_pct >= cur_trail_stop:
                         triggered_trail = True
 
             if triggered_trail:
@@ -735,7 +784,9 @@ def _run_backtest(
         # на следующем шаге через cooldown. Это не вернёт сегодняшний убыток, но
         # защитит от классики "потерял на LONG → завтра флипнул в SHORT → потерял
         # на отскоке". Cooldown даёт рынку успокоиться перед новым входом.
-        if daily_pct <= stop_loss_threshold and current_position != "FLAT":
+        # Порог per-step из stop_loss_arr (ATR-adaptive).
+        cur_stop_loss = float(stop_loss_arr[i])
+        if daily_pct <= cur_stop_loss and current_position != "FLAT":
             current_position = "FLAT"
             cooldown_remaining = BACKTEST_COOLDOWN_DAYS
             # Платим exit cost (вышли на закрытии в стрессе → slippage хуже, но упрощённо
@@ -842,6 +893,9 @@ def _run_backtest(
         "avg_kelly": round(float(np.mean(kelly_sizes)) * 100, 1),
         "stop_outs": stop_outs,
         "trail_outs": trail_outs,
+        "atr_adaptive": atr_adaptive_used,
+        "avg_stop_pct": round(float(np.mean(np.abs(stop_loss_arr))) * 100, 2),
+        "avg_trail_pct": round(float(np.mean(trail_stop_arr)) * 100, 2),
         "trades": positions[-20:],  # last 20 trades for display
     }
 
@@ -955,18 +1009,37 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     # All models predict log_returns (same target as TCN — no triple barrier)
     y_bst_train = y_all[:train_seq_end]
 
-    # Time-based validation split for early stopping (last 20% of train)
+    # Time-based validation split for early stopping (last 20% of train).
+    # EMBARGO_DAYS ставит gap между train и val чтобы устранить утечку через
+    # rolling-window features. train: [0:val_split_idx - embargo], val: [val_split_idx:]
     val_split_idx = int(train_seq_end * 0.8)
-    X_bst_train_sel = X_bst_all[:val_split_idx]
+    embargo = max(0, EMBARGO_DAYS) if val_split_idx > 50 + EMBARGO_DAYS else 0
+    train_end_with_embargo = max(50, val_split_idx - embargo)
+    X_bst_train_sel = X_bst_all[:train_end_with_embargo]
     X_bst_val_sel = X_bst_all[val_split_idx:train_seq_end]
     y_bst_val = y_bst_train[val_split_idx:]
     X_bst_test_sel = X_bst_all[train_seq_end:]
     X_bst_all_sel = X_bst_all
 
-    # Sample weights for training set
-    full_weights = _temporal_weights(val_split_idx)
+    # ── Vol-aware sample weights ────────────────────────────────────
+    # Считаем 20-дневную rolling vol log_returns aligned с обучающими позициями.
+    # X_bst_train_sel[i] предсказывает позицию SEQ_LEN + i в df → vol на этой
+    # позиции = std(log_returns[SEQ_LEN+i-20 : SEQ_LEN+i]).
+    train_n = len(X_bst_train_sel)
+    vol_pct_train = None
+    try:
+        # Полная rolling-vol по log_returns; дальше срез под train.
+        vol_full = pd.Series(log_returns).rolling(20, min_periods=5).std().bfill().values
+        # Aligned slice: позиция SEQ_LEN + i для i ∈ [0, train_n)
+        vol_pct_train = vol_full[SEQ_LEN: SEQ_LEN + train_n]
+        if len(vol_pct_train) != train_n or not np.isfinite(vol_pct_train).all():
+            vol_pct_train = None
+    except Exception:
+        vol_pct_train = None
 
-    y_bst_train_sel = y_bst_train[:val_split_idx]
+    full_weights = _temporal_weights(train_n, vol_pct=vol_pct_train)
+
+    y_bst_train_sel = y_bst_train[:train_end_with_embargo]
 
     # ── Multi-horizon target transform (если включён) ──
     # Сглаживаем target по 2-3 горизонтам → меньше overfitting на шуме одного дня.
@@ -1470,11 +1543,29 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     corr_data = df[corr_cols].corr().round(3).values.tolist()
     corr_labels = corr_cols
 
-    # Future forecast (Monte Carlo GBM)
+    # ── Future forecast: Conformal-calibrated intervals ───────────────
+    # Старая версия: Monte Carlo GBM с σ из последних 60 дней. Это гипотеза
+    # "returns log-normal" — на крипто (fat tails) систематически даёт узкие
+    # интервалы → реальное покрытие 90% оказывается 60-70%.
+    # Новая: Split Conformal Prediction — берём фактические остатки в log-space
+    # на val-фолде, считаем signed quantiles. Это ГАРАНТИРУЕТ заявленное
+    # покрытие при условии exchangeability (residuals не сильно меняют
+    # распределение между val и future). MC оставляем как fallback для случая,
+    # когда val слишком короткий (<30 точек).
+    # Для multi-step масштабируем quantiles на sqrt(h) (random-walk diffusion).
     future_dates, future_preds, future_upper, future_lower = [], [], [], []
     future_p50, future_p5, future_p95 = [], [], []
 
     if days_ahead > 0:
+        # Calibration: residuals on val-фолд (not-test) → exchangeability ок
+        val_pred_prices_conf = pred_prices[val_split_idx:train_seq_end]
+        val_act_prices_conf = actual_prices[val_split_idx:train_seq_end]
+        use_conformal = (
+            len(val_pred_prices_conf) >= 30
+            and bool((val_pred_prices_conf > 0).all())
+            and bool((val_act_prices_conf > 0).all())
+        )
+
         N_SIM = MC_SIMS
         last_price = close_prices[-1]
         recent_returns = log_returns[-60:]
@@ -1494,19 +1585,52 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             start=df.index[-1] + pd.Timedelta(1, "d"), periods=days_ahead
         ).strftime("%Y-%m-%d").tolist()
 
+        # Median trajectory (drift) — берём из MC: это лучшая оценка центра
         future_preds = np.median(trajectories, axis=0).tolist()
-        future_p5 = np.percentile(trajectories, 5, axis=0).tolist()
-        future_p95 = np.percentile(trajectories, 95, axis=0).tolist()
-        future_upper = np.percentile(trajectories, 75, axis=0).tolist()
-        future_lower = np.percentile(trajectories, 25, axis=0).tolist()
+
+        if use_conformal:
+            # Signed log-residuals → asymmetry-aware (bull/bear skew)
+            val_log_resid = np.log(val_act_prices_conf / val_pred_prices_conf)
+            # Robust quantile через np.quantile (linear interp)
+            q05_log = float(np.quantile(val_log_resid, 0.05))
+            q25_log = float(np.quantile(val_log_resid, 0.25))
+            q75_log = float(np.quantile(val_log_resid, 0.75))
+            q95_log = float(np.quantile(val_log_resid, 0.95))
+
+            future_p5, future_p95 = [], []
+            future_upper, future_lower = [], []
+            for h in range(days_ahead):
+                scale = np.sqrt(h + 1)  # random-walk diffusion
+                base = future_preds[h]
+                future_p5.append(round(float(base * np.exp(q05_log * scale)), 4))
+                future_p95.append(round(float(base * np.exp(q95_log * scale)), 4))
+                future_upper.append(round(float(base * np.exp(q75_log * scale)), 4))
+                future_lower.append(round(float(base * np.exp(q25_log * scale)), 4))
+            logger.info(
+                f"Conformal intervals (n_cal={len(val_log_resid)}): "
+                f"q05={q05_log:.4f}, q95={q95_log:.4f}"
+            )
+        else:
+            # Fallback: чистый MC percentiles
+            future_p5 = np.percentile(trajectories, 5, axis=0).tolist()
+            future_p95 = np.percentile(trajectories, 95, axis=0).tolist()
+            future_upper = np.percentile(trajectories, 75, axis=0).tolist()
+            future_lower = np.percentile(trajectories, 25, axis=0).tolist()
+            logger.info("Conformal calibration skipped (val too short) — using MC fallback")
 
     # ── Backtesting (test set only) ──
+    # ATR/Close ratio per step → adaptive stop/trail thresholds внутри backtest.
+    atr_test = df["ATR"].values[SEQ_LEN + test_start: SEQ_LEN + len(actual_prices)]
+    close_test = actual_prices[test_start:]
+    atr_pct_test = (atr_test / close_test) if len(atr_test) == len(close_test) else None
+
     backtest = _run_backtest(
         dates[test_start:],
         actual_prices[test_start:],
         pred_returns[test_start:],
         close_prices[SEQ_LEN + test_start - 1: SEQ_LEN + len(actual_prices) - 1],
         pred_std=pred_std[test_start:],
+        atr_pct=atr_pct_test,
     )
 
     return {
