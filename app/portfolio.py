@@ -105,8 +105,18 @@ def optimize_portfolio(
 
     # Daily returns
     returns = close.pct_change().dropna()
-    mean_daily = returns.mean().values
-    cov_daily = returns.cov().values
+
+    # ── EWM (exponentially-weighted) mean & covariance ──────────────
+    # Старая версия: returns.mean()/returns.cov() — равные веса всем дням истории
+    # → оценка не учитывает регим-шифты (корреляции 2020 ≠ 2024).
+    # Новая: half-life 63 дня (~3 месяца) — последний квартал доминирует,
+    # старые данные затухают экспоненциально.
+    HALF_LIFE = 63
+    ewm = returns.ewm(halflife=HALF_LIFE, min_periods=20, adjust=True)
+    mean_daily = ewm.mean().iloc[-1].values
+    # ewm.cov() возвращает time-varying cov; последний n×n блок — самый "свежий".
+    _cov_blocks = ewm.cov().dropna()
+    cov_daily = _cov_blocks.iloc[-n:].values if len(_cov_blocks) >= n else returns.cov().values
 
     # Annualize (252 trading days)
     mean_annual = mean_daily * 252
@@ -196,14 +206,52 @@ def optimize_portfolio(
             })
     allocations.sort(key=lambda x: x["weight"], reverse=True)
 
-    # --- Historical backtest (optimal weights vs equal weights) ---
+    # --- Historical backtest: monthly rebalance, no look-ahead ---
+    # Старая версия: применяла финальные opt_w ко всей истории — но эти веса
+    # рассчитывались на ВСЕЙ истории (включая будущее) → look-ahead bias,
+    # equity-кривая нечестная.
+    # Новая: каждые 21 торговых дня перевешиваем по данным ДО этой даты.
+    # Получаем реалистичную out-of-sample кривую того, как стратегия работала
+    # бы в реальном времени.
     equal_w = np.array([1 / n] * n)
-    port_daily_opt = (returns.values @ opt_w)
-    port_daily_eq = (returns.values @ equal_w)
+    REBAL_DAYS = 21      # ~1 месяц
+    MIN_HISTORY = 60     # минимум 60 дней до первой оптимизации
+    returns_arr = returns.values
+    n_days = len(returns_arr)
 
+    current_w = equal_w.copy()
     hist_opt = [budget]
     hist_eq = [budget]
-    for r_opt, r_eq in zip(port_daily_opt, port_daily_eq):
+
+    for day_idx in range(n_days):
+        # Ребалансируем перед применением сегодняшнего возврата
+        if day_idx >= MIN_HISTORY and (day_idx - MIN_HISTORY) % REBAL_DAYS == 0:
+            hist_returns = returns.iloc[:day_idx + 1]
+            try:
+                hist_ewm = hist_returns.ewm(halflife=HALF_LIFE, min_periods=20, adjust=True)
+                hm_d = hist_ewm.mean().iloc[-1].values
+                hc_blocks = hist_ewm.cov().dropna()
+                hc_d = hc_blocks.iloc[-n:].values if len(hc_blocks) >= n else hist_returns.cov().values
+                hm_a = hm_d * 252
+                hc_a = hc_d * 252
+
+                def _ns(w, hm=hm_a, hc=hc_a):
+                    r = float(np.dot(w, hm))
+                    v = float(np.sqrt(np.dot(w, np.dot(hc, w))))
+                    return -((r - risk_free_rate) / v) if v > 0 else 0.0
+
+                res = minimize(
+                    _ns, current_w, method="SLSQP",
+                    bounds=bounds, constraints=constraints,
+                    options={"maxiter": 50, "ftol": 1e-6},
+                )
+                if res.success and np.all(np.isfinite(res.x)):
+                    current_w = res.x / res.x.sum()  # нормируем на случай численного дрейфа
+            except Exception:
+                pass  # держим текущие веса при ошибке
+
+        r_eq = float(np.dot(returns_arr[day_idx], equal_w))
+        r_opt = float(np.dot(returns_arr[day_idx], current_w))
         hist_opt.append(hist_opt[-1] * (1 + r_opt))
         hist_eq.append(hist_eq[-1] * (1 + r_eq))
 

@@ -29,6 +29,14 @@ YF_CACHE_TTL = int(os.getenv("YF_CACHE_TTL", "1800"))                # 30 мин
 BOOST_CACHE_TTL = int(os.getenv("BOOST_CACHE_TTL", "3600"))          # 1 час кэша обученных бустингов
 BOOST_CACHE_ENABLED = os.getenv("BOOST_CACHE_ENABLED", "1") == "1"
 
+# ── Backtest hysteresis ─────────────────────────────────────────────
+# Гистерезис на Z-score: вход требует strong signal (>= ENTER), выход в FLAT
+# срабатывает при ослаблении до EXIT. Это критично против whipsaw на боковике.
+# Без гистерезиса (ENTER == EXIT) стратегия флипает позицию каждый раз, когда
+# Z-score случайно пересекает порог → платит 0.14% × N комиссий → сливает B&H.
+BACKTEST_ENTER_Z = float(os.getenv("BACKTEST_ENTER_Z", "1.0"))       # вход в LONG/SHORT
+BACKTEST_EXIT_Z = float(os.getenv("BACKTEST_EXIT_Z", "0.3"))         # выход в FLAT
+
 # TF: ограничиваем inter-op параллелизм, чтобы не конкурировать с ThreadPoolExecutor на бустингах.
 try:
     tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -481,8 +489,15 @@ def _run_backtest(
         else:
             z_signals[i] = 0.0
 
-    # Signal threshold: Z > 0.5 = LONG, Z < -0.5 = SHORT, else hold
-    dead_zone = 0.5
+    # ── Hysteresis thresholds ──────────────────────────────────────
+    # Старая версия: dead_zone = 0.5 → флип LONG↔SHORT каждый раз, когда
+    # |Z| > 0.5; в FLAT не выходили никогда (всегда 100% invested) → на
+    # боковике страшный whipsaw + аwerage 0.14% × N комиссий.
+    # Новая логика: вход требует |Z| >= ENTER (по умолчанию 1.0σ), выход
+    # в FLAT при ослаблении до EXIT (0.3σ). Режим может оставаться FLAT,
+    # если сигнал слаб → не торгуем при шуме.
+    enter_z = BACKTEST_ENTER_Z
+    exit_z = BACKTEST_EXIT_Z
 
     capital = initial_capital
     equity = [capital]
@@ -502,13 +517,34 @@ def _run_backtest(
         actual_ret = actual_daily_returns[i]
         position_size = kelly_sizes[i]
 
-        # Determine desired position based on Z-score
-        if signal > dead_zone:
-            desired = "LONG"
-        elif signal < -dead_zone:
-            desired = "SHORT"
-        else:
-            desired = current_position if current_position != "FLAT" else "FLAT"
+        # Hysteresis state machine:
+        #  FLAT  → LONG  при signal >= +enter_z
+        #  FLAT  → SHORT при signal <= -enter_z
+        #  LONG  → FLAT  при signal <  +exit_z   (ослабление)
+        #  LONG  → SHORT при signal <= -enter_z  (сильный разворот, без захода в FLAT)
+        #  SHORT → FLAT  при signal >  -exit_z
+        #  SHORT → LONG  при signal >= +enter_z
+        if current_position == "FLAT":
+            if signal >= enter_z:
+                desired = "LONG"
+            elif signal <= -enter_z:
+                desired = "SHORT"
+            else:
+                desired = "FLAT"
+        elif current_position == "LONG":
+            if signal <= -enter_z:
+                desired = "SHORT"        # сильный разворот → flip
+            elif signal < exit_z:
+                desired = "FLAT"         # сигнал ослаб → выходим, не платим за SHORT
+            else:
+                desired = "LONG"         # держим
+        else:  # SHORT
+            if signal >= enter_z:
+                desired = "LONG"         # сильный разворот → flip
+            elif signal > -exit_z:
+                desired = "FLAT"         # сигнал ослаб → выходим
+            else:
+                desired = "SHORT"        # держим
 
         # Trade cost only when position changes
         trade_cost = 0.0
@@ -882,47 +918,69 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
                 logger.debug("boost cache store failed: %s", e)
 
     # ══════════════════════════════════════════════════════════
-    # ── Regime-Aware Inverse-MAPE Weighted Ensemble           ──
+    # ── Inverse-MAPE Weighted Ensemble (validation-fold)      ──
     # ══════════════════════════════════════════════════════════
-    # Weights based on PRICE accuracy (MAPE), not return R2.
-    # Return R2 is noisy and doesn't match displayed metrics.
-    # Inverse-MAPE: lower error → higher weight.
+    # Веса считаем на VALIDATION-фолде (последние 20% train, см. line 750–752),
+    # который модели НЕ видели при обучении (использовался только для
+    # early stopping). Раньше веса считались на test-сете → классическая
+    # утечка test→weights → ансамбль "подгонялся" под test, MAPE на новых
+    # данных была заметно хуже.
 
     prev_prices_full = close_prices[SEQ_LEN - 1: -1]
+
+    # Validation slice (внутри train, но не использовался для подгонки весов моделей)
+    val_actual_prices = close_prices[SEQ_LEN + val_split_idx: SEQ_LEN + train_seq_end]
+    val_prev = prev_prices_full[val_split_idx:train_seq_end]
+
+    # Test slice (для метрик в UI; в подсчёте весов НЕ участвует)
     test_actual_prices = close_prices[SEQ_LEN + train_seq_end:]
     test_prev = prev_prices_full[train_seq_end:]
 
+    val_preds_ret = {"TCN": tcn_pred_returns[val_split_idx:train_seq_end]}
     test_preds_ret = {"TCN": tcn_pred_returns[train_seq_end:]}
     all_preds = {"TCN": tcn_pred_returns}
 
     if cat_pred_test is not None:
+        # cat_pred_all покрывает весь датасет (X_bst_all_sel) → можно срезать val
+        val_preds_ret["CatBoost"] = cat_pred_all[val_split_idx:train_seq_end]
         test_preds_ret["CatBoost"] = cat_pred_test
         all_preds["CatBoost"] = cat_pred_all
     if xgb_pred_test is not None:
+        val_preds_ret["XGBoost"] = xgb_pred_all[val_split_idx:train_seq_end]
         test_preds_ret["XGBoost"] = xgb_pred_test
         all_preds["XGBoost"] = xgb_pred_all
     if lgb_pred_test is not None:
+        val_preds_ret["LightGBM"] = lgb_pred_all[val_split_idx:train_seq_end]
         test_preds_ret["LightGBM"] = lgb_pred_test
         all_preds["LightGBM"] = lgb_pred_all
 
-    # Compute MAPE on prices for each model
+    # Считаем MAPE на ценах VAL-фолда. Если фолд слишком мал (< 20 точек) —
+    # fallback на TCN-only (надёжнее, чем шумные веса).
     base_weights = {}
-    for name, pred_ret in test_preds_ret.items():
-        pred_price = test_prev * np.exp(pred_ret)
-        mape = float(np.mean(np.abs((test_actual_prices - pred_price) / test_actual_prices)) * 100)
-        # Inverse MAPE: lower error → higher weight. Filter out terrible models (MAPE > 10%)
-        if mape < 10.0 and mape > 0:
-            base_weights[name] = 1.0 / mape
-        else:
-            base_weights[name] = 0.0
+    if len(val_actual_prices) >= 20:
+        for name, pred_ret in val_preds_ret.items():
+            pred_price = val_prev * np.exp(pred_ret)
+            mape = float(np.mean(np.abs((val_actual_prices - pred_price) / val_actual_prices)) * 100)
+            # Мягче порог фильтра: 15% (раньше 10% — на волатильных активах
+            # отсекались все буст-модели → ансамбль = только TCN).
+            if 0 < mape < 15.0:
+                base_weights[name] = 1.0 / mape
+            else:
+                base_weights[name] = 0.0
 
-    total_w = sum(base_weights.values())
-    if total_w > 0:
-        base_weights = {k: v / total_w for k, v in base_weights.items()}
+        total_w = sum(base_weights.values())
+        if total_w > 0:
+            base_weights = {k: v / total_w for k, v in base_weights.items()}
+        else:
+            # Все модели > 15% MAPE — берём равные веса (честнее, чем
+            # принудительно TCN, который тоже мог быть плохим).
+            eq = 1.0 / max(len(val_preds_ret), 1)
+            base_weights = {k: eq for k in val_preds_ret}
     else:
+        # Слишком мало данных для надёжных весов — TCN-only
         base_weights = {"TCN": 1.0}
 
-    logger.info(f"Ensemble weights (inv-MAPE): {base_weights}")
+    logger.info(f"Ensemble weights (val-MAPE, n={len(val_actual_prices)}): {base_weights}")
 
     # Get regime for each data point
     regimes = df["Regime"].values[SEQ_LEN:]  # aligned with sequences
