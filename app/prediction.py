@@ -37,6 +37,17 @@ BOOST_CACHE_ENABLED = os.getenv("BOOST_CACHE_ENABLED", "1") == "1"
 BACKTEST_ENTER_Z = float(os.getenv("BACKTEST_ENTER_Z", "1.0"))       # вход в LONG/SHORT
 BACKTEST_EXIT_Z = float(os.getenv("BACKTEST_EXIT_Z", "0.3"))         # выход в FLAT
 
+# ── Risk management ─────────────────────────────────────────────────
+# Stop-loss + cooldown: предотвращает классический "потерял на LONG → флипнул
+# в SHORT → потерял на отскоке" V-shape disaster. Если дневной PnL <= STOP_LOSS,
+# форсим FLAT и блокируем входы на COOLDOWN дней.
+# Vol-adjusted Kelly: режем размер позиции когда realized vol в верхнем квартиле
+# (на крипто-крах входим маленьким, чтобы не словить максимум удара).
+BACKTEST_STOP_LOSS_PCT = float(os.getenv("BACKTEST_STOP_LOSS_PCT", "-3.0"))   # %, дневной убыток
+BACKTEST_COOLDOWN_DAYS = int(os.getenv("BACKTEST_COOLDOWN_DAYS", "3"))         # дни тишины после stop
+BACKTEST_VOL_CAP_QUANTILE = float(os.getenv("BACKTEST_VOL_CAP_QUANTILE", "0.85"))  # только верхние 15%
+BACKTEST_VOL_CAP_SCALE = float(os.getenv("BACKTEST_VOL_CAP_SCALE", "0.6"))      # коэф. снижения позиции
+
 # TF: ограничиваем inter-op параллелизм, чтобы не конкурировать с ThreadPoolExecutor на бустингах.
 try:
     tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -464,6 +475,8 @@ def _run_backtest(
     - Kelly sizing: quarter-Kelly, max 50% per trade
     - Transaction costs: only on actual trades (not daily churn)
     - Confidence filter: skip new entries when model disagreement (pred_std) is high
+    - Stop-loss + cooldown: force FLAT after big daily loss, block entries N days
+    - Vol-adjusted Kelly: halve position size when realized vol is in top quartile
     """
     n = len(dates)
     if n < 2:
@@ -475,6 +488,24 @@ def _run_backtest(
         kelly_sizes = _kelly_fraction(pred_returns)
     else:
         kelly_sizes = np.ones(n) * 0.5
+
+    # ── Vol-adjusted Kelly ──────────────────────────────────────────
+    # Считаем 20-дневную realized volatility из ФАКТИЧЕСКИХ возвратов.
+    # Только когда текущая vol в верхних 15% истории (default Q=0.85) → режем
+    # позицию × VOL_CAP_SCALE (default 0.6). Консервативный порог чтобы не
+    # резать потенциал в обычной шумной истории — кикает только на реальные
+    # extreme events (BTC флэш-крэш, gold spike). На таких событиях direction
+    # часто непредсказуемо → лучше быть в позе вдвое меньше.
+    actual_daily_returns = np.diff(actual_prices) / actual_prices[:-1]
+    vol_window = 20
+    realized_vol = pd.Series(actual_daily_returns).rolling(vol_window, min_periods=5).std().fillna(0).values
+    pos_vol = realized_vol[realized_vol > 0]
+    if len(pos_vol) > 10:
+        vol_threshold = float(np.quantile(pos_vol, BACKTEST_VOL_CAP_QUANTILE))
+        # Pad realized_vol to length n (it has length n-1 from np.diff)
+        vol_padded = np.concatenate([[0.0], realized_vol])
+        vol_scale = np.where(vol_padded > vol_threshold, BACKTEST_VOL_CAP_SCALE, 1.0)
+        kelly_sizes = kelly_sizes * vol_scale
 
     # Convert raw pred_returns to Z-score signal (removes systematic bias)
     # Raw returns may have persistent positive/negative bias → all LONG or all SHORT
@@ -521,10 +552,13 @@ def _run_backtest(
     losses = 0
     total_costs = 0.0
     num_trades = 0
+    stop_outs = 0  # счётчик срабатываний stop-loss (для UI)
 
-    actual_daily_returns = np.diff(actual_prices) / actual_prices[:-1]
+    # actual_daily_returns уже посчитан выше для vol-adjusted Kelly
 
     current_position = "FLAT"  # FLAT / LONG / SHORT
+    cooldown_remaining = 0     # > 0 → запрет на новые входы (после stop-loss)
+    stop_loss_threshold = BACKTEST_STOP_LOSS_PCT / 100.0  # -0.03 для -3%
 
     for i in range(n - 1):
         signal = z_signals[i]
@@ -532,32 +566,32 @@ def _run_backtest(
         position_size = kelly_sizes[i]
 
         # Hysteresis state machine:
-        #  FLAT  → LONG  при signal >= +enter_z  AND confidence_ok
-        #  FLAT  → SHORT при signal <= -enter_z  AND confidence_ok
-        #  LONG  → FLAT  при signal <  +exit_z   (ослабление)
-        #  LONG  → SHORT при signal <= -enter_z  AND confidence_ok (сильный разворот)
+        #  FLAT  → LONG  при signal >= +enter_z  AND confidence_ok  AND cooldown==0
+        #  FLAT  → SHORT при signal <= -enter_z  AND confidence_ok  AND cooldown==0
+        #  LONG  → FLAT  при signal <  +exit_z   (ослабление, cooldown игнорируется)
+        #  LONG  → SHORT при signal <= -enter_z  AND confidence_ok  AND cooldown==0
         #  SHORT → FLAT  при signal >  -exit_z
-        #  SHORT → LONG  при signal >= +enter_z  AND confidence_ok
-        # Confidence_ok гейтит ВХОДЫ (нельзя начинать торговать когда модели спорят),
-        # но не блокирует ВЫХОДЫ — из плохой позиции лучше выйти даже при низком confidence.
+        #  SHORT → LONG  при signal >= +enter_z  AND confidence_ok  AND cooldown==0
+        # Cooldown_remaining блокирует ВСЕ входы и flips, но не блокирует выходы.
         conf = bool(confidence_ok[i])
+        can_enter = conf and cooldown_remaining == 0
         if current_position == "FLAT":
-            if signal >= enter_z and conf:
+            if signal >= enter_z and can_enter:
                 desired = "LONG"
-            elif signal <= -enter_z and conf:
+            elif signal <= -enter_z and can_enter:
                 desired = "SHORT"
             else:
                 desired = "FLAT"
         elif current_position == "LONG":
-            if signal <= -enter_z and conf:
-                desired = "SHORT"        # сильный разворот → flip (нужна уверенность)
+            if signal <= -enter_z and can_enter:
+                desired = "SHORT"        # сильный разворот → flip
             elif signal < exit_z:
-                desired = "FLAT"         # сигнал ослаб → выходим, не платим за SHORT
+                desired = "FLAT"         # сигнал ослаб → выходим
             else:
                 desired = "LONG"         # держим
         else:  # SHORT
-            if signal >= enter_z and conf:
-                desired = "LONG"         # сильный разворот → flip (нужна уверенность)
+            if signal >= enter_z and can_enter:
+                desired = "LONG"         # сильный разворот → flip
             elif signal > -exit_z:
                 desired = "FLAT"         # сигнал ослаб → выходим
             else:
@@ -589,7 +623,27 @@ def _run_backtest(
 
         capital += net_pnl
         equity.append(capital)
-        daily_returns.append(net_pnl / equity[-2] if equity[-2] > 0 else 0)
+        daily_pct = net_pnl / equity[-2] if equity[-2] > 0 else 0
+        daily_returns.append(daily_pct)
+
+        # ── Stop-loss check (после применения дневного PnL) ────────
+        # Если дневной убыток превысил порог И мы были не во FLAT → форсим выход
+        # на следующем шаге через cooldown. Это не вернёт сегодняшний убыток, но
+        # защитит от классики "потерял на LONG → завтра флипнул в SHORT → потерял
+        # на отскоке". Cooldown даёт рынку успокоиться перед новым входом.
+        if daily_pct <= stop_loss_threshold and current_position != "FLAT":
+            current_position = "FLAT"
+            cooldown_remaining = BACKTEST_COOLDOWN_DAYS
+            # Платим exit cost (вышли на закрытии в стрессе → slippage хуже, но упрощённо
+            # уже учтено в commission+slippage)
+            exit_cost = capital * position_size * one_way_cost
+            capital -= exit_cost
+            equity[-1] = capital
+            total_costs += exit_cost
+            stop_outs += 1
+            action = "STOP"
+        elif cooldown_remaining > 0:
+            cooldown_remaining -= 1
 
         if net_pnl > 0:
             wins += 1
@@ -679,6 +733,7 @@ def _run_backtest(
         "commission_pct": commission_pct,
         "slippage_pct": slippage_pct,
         "avg_kelly": round(float(np.mean(kelly_sizes)) * 100, 1),
+        "stop_outs": stop_outs,
         "trades": positions[-20:],  # last 20 trades for display
     }
 
