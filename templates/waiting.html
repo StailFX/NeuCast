@@ -309,6 +309,10 @@
 
   <script>
     const taskId = "{{ task_id }}";
+    // Для /p/{slug}: success_url = "/p/{slug}" — остаёмся на короткой ссылке,
+    // перезагрузив страницу (сервер отрендерит predict.html вместо waiting.html).
+    // Для легаси /predict/status/{task_id}: пусто → редиректим на /predict/result/{task_id}.
+    const successUrl = "{{ success_url|default('') }}";
     const storageKey = `neucast_start_${taskId}`;
     const saved = sessionStorage.getItem(storageKey);
     const startTime = saved ? parseInt(saved) : Date.now();
@@ -349,7 +353,16 @@
         document.getElementById('statusText').textContent = 'Перенаправление...';
         if (pollInterval) clearInterval(pollInterval);
         sessionStorage.removeItem(storageKey);
-        window.location.href = `/predict/result/${taskId}`;
+        // Если открыт короткий URL /p/{slug} — просто reload текущей страницы:
+        // сервер сам отрендерит predict.html вместо waiting.html. URL не меняется.
+        // Иначе (легаси /predict/status/…) — прыгаем на /predict/result/{task_id}.
+        if (successUrl && window.location.pathname === successUrl) {
+          window.location.reload();
+        } else if (successUrl) {
+          window.location.href = successUrl;
+        } else {
+          window.location.href = `/predict/result/${taskId}`;
+        }
         return true; // done
       } else if (data.state === 'FAILURE') {
         if (pollInterval) clearInterval(pollInterval);

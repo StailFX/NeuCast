@@ -105,6 +105,57 @@ if USE_CELERY:
         USE_CELERY = False
 
 
+# ── Короткие URL для прогнозов: /p/{slug} вместо /predict/status/{UUID}?... ──
+# Slug → {task_id, ticker, start_date, end_date, days_ahead} в Redis с TTL 2ч.
+# Redis уже используется как Celery broker, поэтому нового инстанса не нужно.
+PRED_SLUG_TTL = 7200  # 2 часа — достаточно чтобы дойти от submit до result
+_SLUG_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # без 0/O/1/l/I
+_redis_client = None
+
+
+def _get_redis():
+    """Ленивая инициализация redis-клиента. Возвращает None если недоступен."""
+    global _redis_client
+    if _redis_client is None:
+        try:
+            import redis
+            _redis_client = redis.from_url(
+                REDIS_URL, decode_responses=True,
+                socket_timeout=1, socket_connect_timeout=1,
+            )
+            _redis_client.ping()
+        except Exception:
+            _redis_client = False  # не пробуем повторно
+    return _redis_client if _redis_client else None
+
+
+def _make_slug(n: int = 6) -> str:
+    """6-символьный slug (56^6 ≈ 31 млрд комбинаций, коллизий не будет)."""
+    return "".join(secrets.choice(_SLUG_ALPHABET) for _ in range(n))
+
+
+def _save_pred_slug(slug: str, meta: dict) -> bool:
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        r.setex(f"pred_slug:{slug}", PRED_SLUG_TTL, json.dumps(meta))
+        return True
+    except Exception:
+        return False
+
+
+def _load_pred_slug(slug: str) -> dict | None:
+    r = _get_redis()
+    if not r:
+        return None
+    try:
+        raw = r.get(f"pred_slug:{slug}")
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -247,6 +298,8 @@ async def robots_txt():
         "Disallow: /admin/\n"
         "Disallow: /ws/\n"
         "Disallow: /predict/result/\n"
+        "Disallow: /predict/status/\n"
+        "Disallow: /p/\n"
         "Disallow: /logout\n"
         "\n"
         "Sitemap: https://neucast.ru/sitemap.xml\n"
@@ -309,6 +362,17 @@ async def predict(
             kwargs={"user_id": user.id if user else None},
             serializer="pickle",
         )
+        # ── Пробуем короткий URL /p/{slug}. Если Redis недоступен, падаем в ──
+        # длинный /predict/status/{UUID}?... (легаси-совместимость).
+        slug = _make_slug()
+        if _save_pred_slug(slug, {
+            "task_id": task.id,
+            "ticker": ticker,
+            "start_date": start_date,
+            "end_date": end_date,
+            "days_ahead": days_ahead,
+        }):
+            return RedirectResponse(f"/p/{slug}", status_code=303)
         return RedirectResponse(
             f"/predict/status/{task.id}?ticker={ticker}&start_date={start_date}&end_date={end_date}&days_ahead={days_ahead}",
             status_code=303,
@@ -611,25 +675,11 @@ async def ws_task_status(websocket: WebSocket, task_id: str):
             pass
 
 
-@app.get("/predict/result/{task_id}", response_class=HTMLResponse)
-async def predict_result(
-    task_id: str,
-    request: Request,
-    db: Session = Depends(get_db),
-    role: str = Depends(get_current_role),
-    user: User = Depends(get_current_user),
-):
-    if not role:
-        return RedirectResponse("/login")
-    if not USE_CELERY or not celery_app:
-        return RedirectResponse("/dashboard")
+async def _render_success_result(async_result, request, db, user, role):
+    """Render predict.html from SUCCESS Celery task. Caller гарантирует state == SUCCESS.
 
-    from celery.result import AsyncResult
-    async_result = AsyncResult(task_id, app=celery_app)
-
-    if async_result.state != "SUCCESS":
-        return RedirectResponse("/dashboard")
-
+    Используется и /predict/result/{task_id} (легаси), и /p/{slug} (короткий URL).
+    """
     result = async_result.result
     if isinstance(result, dict) and "error" in result:
         return templates.TemplateResponse("form.html", {
@@ -758,6 +808,82 @@ async def predict_result(
         "dir_acc": f"{result['dir_acc']:.1f}",
         "data_json": json.dumps(data),
         "table": table, "ensemble": True,
+    })
+
+
+@app.get("/predict/result/{task_id}", response_class=HTMLResponse)
+async def predict_result(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_current_role),
+    user: User = Depends(get_current_user),
+):
+    if not role:
+        return RedirectResponse("/login")
+    if not USE_CELERY or not celery_app:
+        return RedirectResponse("/dashboard")
+
+    from celery.result import AsyncResult
+    async_result = AsyncResult(task_id, app=celery_app)
+
+    if async_result.state != "SUCCESS":
+        return RedirectResponse("/dashboard")
+
+    return await _render_success_result(async_result, request, db, user, role)
+
+
+@app.get("/p/{slug}", response_class=HTMLResponse)
+async def predict_by_slug(
+    slug: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_current_role),
+    user: User = Depends(get_current_user),
+):
+    """Короткий URL-алиас для /predict/status/{task_id}?... и /predict/result/{task_id}.
+
+    Одна точка входа, которая показывает либо waiting.html, либо predict.html —
+    в зависимости от состояния Celery-таски. URL не меняется при переходе
+    waiting → done: пользователь видит одну и ту же ссылку /p/xY3kH7.
+    """
+    if not role:
+        return RedirectResponse("/login")
+
+    meta = _load_pred_slug(slug)
+    if not meta:
+        # Slug истёк (TTL 2ч) или неизвестен — уводим на дэшборд
+        return RedirectResponse("/dashboard")
+
+    task_id = meta["task_id"]
+
+    if not USE_CELERY or not celery_app:
+        return RedirectResponse("/dashboard")
+
+    from celery.result import AsyncResult
+    async_result = AsyncResult(task_id, app=celery_app)
+
+    # Таска готова — рендерим результат
+    if async_result.state == "SUCCESS":
+        return await _render_success_result(async_result, request, db, user, role)
+
+    # Таска упала — показываем ошибку в форме
+    if async_result.state == "FAILURE":
+        return templates.TemplateResponse("form.html", {
+            "request": request,
+            "error": str(async_result.info) if async_result.info else "Неизвестная ошибка",
+            "ensemble": True,
+        })
+
+    # Таска в процессе — показываем waiting.html
+    return templates.TemplateResponse("waiting.html", {
+        "request": request,
+        "task_id": task_id,
+        "ticker": meta.get("ticker", ""),
+        "start_date": meta.get("start_date", ""),
+        "end_date": meta.get("end_date", ""),
+        "days_ahead": meta.get("days_ahead", 0),
+        "success_url": f"/p/{slug}",
     })
 
 
