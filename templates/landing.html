@@ -114,10 +114,12 @@
   </script>
 
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png"><link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png"><link rel="apple-touch-icon" href="/static/favicon-192.png">
+  <!-- Шрифты: сокращено с 5 weights до 3 (400 для body, 700 для кнопок, 800 для h1).
+       display=swap + фолбэк в CSS — LCP-текст рендерится мгновенно системным шрифтом. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet"></noscript>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -140,10 +142,13 @@
     html { scroll-behavior: smooth; }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      /* Минимизируем сдвиг при подгрузке Inter: адаптируем метрики фолбэка */
+      font-size-adjust: 0.5;
       background: var(--bg);
       color: var(--text);
       overflow-x: hidden;
+      text-rendering: optimizeSpeed;
     }
 
     /* Animated grid background */
@@ -159,37 +164,45 @@
       pointer-events: none;
     }
 
-    /* Floating orbs */
+    /* Floating orbs. blur(100px) очень дорог — уменьшили, убрали will-change на
+       невидимых для наблюдателя элементах, применяем contain для изоляции рендера. */
     .orb {
       position: fixed;
       border-radius: 50%;
-      filter: blur(100px);
+      filter: blur(60px);
       pointer-events: none;
       z-index: 0;
       animation: orbFloat 20s ease-in-out infinite;
-      will-change: transform;
       transform: translateZ(0);
       backface-visibility: hidden;
+      contain: layout style paint;
     }
     .orb-1 {
-      width: 600px; height: 600px;
+      width: 420px; height: 420px;
       background: rgba(16, 185, 129, 0.07);
-      top: -200px; left: -100px;
+      top: -120px; left: -80px;
       animation-delay: 0s;
     }
     .orb-2 {
-      width: 500px; height: 500px;
+      width: 360px; height: 360px;
       background: rgba(59, 130, 246, 0.06);
-      top: 40%; right: -150px;
+      top: 40%; right: -100px;
       animation-delay: -7s;
       animation-duration: 25s;
     }
+    /* Третий орб даёт слишком мало визуально, а blur-площадь = дорогой paint. Скрываем на мобиле. */
     .orb-3 {
-      width: 400px; height: 400px;
+      width: 320px; height: 320px;
       background: rgba(167, 139, 250, 0.05);
-      bottom: -100px; left: 30%;
+      bottom: -80px; left: 30%;
       animation-delay: -14s;
       animation-duration: 22s;
+    }
+    @media (max-width: 767px) {
+      .orb-3 { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .orb { animation: none; }
     }
 
     @keyframes orbFloat {
@@ -211,13 +224,18 @@
       transform: translateY(0);
       will-change: auto;
     }
-    /* Hero elements appear instantly — no transform to avoid CLS */
-    .reveal-instant {
-      animation: revealIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+    /* Hero elements appear instantly — no opacity animation, чтобы не блокировать LCP.
+       Fade-in делаем только на не-LCP элементах (бейдж, sub, кнопки) и коротким. */
+    .reveal-instant { opacity: 1; }
+    .reveal-instant.d1,
+    .reveal-instant.d2,
+    .reveal-instant.d3 {
+      animation: revealIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
     }
-    .reveal-instant.d1 { animation-delay: 0.1s; }
-    .reveal-instant.d2 { animation-delay: 0.25s; }
-    .reveal-instant.d3 { animation-delay: 0.4s; }
+    /* h1 (LCP) рендерится сразу — без анимации. */
+    h1.reveal-instant { animation: none !important; opacity: 1; }
+    .reveal-instant.d2 { animation-delay: 0.08s; }
+    .reveal-instant.d3 { animation-delay: 0.16s; }
 
     @keyframes revealIn {
       from { opacity: 0; }
@@ -366,11 +384,12 @@
 
     h1 {
       font-size: 4rem;
-      font-weight: 900;
+      font-weight: 800;
       line-height: 1.08;
       letter-spacing: -0.04em;
       margin-bottom: 1.5rem;
       color: #f8fafc;
+      /* content-visibility:auto НЕ применяем — h1 и есть LCP, он должен рендериться сразу. */
     }
 
     h1 .gradient {
@@ -466,7 +485,7 @@
 
     .stat-value {
       font-size: 2.8rem;
-      font-weight: 900;
+      font-weight: 800;
       letter-spacing: -0.03em;
       line-height: 1;
     }
@@ -516,7 +535,7 @@
 
     .section-header h2 {
       font-size: 2.5rem;
-      font-weight: 800;
+      font-weight: 700;
       letter-spacing: -0.03em;
       margin-bottom: 1rem;
       color: #f1f5f9;
@@ -626,7 +645,7 @@
       background: linear-gradient(135deg, var(--green), var(--blue));
       border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      font-size: 1rem; font-weight: 800; color: #fff;
+      font-size: 1rem; font-weight: 700; color: #fff;
       margin: 0 auto 1.25rem;
       box-shadow: 0 4px 20px rgba(16, 185, 129, 0.25);
       position: relative;
@@ -712,7 +731,7 @@
 
     .cta-box h2 {
       font-size: 2rem;
-      font-weight: 800;
+      font-weight: 700;
       margin-bottom: 1rem;
       position: relative;
     }
@@ -792,10 +811,6 @@
       .stat { padding: 0.75rem 0; }
     }
   </style>
-  <!-- Yandex.Metrika -->
-  <script type="text/javascript">(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};m[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})(window,document,"script","https://mc.yandex.ru/metrika/tag.js?id=108203672","ym");ym(108203672,"init",{ssr:true,webvisor:true,clickmap:true,ecommerce:"dataLayer",referrer:document.referrer,url:location.href,accurateTrackBounce:true,trackLinks:true});</script>
-  <noscript><div><img src="https://mc.yandex.ru/watch/108203672" style="position:absolute;left:-9999px;" alt=""/></div></noscript>
-  <!-- /Yandex.Metrika -->
 </head>
 <body>
   <!-- Floating orbs -->
@@ -1028,36 +1043,42 @@
 
     // Fallback: IntersectionObserver fires asynchronously, no forced layout needed
 
-    // ── Floating particles (deferred to avoid forced layout) ──
-    requestAnimationFrame(() => {
-      const container = document.getElementById('particles');
+    // ── Deferred визуал: particles + hero canvas откладываются до idle,
+    //    чтобы не конкурировать с LCP-рендером и не создавать long tasks. ──
+    const deferVisuals = () => {
+      // Не запускаем тяжёлую анимацию на маленьких устройствах или при prefers-reduced-motion.
+      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
       const isMobile = matchMedia('(max-width:767px)').matches;
-      const count = isMobile ? 6 : 15;
-      const frag = document.createDocumentFragment();
-      for (let i = 0; i < count; i++) {
-        const p = document.createElement('div');
-        p.className = 'particle';
-        p.style.cssText = 'left:' + (Math.random()*100) + '%;animation-duration:' + (12+Math.random()*18) + 's;animation-delay:' + (Math.random()*20) + 's;width:' + (1.5+Math.random()*2) + 'px;height:' + (1.5+Math.random()*2) + 'px;opacity:' + (0.2+Math.random()*0.4);
-        if (Math.random() > 0.6) p.style.background = 'rgba(59,130,246,0.35)';
-        else if (Math.random() > 0.85) p.style.background = 'rgba(167,139,250,0.35)';
-        frag.appendChild(p);
-      }
-      container.appendChild(frag);
-    });
 
-    // ── Hero animated chart (canvas) ──
-    (function drawHeroChart() {
+      // 1) Particles
+      const container = document.getElementById('particles');
+      if (container && !reducedMotion) {
+        const count = isMobile ? 0 : 10;  // убрали на мобиле, уменьшили на десктопе
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < count; i++) {
+          const p = document.createElement('div');
+          p.className = 'particle';
+          p.style.cssText = 'left:' + (Math.random()*100) + '%;animation-duration:' + (12+Math.random()*18) + 's;animation-delay:' + (Math.random()*20) + 's;width:' + (1.5+Math.random()*2) + 'px;height:' + (1.5+Math.random()*2) + 'px;opacity:' + (0.2+Math.random()*0.4);
+          if (Math.random() > 0.6) p.style.background = 'rgba(59,130,246,0.35)';
+          else if (Math.random() > 0.85) p.style.background = 'rgba(167,139,250,0.35)';
+          frag.appendChild(p);
+        }
+        container.appendChild(frag);
+      }
+
+      // 2) Hero canvas — не рисуем на мобиле (там скрыт CSS'ом) и при reduced-motion.
       const canvas = document.getElementById('heroChart');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
+      if (!canvas || isMobile || reducedMotion) return;
+
+      const ctx = canvas.getContext('2d', { alpha: true });
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);  // cap at 2x
       canvas.width = 700 * dpr;
       canvas.height = 400 * dpr;
       ctx.scale(dpr, dpr);
 
-      let points = [];
+      const points = [];
       let y = 200;
-      for (let x = 0; x <= 700; x += 3) {
+      for (let x = 0; x <= 700; x += 4) {  // 4 вместо 3: меньше точек → дешевле
         y += (Math.random() - 0.48) * 6;
         y = Math.max(60, Math.min(340, y));
         points.push({ x, y });
@@ -1073,23 +1094,24 @@
       }, { threshold: 0 });
       chartObserver.observe(canvas);
 
+      // Предвычисленный градиент (не пересоздаём каждый кадр).
+      const grad = ctx.createLinearGradient(0, 0, 0, 400);
+      grad.addColorStop(0, 'rgba(16, 185, 129, 0.15)');
+      grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
+
       function draw() {
         if (!isVisible) { rafId = null; return; }
         ctx.clearRect(0, 0, 700, 400);
-
         ctx.beginPath();
         ctx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
         ctx.lineWidth = 2;
-        points.forEach((p, i) => {
+        for (let i = 0; i < points.length; i++) {
+          const p = points[i];
           const yy = p.y + Math.sin((p.x + offset) * 0.008) * 15;
           if (i === 0) ctx.moveTo(p.x, yy);
           else ctx.lineTo(p.x, yy);
-        });
+        }
         ctx.stroke();
-
-        const grad = ctx.createLinearGradient(0, 0, 0, 400);
-        grad.addColorStop(0, 'rgba(16, 185, 129, 0.15)');
-        grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
         ctx.lineTo(700, 400);
         ctx.lineTo(0, 400);
         ctx.closePath();
@@ -1100,7 +1122,15 @@
         rafId = requestAnimationFrame(draw);
       }
       draw();
-    })();
+    };
+
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(deferVisuals, { timeout: 2500 });
+    } else {
+      window.addEventListener('load', () => setTimeout(deferVisuals, 200));
+    }
   </script>
+
+  {% include "_metrika.html" %}
 </body>
 </html>

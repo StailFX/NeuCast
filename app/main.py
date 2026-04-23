@@ -15,6 +15,8 @@ from fastapi import FastAPI, Request, Form, HTTPException, Depends, WebSocket, W
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine, SessionLocal
@@ -30,6 +32,38 @@ from app import telegram_bot
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 app = FastAPI()
+
+# ── gzip compression на весь трафик (HTML/JSON/JS/CSS). ──
+# minimum_size=500: мелкие ответы не сжимаем, оверхед больше выгоды.
+# compresslevel=6: хороший баланс CPU/ratio.
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
+
+
+# ── Cache-Control для статики (работает и когда nginx не перед нами). ──
+class CacheControlStaticMiddleware:
+    """Добавляет immutable-кэш к /static/ для снижения повторных запросов."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope["path"].startswith("/static/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_cache(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                # Заменяем/добавляем Cache-Control
+                headers = [(k, v) for (k, v) in headers if k.lower() != b"cache-control"]
+                headers.append((b"cache-control", b"public, max-age=31536000, immutable"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_cache)
+
+
+app.add_middleware(CacheControlStaticMiddleware)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
