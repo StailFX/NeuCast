@@ -455,6 +455,7 @@ def _run_backtest(
     commission_pct=0.05,     # 0.05% per trade (5 bps)
     slippage_pct=0.02,       # 0.02% slippage (2 bps)
     use_kelly=True,
+    pred_std=None,           # per-step std across active models (confidence)
 ):
     """
     Realistic long/short backtest with:
@@ -462,6 +463,7 @@ def _run_backtest(
     - Position holding: only pay costs when position CHANGES direction
     - Kelly sizing: quarter-Kelly, max 50% per trade
     - Transaction costs: only on actual trades (not daily churn)
+    - Confidence filter: skip new entries when model disagreement (pred_std) is high
     """
     n = len(dates)
     if n < 2:
@@ -488,6 +490,18 @@ def _run_backtest(
             z_signals[i] = (pred_returns[i] - mu) / std
         else:
             z_signals[i] = 0.0
+
+    # ── Confidence filter ──────────────────────────────────────────
+    # Если std предсказаний моделей > медианы (модели расходятся) →
+    # confidence_low → не входим в новые позиции (но из существующей не выгоняем
+    # принудительно — гистерезис сам выведет). Это срезает тильт-моменты, когда
+    # разные модели тянут в разные стороны и ансамбль "посередине" с непредсказуемым
+    # направлением.
+    if pred_std is not None and len(pred_std) == n and np.std(pred_std) > 0:
+        confidence_threshold = float(np.median(pred_std))
+        confidence_ok = pred_std <= confidence_threshold
+    else:
+        confidence_ok = np.ones(n, dtype=bool)
 
     # ── Hysteresis thresholds ──────────────────────────────────────
     # Старая версия: dead_zone = 0.5 → флип LONG↔SHORT каждый раз, когда
@@ -518,29 +532,32 @@ def _run_backtest(
         position_size = kelly_sizes[i]
 
         # Hysteresis state machine:
-        #  FLAT  → LONG  при signal >= +enter_z
-        #  FLAT  → SHORT при signal <= -enter_z
+        #  FLAT  → LONG  при signal >= +enter_z  AND confidence_ok
+        #  FLAT  → SHORT при signal <= -enter_z  AND confidence_ok
         #  LONG  → FLAT  при signal <  +exit_z   (ослабление)
-        #  LONG  → SHORT при signal <= -enter_z  (сильный разворот, без захода в FLAT)
+        #  LONG  → SHORT при signal <= -enter_z  AND confidence_ok (сильный разворот)
         #  SHORT → FLAT  при signal >  -exit_z
-        #  SHORT → LONG  при signal >= +enter_z
+        #  SHORT → LONG  при signal >= +enter_z  AND confidence_ok
+        # Confidence_ok гейтит ВХОДЫ (нельзя начинать торговать когда модели спорят),
+        # но не блокирует ВЫХОДЫ — из плохой позиции лучше выйти даже при низком confidence.
+        conf = bool(confidence_ok[i])
         if current_position == "FLAT":
-            if signal >= enter_z:
+            if signal >= enter_z and conf:
                 desired = "LONG"
-            elif signal <= -enter_z:
+            elif signal <= -enter_z and conf:
                 desired = "SHORT"
             else:
                 desired = "FLAT"
         elif current_position == "LONG":
-            if signal <= -enter_z:
-                desired = "SHORT"        # сильный разворот → flip
+            if signal <= -enter_z and conf:
+                desired = "SHORT"        # сильный разворот → flip (нужна уверенность)
             elif signal < exit_z:
                 desired = "FLAT"         # сигнал ослаб → выходим, не платим за SHORT
             else:
                 desired = "LONG"         # держим
         else:  # SHORT
-            if signal >= enter_z:
-                desired = "LONG"         # сильный разворот → flip
+            if signal >= enter_z and conf:
+                desired = "LONG"         # сильный разворот → flip (нужна уверенность)
             elif signal > -exit_z:
                 desired = "FLAT"         # сигнал ослаб → выходим
             else:
@@ -918,13 +935,23 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
                 logger.debug("boost cache store failed: %s", e)
 
     # ══════════════════════════════════════════════════════════
-    # ── Inverse-MAPE Weighted Ensemble (validation-fold)      ──
+    # ── Smart Ensemble: NNLS Stacking + Anti-Skill Filter     ──
     # ══════════════════════════════════════════════════════════
-    # Веса считаем на VALIDATION-фолде (последние 20% train, см. line 750–752),
-    # который модели НЕ видели при обучении (использовался только для
-    # early stopping). Раньше веса считались на test-сете → классическая
-    # утечка test→weights → ансамбль "подгонялся" под test, MAPE на новых
-    # данных была заметно хуже.
+    # Эволюция логики:
+    #  v1 (старая, leaky):   1/MAPE на test-фолде → утечка → завышенные метрики
+    #  v2 (val-MAPE):        1/MAPE на val-фолде → честно, но не учитывает направление
+    #                         модель с низким MAPE и dir_acc<50% (anti-skill)
+    #                         могла получить ВЫСОКИЙ вес → ансамбль предсказывал
+    #                         не ту сторону → dir_acc<50% на тесте.
+    #  v3 (текущая):         (a) anti-skill filter: модели с dir_acc<50% на val
+    #                            получают вес 0 — они хуже монетки, в ансамбле
+    #                            только вредят
+    #                        (b) NNLS stacking: scipy.optimize.nnls находит
+    #                            оптимальную линейную комбинацию predicted_returns
+    #                            под истинные log_returns на val-фолде
+    #                            (non-negative weights → нет короткой продажи модели)
+    #                        (c) fallback: если stacking даёт нулевую сумму
+    #                            (все модели плохи) → (1/MAPE)×dir_edge
 
     prev_prices_full = close_prices[SEQ_LEN - 1: -1]
 
@@ -954,33 +981,80 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         test_preds_ret["LightGBM"] = lgb_pred_test
         all_preds["LightGBM"] = lgb_pred_all
 
-    # Считаем MAPE на ценах VAL-фолда. Если фолд слишком мал (< 20 точек) —
-    # fallback на TCN-only (надёжнее, чем шумные веса).
-    base_weights = {}
+    # ── Per-model val metrics: MAPE + directional accuracy ──
+    val_metrics = {}
+    val_y_logret = log_returns[SEQ_LEN + val_split_idx: SEQ_LEN + train_seq_end]
+    val_actual_dir = (val_actual_prices > val_prev).astype(int)
+
     if len(val_actual_prices) >= 20:
         for name, pred_ret in val_preds_ret.items():
             pred_price = val_prev * np.exp(pred_ret)
             mape = float(np.mean(np.abs((val_actual_prices - pred_price) / val_actual_prices)) * 100)
-            # Мягче порог фильтра: 15% (раньше 10% — на волатильных активах
-            # отсекались все буст-модели → ансамбль = только TCN).
-            if 0 < mape < 15.0:
-                base_weights[name] = 1.0 / mape
+            pred_dir = (pred_price > val_prev).astype(int)
+            dir_acc = float(np.mean(val_actual_dir == pred_dir))
+            val_metrics[name] = {"mape": round(mape, 2), "dir": round(dir_acc * 100, 1)}
+
+    # ── Anti-skill filter: модели с dir_acc < 50% на val исключаются ──
+    # Это самый важный фильтр — модель хуже монетки на val почти гарантированно
+    # будет хуже монетки на test тоже. Включать её = вредить ансамблю.
+    eligible = [n for n, m in val_metrics.items() if m["dir"] >= 50.0 and 0 < m["mape"] < 15.0]
+    if not eligible:
+        # Все модели anti-skill — хотя бы оставим TCN с очень низким весом
+        eligible = ["TCN"] if "TCN" in val_preds_ret else list(val_preds_ret.keys())[:1]
+        logger.warning(f"All models < 50%% dir_acc on val (metrics={val_metrics}) — fallback to TCN-only")
+
+    base_weights = {n: 0.0 for n in val_preds_ret}
+
+    # ── Primary: NNLS stacking ──
+    # X = матрица val-предсказаний (рядов = val_n, колонок = n_models)
+    # y = истинные log-returns
+    # NNLS даёт неотрицательные веса w >= 0, минимизирует ||Xw - y||
+    stacking_used = False
+    if len(val_actual_prices) >= 20 and len(eligible) >= 1:
+        try:
+            from scipy.optimize import nnls
+            stack_X = np.column_stack([val_preds_ret[n] for n in eligible])
+            stack_y = val_y_logret
+            # Защита от NaN (могут возникнуть в Kalman/regime фичах на ранней истории)
+            mask = np.isfinite(stack_X).all(axis=1) & np.isfinite(stack_y)
+            if mask.sum() >= 20:
+                coef, _ = nnls(stack_X[mask], stack_y[mask])
+                if coef.sum() > 1e-9:
+                    coef = coef / coef.sum()  # нормализуем сумму до 1
+                    for i, n in enumerate(eligible):
+                        base_weights[n] = float(coef[i])
+                    stacking_used = True
+                    logger.info(f"Stacking weights (NNLS, n={mask.sum()}): "
+                                f"{ {n: round(base_weights[n], 3) for n in eligible} }")
+        except Exception as e:
+            logger.debug(f"NNLS stacking failed: {e}")
+
+    # ── Fallback: (1/MAPE) × directional edge ──
+    # Срабатывает если NNLS не сошёлся или дал нулевые коэф-ты
+    if not stacking_used:
+        if len(val_actual_prices) >= 20:
+            for n in eligible:
+                m = val_metrics[n]
+                # dir_edge: насколько модель лучше монетки
+                # 50%→0.05, 55%→0.10, 60%→0.15, 70%→0.25
+                dir_edge = max(0.05, m["dir"] / 100 - 0.45)
+                base_weights[n] = (1.0 / m["mape"]) * dir_edge
+
+            total_w = sum(base_weights.values())
+            if total_w > 0:
+                base_weights = {k: v / total_w for k, v in base_weights.items()}
             else:
-                base_weights[name] = 0.0
-
-        total_w = sum(base_weights.values())
-        if total_w > 0:
-            base_weights = {k: v / total_w for k, v in base_weights.items()}
+                eq = 1.0 / max(len(eligible), 1)
+                for n in eligible:
+                    base_weights[n] = eq
+            logger.info(f"MAPE+dir weights (fallback): "
+                        f"{ {n: round(base_weights[n], 3) for n in eligible} }")
         else:
-            # Все модели > 15% MAPE — берём равные веса (честнее, чем
-            # принудительно TCN, который тоже мог быть плохим).
-            eq = 1.0 / max(len(val_preds_ret), 1)
-            base_weights = {k: eq for k in val_preds_ret}
-    else:
-        # Слишком мало данных для надёжных весов — TCN-only
-        base_weights = {"TCN": 1.0}
+            # Слишком мало данных для надёжных весов — TCN-only
+            base_weights = {n: (1.0 if n == "TCN" else 0.0) for n in val_preds_ret}
+            logger.info("Val fold too small — TCN-only fallback")
 
-    logger.info(f"Ensemble weights (val-MAPE, n={len(val_actual_prices)}): {base_weights}")
+    logger.info(f"Final ensemble weights: {base_weights} | val_metrics: {val_metrics}")
 
     # Get regime for each data point
     regimes = df["Regime"].values[SEQ_LEN:]  # aligned with sequences
@@ -1021,6 +1095,17 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     active_models = [k for k, v in base_weights.items() if v > 0]
     model_names = active_models
     model_name = f"Ensemble ({'+'.join(active_models)})" if len(active_models) > 1 else active_models[0]
+
+    # ── Per-step confidence: std-dev across active models' predictions ──
+    # Если все модели согласны (low std) → high confidence.
+    # Если расходятся (high std) → low confidence → backtest не торгует.
+    # Это спасает от случаев, когда ансамбль усредняет противоположные сигналы
+    # и выходит "посередине" — direction чаще всего ошибочен в таких ситуациях.
+    if len(active_models) > 1:
+        active_preds_matrix = np.column_stack([all_preds[n] for n in active_models])
+        pred_std = np.std(active_preds_matrix, axis=1)
+    else:
+        pred_std = np.zeros(len(pred_returns))
 
     prev_prices = close_prices[SEQ_LEN - 1: -1]
     actual_prices = close_prices[SEQ_LEN:]
@@ -1214,6 +1299,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         actual_prices[test_start:],
         pred_returns[test_start:],
         close_prices[SEQ_LEN + test_start - 1: SEQ_LEN + len(actual_prices) - 1],
+        pred_std=pred_std[test_start:],
     )
 
     return {
