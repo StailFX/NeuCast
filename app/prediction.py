@@ -965,7 +965,17 @@ def _run_backtest(
     }
 
 
-def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0.0):
+def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0.0,
+                   use_foundation: bool = False):
+    """
+    Args:
+        use_foundation: если True, дополнительно прогоняем Chronos foundation
+            model для будущего forecast и блендим её median с нашим. Bands
+            заменяются на родные Chronos quantiles (они probabilistically
+            калиброваны на 10B time-series точках). +20-40s к времени запроса.
+            Если chronos-forecasting не установлен — graceful fallback к
+            обычному прогнозу (как будто use_foundation=False).
+    """
     base_model, MODEL_TYPE, IS_MULTITARGET = _get_model()
 
     n_total = len(df)
@@ -1827,6 +1837,42 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             future_lower = np.percentile(trajectories, 25, axis=0).tolist()
             logger.info("Conformal calibration skipped (val too short) — using MC fallback")
 
+    # ── Tier 4: Foundation model augmentation (opt-in) ───────────────
+    # Если пользователь поставил чекбокс "Foundation-модель" → дополнительно
+    # прогоняем Chronos-Bolt zero-shot на close_prices. Используем результат:
+    #  (a) median: blend 50/50 с нашим conformal-median (диверсификация source);
+    #  (b) bands: заменяем на родные Chronos quantiles (probabilistically
+    #      калиброваны на 10B time-series точках, обычно лучше нашего
+    #      conformal на коротких val-фолдах).
+    # Если chronos не установлен или прогноз упал — silent fallback к conformal.
+    foundation_used = False
+    if days_ahead > 0 and use_foundation:
+        try:
+            from app.foundation import chronos_forecast
+            chr_result = chronos_forecast(close_prices, days_ahead)
+            if chr_result is not None and len(chr_result.get("median", [])) == days_ahead:
+                # Blend: 50/50 наш conformal-median + Chronos median.
+                # Если future_preds пуст (días_ahead=0 был случаем), не должно
+                # сюда попадать благодаря days_ahead>0 проверке.
+                blended = []
+                for i, h in enumerate(future_preds):
+                    blended.append(round((float(h) + float(chr_result["median"][i])) / 2.0, 4))
+                future_preds = blended
+                # Bands → Chronos quantiles напрямую
+                future_p5 = [round(float(x), 4) for x in chr_result["p5"]]
+                future_p95 = [round(float(x), 4) for x in chr_result["p95"]]
+                future_upper = [round(float(x), 4) for x in chr_result["p75"]]
+                future_lower = [round(float(x), 4) for x in chr_result["p25"]]
+                foundation_used = True
+                logger.info(
+                    f"Foundation model (Chronos) used: days={days_ahead}, "
+                    f"median_blend=50/50, bands=chronos-native"
+                )
+            else:
+                logger.info("Foundation model requested but unavailable — fallback to conformal")
+        except Exception as e:
+            logger.warning(f"Foundation augmentation failed: {e} — fallback to conformal")
+
     # ── Backtesting (test set only) ──
     # ATR/Close ratio per step → adaptive stop/trail thresholds внутри backtest.
     atr_test = df["ATR"].values[SEQ_LEN + test_start: SEQ_LEN + len(actual_prices)]
@@ -1871,6 +1917,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "corr_data": corr_data,
         "corr_labels": corr_labels,
         "backtest": backtest,
+        "foundation_used": foundation_used,
     }
 
 

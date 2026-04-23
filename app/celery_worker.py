@@ -210,16 +210,21 @@ def _pred_cache_set(key: str, value, ttl: int):
 
 @celery_app.task(bind=True, name="neucast.predict")
 def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
-                        days_ahead: int, user_id: int = None):
-    """Heavy prediction task — runs in Celery worker process."""
+                        days_ahead: int, user_id: int = None,
+                        use_foundation: bool = False):
+    """Heavy prediction task — runs in Celery worker process.
+
+    Args:
+        use_foundation: opt-in флаг для Foundation model (Chronos). Влияет на
+            cache_key, чтобы прогнозы с/без Foundation не смешивались.
+    """
 
     # ── Полный result-cache (PRED_RESULT_CACHE_TTL=5 мин по умолчанию) ──
-    # Ключ: (ticker, start, end, days). user_id НЕ в ключе — результат один и тот же,
-    # только Telegram-уведомление идёт конкретному пользователю.
-    cache_key = _pred_cache_key(ticker, start_date, end_date, days_ahead)
+    # Ключ: (ticker, start, end, days, use_foundation). user_id НЕ в ключе.
+    cache_key = _pred_cache_key(ticker, start_date, end_date, days_ahead) + f":fnd{int(bool(use_foundation))}"
     cached = _pred_cache_get(cache_key)
     if cached is not None:
-        logger.info(f"Prediction CACHE HIT: {ticker} {start_date}..{end_date} +{days_ahead}d")
+        logger.info(f"Prediction CACHE HIT: {ticker} {start_date}..{end_date} +{days_ahead}d (fnd={int(bool(use_foundation))})")
         self.update_state(state="PREDICTING", meta={"status": "Результат из кэша..."})
         # Telegram нотификация всё равно уходит — чтобы каждый пользователь получил своё.
         if user_id:
@@ -228,7 +233,7 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
                 result_for_tg = {
                     k: v for k, v in cached.items()
                     if k in ("mape", "mae", "rmse", "r2", "dir_acc", "model_name",
-                             "backtest", "model_metrics")
+                             "backtest", "model_metrics", "foundation_used")
                 }
                 _send_telegram_notification(user_id, ticker, result_for_tg, task_id=self.request.id)
             except Exception as e:
@@ -242,9 +247,13 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
     except ValueError as e:
         return {"error": str(e)}
 
-    self.update_state(state="PREDICTING", meta={"status": "Расчёт прогноза (TCN + Ensemble)..."})
+    pred_status = "Расчёт прогноза (TCN + Ensemble"
+    if use_foundation:
+        pred_status += " + Foundation"
+    pred_status += ")..."
+    self.update_state(state="PREDICTING", meta={"status": pred_status})
 
-    result = run_prediction(df, days_ahead)
+    result = run_prediction(df, days_ahead, use_foundation=use_foundation)
 
     # Send Telegram notification
     if user_id:
@@ -265,6 +274,7 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
     serializable["start_date"] = start_date
     serializable["end_date"] = end_date
     serializable["days_ahead"] = days_ahead
+    serializable["use_foundation"] = bool(use_foundation)
 
     # Кэшируем финальный сериализуемый результат — повторные запросы = мгновенно.
     _pred_cache_set(cache_key, serializable, PRED_RESULT_CACHE_TTL)

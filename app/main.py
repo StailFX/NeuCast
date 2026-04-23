@@ -347,6 +347,7 @@ async def predict(
     start_date: str = Form(...),
     end_date: str = Form(...),
     days_ahead: int = Form(0),
+    use_foundation: str = Form(""),  # "1" если чекбокс включён
     db: Session = Depends(get_db),
     role: str = Depends(get_current_role),
     user: User = Depends(get_current_user),
@@ -354,12 +355,18 @@ async def predict(
     if not role:
         return RedirectResponse("/login")
 
+    # Чекбокс: HTML-форма шлёт "1" если checked, ничего если unchecked
+    use_foundation_bool = bool(use_foundation) and str(use_foundation).strip() not in ("", "0", "false")
+
     # Celery mode: dispatch task and redirect to waiting page
     if USE_CELERY and celery_app:
         task = celery_app.send_task(
             "neucast.predict",
             args=[ticker, start_date, end_date, days_ahead],
-            kwargs={"user_id": user.id if user else None},
+            kwargs={
+                "user_id": user.id if user else None,
+                "use_foundation": use_foundation_bool,
+            },
             serializer="pickle",
         )
         # ── Пробуем короткий URL /p/{slug}. Если Redis недоступен, падаем в ──
@@ -371,6 +378,7 @@ async def predict(
             "start_date": start_date,
             "end_date": end_date,
             "days_ahead": days_ahead,
+            "use_foundation": use_foundation_bool,
         }):
             return RedirectResponse(f"/p/{slug}", status_code=303)
         return RedirectResponse(
@@ -379,7 +387,7 @@ async def predict(
         )
 
     # Fallback: synchronous mode with semaphore + cache
-    cache_key = f"{ticker}:{start_date}:{end_date}:{days_ahead}"
+    cache_key = f"{ticker}:{start_date}:{end_date}:{days_ahead}:fnd{int(use_foundation_bool)}"
     cached = _prediction_cache.get(cache_key)
     use_cache = False
     if cached:
@@ -400,7 +408,10 @@ async def predict(
                         "request": request, "error": str(e), "ensemble": True,
                     })
 
-                result = await loop.run_in_executor(None, run_prediction, df, days_ahead)
+                # Передаём use_foundation через partial-style lambda (run_in_executor
+                # не принимает kwargs напрямую).
+                _run = lambda: run_prediction(df, days_ahead, use_foundation=use_foundation_bool)
+                result = await loop.run_in_executor(None, _run)
                 _prediction_cache[cache_key] = (result, df, time.time())
                 if len(_prediction_cache) > 20:
                     oldest = min(_prediction_cache, key=lambda k: _prediction_cache[k][2])
@@ -525,6 +536,7 @@ async def predict(
         "corr_data": result["corr_data"],
         "corr_labels": result["corr_labels"],
         "sentiment": sentiment_data,
+        "foundation_used": result.get("foundation_used", False),
     }
 
     # Save full result to prediction history
@@ -777,6 +789,7 @@ async def _render_success_result(async_result, request, db, user, role):
         "corr_data": result["corr_data"],
         "corr_labels": result["corr_labels"],
         "sentiment": sentiment_data,
+        "foundation_used": result.get("foundation_used", False),
     }
 
     saved_context = {

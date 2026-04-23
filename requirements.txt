@@ -23,3 +23,6 @@ transformers>=4.30.0
 torch>=2.0.0
 shap>=0.43.0
 websockets>=12.0
+# Optional: Foundation model для time-series (Tier 4 opt-in checkbox)
+# При отсутствии модуля app/foundation.py делает graceful fallback (None).
+chronos-forecasting>=1.4.0
