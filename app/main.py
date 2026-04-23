@@ -1280,9 +1280,14 @@ async def live_price(ticker: str = "GC=F"):
 
 
 # ── Portfolio optimization ──
+# Временно скрыто. Включить через env: PORTFOLIO_ENABLED=1
+PORTFOLIO_ENABLED = os.getenv("PORTFOLIO_ENABLED", "0") == "1"
+
 
 @app.get("/portfolio", response_class=HTMLResponse)
 async def portfolio_form(request: Request, role: str = Depends(get_current_role)):
+    if not PORTFOLIO_ENABLED:
+        raise HTTPException(status_code=404)
     if not role:
         return RedirectResponse("/login")
     return templates.TemplateResponse("portfolio.html", {"request": request})
@@ -1296,6 +1301,8 @@ async def portfolio_optimize(
     period: str = Form("1y"),
     role: str = Depends(get_current_role),
 ):
+    if not PORTFOLIO_ENABLED:
+        raise HTTPException(status_code=404)
     if not role:
         return RedirectResponse("/login")
 
