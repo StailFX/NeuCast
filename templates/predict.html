@@ -10,7 +10,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdn.plot.ly" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap"></noscript>
   <!-- Plotly: бандл cartesian (включает scatter/bar/pie/histogram/heatmap, ~25% меньше full).
        defer — не блокирует парсинг HTML, запустится после DOMContentLoaded. -->
   <script defer src="https://cdn.plot.ly/plotly-cartesian-2.27.0.min.js"></script>

@@ -118,8 +118,9 @@
        display=swap + фолбэк в CSS — LCP-текст рендерится мгновенно системным шрифтом. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap" rel="stylesheet">
+  <!-- Non-blocking Google Fonts: preload → onload swap to stylesheet. -->
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap"></noscript>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -164,12 +165,12 @@
       pointer-events: none;
     }
 
-    /* Floating orbs. blur(100px) очень дорог — уменьшили, убрали will-change на
-       невидимых для наблюдателя элементах, применяем contain для изоляции рендера. */
+    /* Floating orbs. blur(100→60→40): каждый шаг вниз заметно дешевле по paint.
+       Глаз разницу 60 vs 40 не ловит на мобильном/ноутбучном DPR. */
     .orb {
       position: fixed;
       border-radius: 50%;
-      filter: blur(60px);
+      filter: blur(40px);
       pointer-events: none;
       z-index: 0;
       animation: orbFloat 20s ease-in-out infinite;
@@ -212,17 +213,18 @@
       75% { transform: translate(30px, 20px) scale(1.02); }
     }
 
-    /* Scroll reveal animation */
+    /* Scroll reveal animation. БЕЗ will-change в базовом классе — иначе браузер
+       создаёт отдельный композитный слой для КАЖДОГО .reveal на первом paint,
+       что раздувает память GPU и тормозит FCP. will-change ставим через JS
+       прямо перед тем, как элемент должен анимироваться (за кадром до пересечения). */
     .reveal {
       opacity: 0;
       transform: translateY(30px);
       transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-      will-change: opacity, transform;
     }
     .reveal.visible {
       opacity: 1;
       transform: translateY(0);
-      will-change: auto;
     }
     /* Hero elements appear instantly — no opacity animation, чтобы не блокировать LCP.
        Fade-in делаем только на не-LCP элементах (бейдж, sub, кнопки) и коротким. */
@@ -516,6 +518,11 @@
       max-width: 1200px;
       margin: 0 auto;
       padding: 6rem 2rem;
+      /* Пропускаем рендер секций за пределами viewport — огромный win для FCP/LCP
+         (hero — единственное, что браузер рисует в первом кадре). contain-intrinsic-size
+         резервирует место, чтобы не было CLS при скролле. */
+      content-visibility: auto;
+      contain-intrinsic-size: auto 900px;
     }
 
     .section-header {
@@ -708,6 +715,8 @@
       z-index: 1;
       text-align: center;
       padding: 4rem 2rem 6rem;
+      content-visibility: auto;
+      contain-intrinsic-size: auto 500px;
     }
 
     .cta-box {
@@ -753,6 +762,8 @@
       color: #8896a8;
       font-size: 0.78rem;
       font-weight: 500;
+      content-visibility: auto;
+      contain-intrinsic-size: auto 120px;
     }
 
     /* ─── Particles ─── */
