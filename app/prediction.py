@@ -88,6 +88,37 @@ MULTIHORIZON_HORIZONS = tuple(
     int(x) for x in os.getenv("MULTIHORIZON_HORIZONS", "1,2,3").split(",") if x.strip()
 )
 
+# ── Snapshot ensemble для TCN ────────────────────────────────────────
+# Вместо одной финальной точки training (или EarlyStopping best weights) — берём
+# веса на нескольких эпохах ближе к концу обучения и усредняем их предсказания.
+# Экономика: одна fit-сессия даёт K моделей по цене одной. Эффект: подавление
+# noise одной траектории SGD (модель "качается" в локальном минимуме на каждой
+# эпохе → разные снимки видят данные чуть по-разному). Это дешёвый proxy
+# bagging без переобучения K моделей.
+TCN_SNAPSHOT_ENABLED = os.getenv("TCN_SNAPSHOT_ENABLED", "1") == "1"
+# Количество последних эпох, чьи веса попадают в ансамбль. По умолчанию 3 — это
+# baseline epoch + 2 предыдущих. Если EarlyStopping сработал раньше — берём что есть.
+TCN_SNAPSHOT_LAST_N = int(os.getenv("TCN_SNAPSHOT_LAST_N", "3"))
+
+# ── Regime-conditional NNLS ──────────────────────────────────────────
+# Стандартный NNLS даёт ОДНИ веса ансамбля для всех режимов. Но на calm-боковике
+# хорошо работают бустинги (классические patterns), на crisis — TCN (latent
+# momentum). Поэтому считаем NNLS отдельно для каждого регима внутри val-фолда
+# и применяем per-regime веса на инференсе.
+# Если режим имеет <REGIME_NNLS_MIN_POINTS точек val → fallback к глобальному NNLS.
+REGIME_NNLS_ENABLED = os.getenv("REGIME_NNLS_ENABLED", "1") == "1"
+REGIME_NNLS_MIN_POINTS = int(os.getenv("REGIME_NNLS_MIN_POINTS", "20"))
+
+# ── Inverse-variance weighting (на инференсе) ────────────────────────
+# Если на конкретном шаге модели сильно расходятся (pred_std высок) → ансамбль
+# с NNLS-весами рискован: NNLS могла отдать 70% одной модели, которая именно
+# здесь промахивается. Soft-mix к uniform весам тогда — страхуем "в пол".
+# Weight = (1 - alpha) × nnls_w + alpha × uniform_w, где alpha = sigmoid(z_std).
+# При низком расхождении alpha→0 (доверяем NNLS), при высоком alpha→1 (равномерно).
+INV_VAR_WEIGHTING_ENABLED = os.getenv("INV_VAR_WEIGHTING_ENABLED", "1") == "1"
+# Порог в std-единицах относительно медианного pred_std, после которого alpha → 1.
+INV_VAR_WEIGHTING_THRESHOLD = float(os.getenv("INV_VAR_WEIGHTING_THRESHOLD", "1.5"))
+
 # TF: ограничиваем inter-op параллелизм, чтобы не конкурировать с ThreadPoolExecutor на бустингах.
 try:
     tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -344,6 +375,40 @@ def _temporal_weights(n: int, half_life: int = 120,
         downweight = 1.0 / (1.0 + 5.0 * np.clip(vol_pct, 0.0, 0.2))
         weights = weights * downweight
     return weights / weights.mean()
+
+
+# ── Snapshot Ensemble Callback ──
+class _WeightSnapshotCallback(tf.keras.callbacks.Callback):
+    """
+    Сохраняем копии весов модели на последних N эпохах. После .fit() имеем список
+    snapshot weights (по одному на каждую эпоху, начиная с (total - last_n + 1)).
+    Если EarlyStopping отрубил рано — сохраняется столько, сколько было фактически
+    эпох, до restore_best_weights.
+
+    Использование:
+        snap_cb = _WeightSnapshotCallback(last_n=3)
+        model.fit(..., callbacks=[snap_cb, EarlyStopping(...)])
+        for w in snap_cb.snapshots:
+            model.set_weights(w)
+            preds.append(model.predict(X))
+        avg_pred = np.mean(preds, axis=0)
+
+    NB: храним deep-copy через [a.copy() for a in get_weights()] — иначе keras
+    переписывает массивы in-place.
+    """
+    def __init__(self, last_n: int = 3):
+        super().__init__()
+        self.last_n = max(1, int(last_n))
+        self.snapshots: list = []
+
+    def on_epoch_end(self, epoch, logs=None):
+        try:
+            w = [a.copy() for a in self.model.get_weights()]
+            self.snapshots.append(w)
+            if len(self.snapshots) > self.last_n:
+                self.snapshots.pop(0)  # держим только последние last_n
+        except Exception as e:
+            logger.debug(f"snapshot capture failed at epoch {epoch}: {e}")
 
 
 # ── Preprocessing ──
@@ -933,7 +998,10 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             sig.update(X_train.tobytes())
             sig.update(y_train.tobytes())
             sig.update(X_all.tobytes())
-            sig.update(f"{TCN_EPOCHS}|{TCN_PATIENCE}|{IS_MULTITARGET}".encode())
+            sig.update(
+                f"{TCN_EPOCHS}|{TCN_PATIENCE}|{IS_MULTITARGET}|"
+                f"snap{int(TCN_SNAPSHOT_ENABLED)}-{TCN_SNAPSHOT_LAST_N}".encode()
+            )
             tcn_cache_key = "neucast:tcn:" + sig.hexdigest()
             cached_tcn = _cache_get(tcn_cache_key)
             if cached_tcn is not None:
@@ -958,17 +1026,25 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         else:
             fine_model.compile(optimizer=tf.keras.optimizers.Adam(0.0003), loss='mse')
 
+        # Snapshot ensemble: захватываем веса последних N эпох; после fit
+        # усредним предсказания. Если выключено — snap_cb.snapshots пуст и
+        # используем только финальные веса (best, благодаря restore_best_weights).
+        snap_cb = _WeightSnapshotCallback(last_n=TCN_SNAPSHOT_LAST_N) if TCN_SNAPSHOT_ENABLED else None
+
         if len(X_train) > SEQ_LEN:
             val_size = max(0.1, SEQ_LEN / len(X_train))
             direction_all = (log_returns[SEQ_LEN:] > 0).astype(np.float32)
             dir_train = direction_all[:train_seq_end]
+            cbs = [EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)]
+            if snap_cb is not None:
+                cbs.append(snap_cb)
             if IS_MULTITARGET:
                 fine_model.fit(
                     X_train,
                     {'return_output': y_train, 'direction_output': dir_train},
                     epochs=TCN_EPOCHS, batch_size=32,
                     validation_split=val_size,
-                    callbacks=[EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)],
+                    callbacks=cbs,
                     verbose=0,
                 )
             else:
@@ -976,17 +1052,62 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
                     X_train, y_train,
                     epochs=TCN_EPOCHS, batch_size=32,
                     validation_split=val_size,
-                    callbacks=[EarlyStopping(monitor="val_loss", patience=TCN_PATIENCE, restore_best_weights=True, verbose=0)],
+                    callbacks=cbs,
                     verbose=0,
                 )
 
+        # ── Snapshot ensemble inference ──
+        # Если есть N снимков → каждый предсказывает X_all, усредняем. Финальные
+        # веса (best) уже выставлены EarlyStopping → они идут как N+1-й голос.
+        # Это даёт K+1 моделей по цене одной обучающей сессии.
+        snapshots = list(snap_cb.snapshots) if snap_cb is not None else []
+        # Сохраняем финальные best-веса отдельно — restore_best_weights уже их выставил
+        best_weights = [a.copy() for a in fine_model.get_weights()]
+
+        all_returns_preds = []
+        all_direction_preds = []
+
+        # Сначала best-модель
         raw_pred = fine_model.predict(X_all, verbose=0)
         if IS_MULTITARGET:
-            tcn_pred_returns = raw_pred[0].flatten()
-            tcn_direction_pred = raw_pred[1].flatten()
+            all_returns_preds.append(np.asarray(raw_pred[0]).flatten())
+            all_direction_preds.append(np.asarray(raw_pred[1]).flatten())
         else:
-            tcn_pred_returns = raw_pred.flatten()
+            all_returns_preds.append(np.asarray(raw_pred).flatten())
+
+        # Затем snapshot-модели (если есть и снимки отличаются от best)
+        snapshot_count_used = 0
+        for snap_w in snapshots:
+            try:
+                fine_model.set_weights(snap_w)
+                raw_pred_s = fine_model.predict(X_all, verbose=0)
+                if IS_MULTITARGET:
+                    all_returns_preds.append(np.asarray(raw_pred_s[0]).flatten())
+                    all_direction_preds.append(np.asarray(raw_pred_s[1]).flatten())
+                else:
+                    all_returns_preds.append(np.asarray(raw_pred_s).flatten())
+                snapshot_count_used += 1
+            except Exception as e:
+                logger.debug(f"snapshot inference failed: {e}")
+
+        # Возвращаем best-веса (на случай если кто-то ещё дёргает fine_model)
+        try:
+            fine_model.set_weights(best_weights)
+        except Exception:
+            pass
+
+        # Усредняем предсказания
+        tcn_pred_returns = np.mean(np.stack(all_returns_preds, axis=0), axis=0)
+        if IS_MULTITARGET and all_direction_preds:
+            tcn_direction_pred = np.mean(np.stack(all_direction_preds, axis=0), axis=0)
+        else:
             tcn_direction_pred = None
+
+        if snapshot_count_used > 0:
+            logger.info(
+                f"TCN snapshot ensemble: {snapshot_count_used} snapshots + 1 best "
+                f"= {snapshot_count_used + 1} models averaged"
+            )
 
         # Сохраняем в кэш (только предсказания — TF-модель не pickl'ится надёжно).
         if BOOST_CACHE_ENABLED and tcn_cache_key:
@@ -1339,53 +1460,141 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     # Get regime for each data point
     regimes = df["Regime"].values[SEQ_LEN:]  # aligned with sequences
 
+    # ── Regime-conditional NNLS ─────────────────────────────────────
+    # Дополнительно к глобальному base_weights считаем NNLS отдельно по
+    # каждому режиму внутри val-фолда. На инференсе подменяем base_weights
+    # на regime_base_weights[regime] если есть. Idea: в calm-боковике одни
+    # модели лучше, в crisis — другие. Pure-mathematical аналог regime_adjustments
+    # (там вручную проставлены коэффициенты), но из data, без эвристики.
+    regime_base_weights: dict = {}
+    if (REGIME_NNLS_ENABLED and len(eligible) >= 2
+            and len(val_actual_prices) >= 20 and stacking_used):
+        try:
+            from scipy.optimize import nnls
+            stack_X_full = np.column_stack([val_preds_ret[n] for n in eligible])
+            stack_y_full = val_y_logret
+            val_regimes = regimes[val_split_idx:train_seq_end]  # выровнено с val
+            mask_finite = np.isfinite(stack_X_full).all(axis=1) & np.isfinite(stack_y_full)
+            for r in (0, 1, 2):
+                if r >= len(val_regimes):
+                    continue
+                mask_r = (val_regimes == r) & mask_finite
+                n_r = int(mask_r.sum())
+                if n_r < REGIME_NNLS_MIN_POINTS:
+                    continue
+                X_r = stack_X_full[mask_r]
+                y_r = stack_y_full[mask_r]
+                coef_r, _ = nnls(X_r, y_r)
+                if coef_r.sum() > 1e-9:
+                    coef_r = coef_r / coef_r.sum()
+                    w_r = {n: 0.0 for n in val_preds_ret}
+                    for i, n in enumerate(eligible):
+                        w_r[n] = float(coef_r[i])
+                    regime_base_weights[r] = w_r
+                    logger.info(
+                        f"Regime-NNLS r={r} (n={n_r}): "
+                        f"{ {n: round(w_r[n], 3) for n in eligible} }"
+                    )
+            if regime_base_weights:
+                logger.info(
+                    f"Regime-NNLS: {len(regime_base_weights)}/3 regimes have own weights "
+                    f"(rest fall back to global base_weights)"
+                )
+        except Exception as e:
+            logger.debug(f"Regime-NNLS failed: {e}")
+
     # Regime-adaptive weight adjustment
     # Calm (0): boost boosting models slightly (they work well in stable markets)
     # Normal (1): use base weights
     # Crisis (2): boost TCN, shrink boosting (less overfitting risk), reduce position sizes
+    # NB: regime_adjustments применяется ПОВЕРХ regime_base_weights[regime] (если есть),
+    # т.к. это коррекция по экспертной эвристике (TCN ↑ на crisis = anti-overfit boost).
     regime_adjustments = {
         0: {"TCN": 0.8, "CatBoost": 1.3, "XGBoost": 1.3, "LightGBM": 1.3},  # calm
         1: {"TCN": 1.0, "CatBoost": 1.0, "XGBoost": 1.0, "LightGBM": 1.0},  # normal
         2: {"TCN": 1.5, "CatBoost": 0.5, "XGBoost": 0.5, "LightGBM": 0.5},  # crisis
     }
 
+    # ── Per-step confidence: std-dev across active models' predictions ──
+    # Считаем РАНЬШЕ, потому что нужно для inverse-variance weighting в цикле ниже.
+    # Если все модели согласны (low std) → high confidence.
+    # Если расходятся (high std) → low confidence → (a) backtest не торгует, и
+    # (b) inv-var weighting подмешивает uniform веса (страхует от over-confident NNLS).
+    # active_models = union models с >0 весом в base_weights и regime_base_weights
+    _active_set = {k for k, v in base_weights.items() if v > 0}
+    for _rw in regime_base_weights.values():
+        _active_set.update(k for k, v in _rw.items() if v > 0)
+    active_models = sorted(_active_set, key=lambda x: -base_weights.get(x, 0.0))
+    if not active_models:
+        active_models = [k for k, v in base_weights.items() if v > 0] or list(all_preds.keys())[:1]
+
+    if len(active_models) > 1:
+        active_preds_matrix = np.column_stack([all_preds[n] for n in active_models])
+        pred_std = np.std(active_preds_matrix, axis=1)
+        # Robust z-score через median/MAD (не чувствителен к выбросам в std)
+        _med = float(np.median(pred_std))
+        _mad = float(np.median(np.abs(pred_std - _med))) + 1e-9
+        pred_z = (pred_std - _med) / _mad
+    else:
+        pred_std = np.zeros(len(tcn_pred_returns))
+        pred_z = np.zeros_like(pred_std)
+
+    # alpha[i] ∈ [0,1]: насколько подмешать uniform к NNLS на шаге i.
+    # sigmoid(z - threshold): при z=threshold → alpha=0.5; z >> threshold → alpha→1.
+    if INV_VAR_WEIGHTING_ENABLED and len(active_models) > 1:
+        alpha_per_step = 1.0 / (1.0 + np.exp(-(pred_z - INV_VAR_WEIGHTING_THRESHOLD)))
+    else:
+        alpha_per_step = np.zeros(len(tcn_pred_returns))
+
     # Apply regime-aware weights point by point
     pred_returns = np.zeros(len(tcn_pred_returns))
+    inv_var_smooth_count = 0
     for i in range(len(tcn_pred_returns)):
         regime = int(regimes[i]) if i < len(regimes) else 1
         regime = max(0, min(2, regime))
+
+        # Шаг 1: выбираем базу — режим-условные NNLS-веса или глобальные.
+        bw_for_regime = regime_base_weights.get(regime, base_weights)
         adj = regime_adjustments.get(regime, regime_adjustments[1])
 
-        # Adjust weights for this point
-        point_weights = {}
-        for name, bw in base_weights.items():
-            point_weights[name] = bw * adj.get(name, 1.0)
+        # Шаг 2: regime_adjustments как мультипликатор поверх базы.
+        point_weights = {name: bw_for_regime.get(name, 0.0) * adj.get(name, 1.0)
+                         for name in all_preds}
 
-        # Normalize
+        # Нормализация
         pw_total = sum(point_weights.values())
         if pw_total > 0:
             for name in point_weights:
                 point_weights[name] /= pw_total
+
+        # Шаг 3: inv-var soft-mix к uniform по точечному alpha[i].
+        # При высоком расхождении моделей (high pred_std) alpha→1: ансамбль
+        # склоняется к равномерному — страхуем от over-confident NNLS-ставки
+        # на одной модели.
+        if INV_VAR_WEIGHTING_ENABLED and len(active_models) > 1:
+            a = float(alpha_per_step[i])
+            if a > 0.05:  # экономим CPU на noise, ниже 5% эффекта почти нет
+                # uniform только по моделям с >0 базой (сохраняем eligibility)
+                nonzero_names = [n for n, w in point_weights.items() if w > 0]
+                if len(nonzero_names) > 1:
+                    uniform_w = 1.0 / len(nonzero_names)
+                    for name in nonzero_names:
+                        point_weights[name] = (1.0 - a) * point_weights[name] + a * uniform_w
+                    inv_var_smooth_count += 1
 
         # Weighted prediction
         for name, w in point_weights.items():
             if w > 0 and name in all_preds:
                 pred_returns[i] += w * all_preds[name][i]
 
-    active_models = [k for k, v in base_weights.items() if v > 0]
+    if INV_VAR_WEIGHTING_ENABLED and inv_var_smooth_count > 0:
+        logger.info(
+            f"Inv-var weighting: smoothed {inv_var_smooth_count}/{len(tcn_pred_returns)} "
+            f"steps (mean alpha={float(np.mean(alpha_per_step)):.3f})"
+        )
+
     model_names = active_models
     model_name = f"Ensemble ({'+'.join(active_models)})" if len(active_models) > 1 else active_models[0]
-
-    # ── Per-step confidence: std-dev across active models' predictions ──
-    # Если все модели согласны (low std) → high confidence.
-    # Если расходятся (high std) → low confidence → backtest не торгует.
-    # Это спасает от случаев, когда ансамбль усредняет противоположные сигналы
-    # и выходит "посередине" — direction чаще всего ошибочен в таких ситуациях.
-    if len(active_models) > 1:
-        active_preds_matrix = np.column_stack([all_preds[n] for n in active_models])
-        pred_std = np.std(active_preds_matrix, axis=1)
-    else:
-        pred_std = np.zeros(len(pred_returns))
 
     prev_prices = close_prices[SEQ_LEN - 1: -1]
     actual_prices = close_prices[SEQ_LEN:]
