@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from celery import Celery
+from celery.signals import worker_ready
 
 from app.prediction import run_prediction, fetch_and_preprocess
 
@@ -27,6 +28,24 @@ celery_app.conf.update(
     task_soft_time_limit=300,
     task_time_limit=360,
 )
+
+
+@worker_ready.connect
+def _warmup_tcn_on_worker_ready(**_kwargs):
+    """Preload TCN base model at worker startup so the first prediction
+    task doesn't pay the ~3-4s model-load cost on a cold worker.
+
+    The base model is process-global (cached via _get_model in prediction.py)
+    so this runs once per forked child when max_tasks_per_child recycles.
+    """
+    try:
+        from app.prediction import _get_model
+        import time
+        t0 = time.time()
+        _get_model()
+        logger.info(f"TCN base model warmup completed in {time.time() - t0:.2f}s")
+    except Exception as e:
+        logger.warning(f"TCN warmup failed: {e}")
 
 
 def _generate_mini_pdf(ticker: str, result: dict) -> bytes | None:

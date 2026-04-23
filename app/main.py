@@ -109,6 +109,21 @@ def startup_event():
         db.commit()
     db.close()
 
+    # ── Прогрев TCN-модели: первый predict больше не ждёт загрузки h5. ──
+    # Делаем в фоновой таске, чтобы startup не блокировался на 3–4 секунды.
+    # Если USE_CELERY=1, основная нагрузка на Celery-воркере — TCN там тоже
+    # прогреется при первом запросе через лениво-ленивую _get_model().
+    def _warmup():
+        try:
+            from app.prediction import _get_model
+            _get_model()
+        except Exception as e:
+            import logging
+            logging.getLogger("neucast").warning("TCN warmup failed: %s", e)
+
+    import threading
+    threading.Thread(target=_warmup, daemon=True, name="tcn-warmup").start()
+
 
 def get_db():
     db = SessionLocal()
