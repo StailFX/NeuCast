@@ -7,15 +7,25 @@
   <meta name="description" content="Зарегистрируйтесь бесплатно в NeuCast — AI-платформе для прогнозирования котировок акций, золота, нефти и криптовалют. Ансамбль из 4 ML-моделей.">
   <link rel="canonical" href="https://neucast.ru/register">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png"><link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png"><link rel="apple-touch-icon" href="/static/favicon-192.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
-  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"></noscript>
+  <!-- Self-hosted Inter (latin). Preload 700 (LCP) + 400 (body). -->
+  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
   <style>
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
+      src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap;
+      src: url('/static/fonts/inter-latin-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap;
+      src: url('/static/fonts/inter-latin-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
+      src: url('/static/fonts/inter-latin-700.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter-fallback'; src: local('Arial'), local('Helvetica'), local('sans-serif');
+      size-adjust: 107%; ascent-override: 90%; descent-override: 22%; line-gap-override: 0%; }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -102,7 +112,7 @@
       width: 100%;
       padding: 0.75rem 1rem;
       font-size: 0.95rem;
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
       background: rgba(30, 41, 59, 0.6);
       border: 1px solid rgba(51, 65, 85, 0.8);
       border-radius: 10px;
@@ -124,7 +134,7 @@
       padding: 0.8rem;
       font-size: 0.95rem;
       font-weight: 600;
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
       background: linear-gradient(135deg, #3b82f6, #2563eb);
       color: #fff;
       border: none;

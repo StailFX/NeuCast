@@ -114,14 +114,47 @@
   </script>
 
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png"><link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png"><link rel="apple-touch-icon" href="/static/favicon-192.png">
-  <!-- Шрифты: сокращено с 5 weights до 3 (400 для body, 700 для кнопок, 800 для h1).
-       display=swap + фолбэк в CSS — LCP-текст рендерится мгновенно системным шрифтом. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <!-- Non-blocking Google Fonts: preload → onload swap to stylesheet. -->
-  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap" onload="this.onload=null;this.rel='stylesheet'">
-  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap"></noscript>
+  <!-- Self-hosted Inter (latin). 800 — LCP weight для h1, preload с fetchpriority=high:
+       шрифт приезжает ДО первого paint → h1 рендерится сразу в Inter, никакого font-swap
+       LCP-удара. 400 — для body/sub, preload обычным приоритетом.
+       Google Fonts CSS/CDN выкинут полностью: минус 2 сторонних round-trip (googleapis + gstatic). -->
+  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-800.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
   <style>
+    /* Inline @font-face → браузер знает, где брать Inter, без fetch'а CSS из Google Fonts.
+       Вместе с <link rel=preload as=font> выше — font готов к первому paint. */
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+      src: url('/static/fonts/inter-latin-400.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 700;
+      font-display: swap;
+      src: url('/static/fonts/inter-latin-700.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 800;
+      font-display: swap;
+      src: url('/static/fonts/inter-latin-800.woff2') format('woff2');
+    }
+    /* Fallback с подогнанными метриками: когда Inter подтягивается, sway НЕ вызывает
+       layout shift → LCP остаётся на первом paint. */
+    @font-face {
+      font-family: 'Inter-fallback';
+      src: local('Arial'), local('Helvetica'), local('sans-serif');
+      size-adjust: 107%;
+      ascent-override: 90%;
+      descent-override: 22%;
+      line-gap-override: 0%;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
@@ -143,9 +176,9 @@
     html { scroll-behavior: smooth; }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      /* Минимизируем сдвиг при подгрузке Inter: адаптируем метрики фолбэка */
-      font-size-adjust: 0.5;
+      /* 'Inter-fallback' — системный Arial с подогнанными метриками (ascent/descent/size-adjust),
+         визуально совпадает с Inter → нет layout shift при font-swap. */
+      font-family: 'Inter', 'Inter-fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
       background: var(--bg);
       color: var(--text);
       overflow-x: hidden;
@@ -301,7 +334,7 @@
       padding: 0.55rem 1.3rem;
       font-size: 0.85rem;
       font-weight: 500;
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
       border-radius: 10px;
       text-decoration: none;
       transition: all 0.25s;
@@ -422,7 +455,7 @@
       padding: 0.9rem 2.2rem;
       font-size: 1rem;
       font-weight: 600;
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
       border-radius: 14px;
       text-decoration: none;
       transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
