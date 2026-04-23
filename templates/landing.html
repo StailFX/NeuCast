@@ -185,7 +185,8 @@
       text-rendering: optimizeSpeed;
     }
 
-    /* Animated grid background */
+    /* Animated grid background — лёгкий fade-in 0.8s даёт ощущение
+       плавного появления страницы, не задевая LCP-текст (h1). */
     body::before {
       content: '';
       position: fixed;
@@ -196,6 +197,11 @@
       background-size: 80px 80px;
       z-index: 0;
       pointer-events: none;
+      animation: bgFadeIn 0.8s ease-out;
+    }
+    @keyframes bgFadeIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
     }
 
     /* Floating orbs. blur(100→60→40): каждый шаг вниз заметно дешевле по paint.
@@ -249,32 +255,51 @@
     /* Scroll reveal animation. БЕЗ will-change в базовом классе — иначе браузер
        создаёт отдельный композитный слой для КАЖДОГО .reveal на первом paint,
        что раздувает память GPU и тормозит FCP. will-change ставим через JS
-       прямо перед тем, как элемент должен анимироваться (за кадром до пересечения). */
+       прямо перед тем, как элемент должен анимироваться (через .pre-animate класс,
+       выставляется IntersectionObserver-ом за 200px до пересечения). */
     .reveal {
       opacity: 0;
-      transform: translateY(30px);
-      transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+      transform: translateY(24px);
+      /* 0.7s + мягче easing — органичнее, не "snap". */
+      transition:
+        opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+        transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .reveal.pre-animate {
+      will-change: opacity, transform;
     }
     .reveal.visible {
       opacity: 1;
       transform: translateY(0);
+      will-change: auto;
     }
-    /* Hero elements appear instantly — no opacity animation, чтобы не блокировать LCP.
-       Fade-in делаем только на не-LCP элементах (бейдж, sub, кнопки) и коротким. */
-    .reveal-instant { opacity: 1; }
-    .reveal-instant.d1,
-    .reveal-instant.d2,
-    .reveal-instant.d3 {
-      animation: revealIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
-    }
-    /* h1 (LCP) рендерится сразу — без анимации. */
-    h1.reveal-instant { animation: none !important; opacity: 1; }
-    .reveal-instant.d2 { animation-delay: 0.08s; }
-    .reveal-instant.d3 { animation-delay: 0.16s; }
+    /* Hero elements: мягкий fade без translate (translate бы дёргал LCP-текст).
+       h1 — самый короткий fade (200ms) чтобы не задерживать LCP, остальные — 350ms staggered. */
+    .reveal-instant { opacity: 0; animation: revealIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
+    h1.reveal-instant { animation-duration: 0.2s; animation-delay: 0s; }
+    .reveal-instant.d1 { animation-delay: 0s; }
+    .reveal-instant.d2 { animation-delay: 0.12s; }
+    .reveal-instant.d3 { animation-delay: 0.24s; }
 
     @keyframes revealIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    /* h1 без translate — он LCP, перемещение ноды делает CLS хуже. */
+    h1.reveal-instant { animation-name: revealInNoMove; }
+    @keyframes revealInNoMove {
       from { opacity: 0; }
-      to { opacity: 1; }
+      to   { opacity: 1; }
+    }
+
+    /* prefers-reduced-motion → отключаем все entrance-анимации */
+    @media (prefers-reduced-motion: reduce) {
+      .reveal, .reveal-instant {
+        opacity: 1 !important;
+        transform: none !important;
+        animation: none !important;
+        transition: none !important;
+      }
     }
 
     .reveal-delay-1 { transition-delay: 0.08s; }
@@ -1074,7 +1099,26 @@
     }, { passive: true });
 
     // ── Scroll reveal (IntersectionObserver) ──
+    // Двух-фазный подход:
+    //  1) Pre-observer (rootMargin +400px снизу): за 400px до пересечения ставим
+    //     `.pre-animate` → будит композитный слой через will-change. Браузер
+    //     успевает приготовить GPU-слой к моменту реальной анимации → нет
+    //     "первого jank-кадра" при transition'е.
+    //  2) Main observer (rootMargin +200px снизу): когда элемент в 200px от
+    //     viewport-а → добавляем .visible → 0.7s transition стартует. К моменту
+    //     когда юзер реально доскроллил — анимация уже на 50-100% завершена,
+    //     элемент появляется плавно, не "прыгая" в кадр.
     const revealEls = document.querySelectorAll('.reveal');
+
+    const preObserver = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.classList.add('pre-animate');
+          preObserver.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0, rootMargin: '0px 0px 400px 0px' });
+
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(e => {
         if (e.isIntersecting) {
@@ -1082,10 +1126,12 @@
           observer.unobserve(e.target);
         }
       });
-    }, { threshold: 0.05, rootMargin: '0px 0px -20px 0px' });
-    revealEls.forEach(el => observer.observe(el));
+    }, { threshold: 0, rootMargin: '0px 0px 200px 0px' });
 
-    // Fallback: IntersectionObserver fires asynchronously, no forced layout needed
+    revealEls.forEach(el => {
+      preObserver.observe(el);
+      observer.observe(el);
+    });
 
     // ── Deferred визуал: particles + hero canvas откладываются до idle,
     //    чтобы не конкурировать с LCP-рендером и не создавать long tasks. ──
