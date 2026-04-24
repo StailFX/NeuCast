@@ -1808,6 +1808,11 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         # Median trajectory (drift) — берём из MC: это лучшая оценка центра
         future_preds = np.median(trajectories, axis=0).tolist()
 
+        # Инициализируем local-calibration маркеры заранее — если conformal не
+        # применяется (fallback к MC), возвращаем applied=False, ratio=1.0.
+        local_calibration_applied = False
+        local_sigma_ratio_val = 1.0
+
         if use_conformal:
             # Signed log-residuals → asymmetry-aware (bull/bear skew)
             val_log_resid = np.log(val_act_prices_conf / val_pred_prices_conf)
@@ -1816,6 +1821,45 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             q25_log = float(np.quantile(val_log_resid, 0.25))
             q75_log = float(np.quantile(val_log_resid, 0.75))
             q95_log = float(np.quantile(val_log_resid, 0.95))
+
+            # ── Tier 5.4: Locally-adaptive calibration (NGBoost) ─────────
+            # Conformal выше даёт глобально калиброванные bands (homoskedastic).
+            # NGBoost, обученный на (X_cal, val_log_resid), оценивает σ(x) для
+            # текущих features — даёт локальный inflation-коэффициент в
+            # [SIGMA_RATIO_MIN, SIGMA_RATIO_MAX]. Умножаем все quantiles на него.
+            # Включение: LOCAL_CALIBRATION=1. Graceful fallback → ratio=1.0 (no-op).
+            try:
+                from app.calibration import compute_local_inflation
+                # X_cal = те же features что использованы для conformal-residuals.
+                # X_future = последняя известная строка features (≈ состояние "сейчас",
+                # так как future-features недоступны без data leakage).
+                # Alignment: MULTIHORIZON_ENABLED trim'ит X_bst_val_sel на (max_h - 1)
+                # строк с конца, поэтому берём общий префикс — это валидно, т.к.
+                # residuals считаются на том же подотрезке что NGBoost видит.
+                n_use = min(len(X_bst_val_sel), len(val_log_resid))
+                X_cal_local = X_bst_val_sel[:n_use] if n_use > 0 else None
+                val_log_resid_local = val_log_resid[:n_use] if n_use > 0 else None
+                X_future_local = X_bst_all_sel[-1] if len(X_bst_all_sel) > 0 else None
+                if X_cal_local is not None and X_future_local is not None:
+                    local_sigma_ratio_val, local_calibration_applied = (
+                        compute_local_inflation(
+                            X_cal_local, val_log_resid_local, X_future_local
+                        )
+                    )
+                    if local_calibration_applied:
+                        q05_log *= local_sigma_ratio_val
+                        q25_log *= local_sigma_ratio_val
+                        q75_log *= local_sigma_ratio_val
+                        q95_log *= local_sigma_ratio_val
+                        logger.info(
+                            f"Local calibration (NGBoost): σ_ratio="
+                            f"{local_sigma_ratio_val:.3f} → bands "
+                            f"{'widened' if local_sigma_ratio_val > 1 else 'tightened'}"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Local calibration hook failed: {e}; using conformal as-is"
+                )
 
             future_p5, future_p95 = [], []
             future_upper, future_lower = [], []
@@ -1923,6 +1967,8 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "backtest": backtest,
         "foundation_used": foundation_used,
         "foundation_models": foundation_models_used,
+        "local_calibration_applied": local_calibration_applied,
+        "local_sigma_ratio": local_sigma_ratio_val,
     }
 
 

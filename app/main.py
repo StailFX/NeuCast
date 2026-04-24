@@ -555,6 +555,8 @@ async def predict(
         "foundation_models": result.get("foundation_models", []),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
+        "local_calibration_applied": result.get("local_calibration_applied", False),
+        "local_sigma_ratio": result.get("local_sigma_ratio", 1.0),
     }
 
     # Save full result to prediction history
@@ -822,6 +824,8 @@ async def _render_success_result(async_result, request, db, user, role):
         "foundation_models": result.get("foundation_models", []),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
+        "local_calibration_applied": result.get("local_calibration_applied", False),
+        "local_sigma_ratio": result.get("local_sigma_ratio", 1.0),
     }
 
     saved_context = {
