@@ -2,6 +2,7 @@ import io
 import os
 import json
 import asyncio
+import logging
 import time
 import hashlib
 import secrets
@@ -10,6 +11,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import uvicorn
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, PlainTextResponse, Response
@@ -22,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.db import Base, engine, SessionLocal
 from app.models import Role, User, Ticker, MarketData, Indicator, ModelInfo, Prediction, PredictionHistory
 from app.prediction import (
-    run_prediction, fetch_and_preprocess, SEQ_LEN, MODEL_COLS,
+    run_prediction, fetch_and_preprocess, apply_sentiment_bias, SEQ_LEN, MODEL_COLS,
 )
 from app.sentiment import analyze_sentiment
 from app.portfolio import optimize_portfolio
@@ -444,6 +447,18 @@ async def predict(
                 for n in sentiment.news
             ],
         }
+        # ── Tier 5.1: применяем sentiment bias к future_preds + bands ──
+        # Этот вызов идеalmotempent post-process: модифицирует result in-place.
+        # Кэш прогноза не зависит от sentiment → новости могут обновиться через
+        # 30 мин и юзер получит свежий bias, не перетренивая модели.
+        try:
+            apply_sentiment_bias(
+                result,
+                sentiment_score=sentiment.avg_score,
+                total_articles=sentiment.total_articles,
+            )
+        except Exception as e:
+            logger.warning(f"apply_sentiment_bias failed (sync path): {e}")
     except Exception:
         sentiment_data = None
 
@@ -537,6 +552,8 @@ async def predict(
         "corr_labels": result["corr_labels"],
         "sentiment": sentiment_data,
         "foundation_used": result.get("foundation_used", False),
+        "sentiment_applied": result.get("sentiment_applied", False),
+        "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
     }
 
     # Save full result to prediction history
@@ -732,6 +749,17 @@ async def _render_success_result(async_result, request, db, user, role):
                 for n in sentiment.news
             ],
         }
+        # ── Tier 5.1: применяем sentiment bias на result из celery ──
+        # Celery task хранит "чистый" прогноз в Redis, sentiment bias считается
+        # здесь — каждый вызов берёт свежий snapshot новостей.
+        try:
+            apply_sentiment_bias(
+                result,
+                sentiment_score=sentiment.avg_score,
+                total_articles=sentiment.total_articles,
+            )
+        except Exception as e:
+            logger.warning(f"apply_sentiment_bias failed (celery path): {e}")
     except Exception:
         sentiment_data = None
 
@@ -790,6 +818,8 @@ async def _render_success_result(async_result, request, db, user, role):
         "corr_labels": result["corr_labels"],
         "sentiment": sentiment_data,
         "foundation_used": result.get("foundation_used", False),
+        "sentiment_applied": result.get("sentiment_applied", False),
+        "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
     }
 
     saved_context = {

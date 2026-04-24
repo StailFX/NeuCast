@@ -551,12 +551,14 @@ def make_boosting_features(data: np.ndarray) -> np.ndarray:
     return np.array(X)
 
 
-def make_boosting_features_extended(data_tcn: np.ndarray, data_extra: np.ndarray,
-                                     sentiment_score: float = 0.0) -> np.ndarray:
+def make_boosting_features_extended(data_tcn: np.ndarray, data_extra: np.ndarray) -> np.ndarray:
     """
-    Build boosting features from TCN columns + extra columns + sentiment.
-    Each 60-day window -> 3 stats per column (last, momentum, volatility) + sentiment.
-    Reduced from 7 stats to avoid feature explosion with limited samples.
+    Build boosting features from TCN columns + extra columns.
+    Each 60-day window -> 3 stats per column (last, momentum, volatility).
+
+    Note: sentiment был раньше константным feature — бесполезен для gradient boost
+    (при training и inference одно и то же число). Теперь sentiment применяется
+    post-process через apply_sentiment_bias (см. Tier 5.1).
     """
     n_tcn_cols = data_tcn.shape[1]
     n_extra_cols = data_extra.shape[1] if data_extra is not None else 0
@@ -574,8 +576,6 @@ def make_boosting_features_extended(data_tcn: np.ndarray, data_extra: np.ndarray
             for col in range(n_extra_cols):
                 col_data = window_ex[:, col]
                 feats.extend([col_data[-1], col_data[-1] - col_data[0], col_data.std()])
-        # Sentiment score (constant across window)
-        feats.append(sentiment_score)
         X.append(feats)
     return np.array(X)
 
@@ -1135,7 +1135,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     scaler_extra.fit(df.iloc[:split_idx][BOOSTING_EXTRA_COLS])
     scaled_extra = scaler_extra.transform(df[BOOSTING_EXTRA_COLS])
 
-    X_bst_all = make_boosting_features_extended(scaled_all, scaled_extra, sentiment_score)
+    X_bst_all = make_boosting_features_extended(scaled_all, scaled_extra)
 
     # All models predict log_returns (same target as TCN — no triple barrier)
     y_bst_train = y_all[:train_seq_end]
@@ -1227,8 +1227,9 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             sig.update(pd.util.hash_pandas_object(pd.DataFrame(X_bst_val_sel)).values.tobytes())
             sig.update(y_bst_train_sel.tobytes())
             sig.update(y_bst_val.tobytes())
+            # sentiment_score больше НЕ в кэше (он post-process теперь, Tier 5.1).
             sig.update(
-                f"{BOOST_ITERS}|{BOOST_EARLY_STOP}|{sentiment_score:.2f}|"
+                f"{BOOST_ITERS}|{BOOST_EARLY_STOP}|"
                 f"mh{int(MULTIHORIZON_ENABLED)}-{','.join(map(str, MULTIHORIZON_HORIZONS))}".encode()
             )
             boost_cache_key = "neucast:boost:" + sig.hexdigest()
@@ -1919,6 +1920,98 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "backtest": backtest,
         "foundation_used": foundation_used,
     }
+
+
+# ── Tier 5.1: Sentiment bias as post-processing ────────────────────
+# Живой sentiment из FinBERT не должен участвовать в тяжёлом training
+# (был бы константой → бесполезен для gradient boost). Вместо этого
+# применяем bias ПОСЛЕ run_prediction — это:
+#  • сохраняет кэш прогноза (news меняются каждые 30 мин, а train/predict —
+#    дорогая операция)
+#  • прозрачен для пользователя (видно "+0.5% sentiment bias")
+#  • легко откатывается если не нравится
+SENTIMENT_STRENGTH = float(os.getenv("SENTIMENT_STRENGTH", "0.008"))  # max bias per |score|=1
+SENTIMENT_THRESHOLD = float(os.getenv("SENTIMENT_THRESHOLD", "0.05"))  # ниже — игнор
+SENTIMENT_MIN_ARTICLES = int(os.getenv("SENTIMENT_MIN_ARTICLES", "3"))  # меньше — игнор
+SENTIMENT_DECAY_DAYS = float(os.getenv("SENTIMENT_DECAY_DAYS", "3.0"))  # tau для (1 - exp(-i/tau))
+
+
+def apply_sentiment_bias(
+    result: dict,
+    sentiment_score: float,
+    total_articles: int = 0,
+) -> dict:
+    """
+    Модифицирует future_* в result согласно sentiment score.
+
+    Формула per-step bias (день i, i=1..days_ahead):
+        confidence = min(total_articles / 10, 1.0)
+        effective_score = clip(sentiment_score * confidence, -1, +1)
+        bias[i] = effective_score * SENTIMENT_STRENGTH * (1 - exp(-i / tau))
+
+    Пример: score=+0.5, articles=20, day=5:
+        confidence=1.0, effective=0.5
+        bias = 0.5 * 0.008 * (1 - exp(-5/3)) = 0.5 * 0.008 * 0.81 ≈ 0.0032 (+0.32%)
+
+    Сдвиг применяется и к median, и к всем bands (ширина сохраняется,
+    центр смещается в сторону sentiment).
+
+    Args:
+        result: dict из run_prediction (модифицируется in-place)
+        sentiment_score: avg_score из SentimentResult ∈ [-1, +1]
+        total_articles: сколько новостей учтено (для confidence weighting)
+
+    Returns:
+        тот же result с обновлёнными future_* и добавленными:
+            sentiment_bias_pct: float — общий средний bias в %
+            sentiment_applied: bool
+    """
+    # Sentinel defaults (чтобы UI всегда имел поля)
+    result["sentiment_bias_pct"] = 0.0
+    result["sentiment_applied"] = False
+
+    future_preds = result.get("future_preds") or []
+    if not future_preds:
+        return result  # days_ahead=0
+
+    # Guard rails: слишком слабый signal или мало статей → не применяем
+    if abs(sentiment_score) < SENTIMENT_THRESHOLD:
+        return result
+    if total_articles < SENTIMENT_MIN_ARTICLES:
+        return result
+
+    confidence = min(total_articles / 10.0, 1.0)
+    effective = float(np.clip(sentiment_score * confidence, -1.0, 1.0))
+
+    def _shift(arr: list, factors: np.ndarray) -> list:
+        """Применяет мультипликативный сдвиг (1 + bias) покомпонентно."""
+        out = []
+        for v, f in zip(arr, factors):
+            try:
+                out.append(round(float(v) * (1.0 + f), 4))
+            except (TypeError, ValueError):
+                out.append(v)  # None / нечисло — не трогаем
+        return out
+
+    days = len(future_preds)
+    # Per-day bias: насыщается к asymptote = effective * SENTIMENT_STRENGTH
+    i_arr = np.arange(1, days + 1, dtype=np.float32)
+    factors = effective * SENTIMENT_STRENGTH * (1.0 - np.exp(-i_arr / SENTIMENT_DECAY_DAYS))
+
+    result["future_preds"] = _shift(future_preds, factors)
+    for key in ("future_upper", "future_lower", "future_p5", "future_p95"):
+        if key in result and result[key]:
+            result[key] = _shift(result[key], factors)
+
+    total_bias_pct = float(np.mean(factors)) * 100.0
+    result["sentiment_bias_pct"] = round(total_bias_pct, 3)
+    result["sentiment_applied"] = True
+    logger.info(
+        f"Sentiment bias applied: score={sentiment_score:+.3f}, articles={total_articles}, "
+        f"confidence={confidence:.2f}, effective={effective:+.3f}, "
+        f"mean_bias={total_bias_pct:+.3f}%, days={days}"
+    )
+    return result
 
 
 def fetch_and_preprocess(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
