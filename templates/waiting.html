@@ -197,6 +197,27 @@
       color: #0a0e17;
     }
 
+    /* Error state — applied к ВСЕМ степам при FAILURE: убирает иллюзию что
+       что-то ещё выполняется (раньше .active спиннил на упавшем шаге). */
+    .step.error {
+      border-color: rgba(239, 68, 68, 0.3);
+      background: rgba(239, 68, 68, 0.05);
+      color: #ef4444;
+    }
+    .step.error .step-icon {
+      border-color: rgba(239, 68, 68, 0.5);
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      animation: none;
+    }
+
+    /* При ошибке гасим вращающиеся ringи — иначе ощущение "идёт работа". */
+    .spinner.error .spinner-ring,
+    .spinner.error .pulse-dot {
+      animation: none;
+      opacity: 0.2;
+    }
+
     .error-msg {
       color: #ef4444;
       margin-top: 1rem;
@@ -205,6 +226,34 @@
       border: 1px solid rgba(239, 68, 68, 0.3);
       border-radius: 8px;
       display: none;
+    }
+
+    .back-btn {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      padding: 0.7rem 1.4rem;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      border-radius: 8px;
+      color: #10b981;
+      font-size: 0.95rem;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .back-btn:hover {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: rgba(16, 185, 129, 0.6);
+    }
+    .redirect-hint {
+      display: none;
+      color: #64748b;
+      font-size: 0.78rem;
+      margin-top: 0.5rem;
     }
 
     .time-elapsed {
@@ -296,6 +345,8 @@
     </div>
 
     <div class="error-msg" id="errorMsg"></div>
+    <a href="/dashboard" class="back-btn" id="backBtn">← Вернуться к прогнозу</a>
+    <div class="redirect-hint" id="redirectHint">Автоматическое возвращение через <span id="redirectCounter">4</span> сек…</div>
     <div class="time-elapsed" id="timeElapsed"></div>
 
     <div class="tg-notify" id="tgNotify" style="display:none;">
@@ -353,6 +404,9 @@
         document.getElementById('statusText').textContent = 'Перенаправление...';
         if (pollInterval) clearInterval(pollInterval);
         sessionStorage.removeItem(storageKey);
+        // Clear stale error из предыдущей попытки — иначе при следующем заходе
+        // на /dashboard JS form.html всплывёт устаревшим красным баннером.
+        try { sessionStorage.removeItem('neucast_last_error'); } catch(_) {}
         // Если открыт короткий URL /p/{slug} — просто reload текущей страницы:
         // сервер сам отрендерит predict.html вместо waiting.html. URL не меняется.
         // Иначе (легаси /predict/status/…) — прыгаем на /predict/result/{task_id}.
@@ -366,10 +420,43 @@
         return true; // done
       } else if (data.state === 'FAILURE') {
         if (pollInterval) clearInterval(pollInterval);
+        // ── Error UX (см. fix "rolling waiting on error") ────────────────
+        // 1) Гасим спиннер — анимация = ложный сигнал "идёт работа".
+        document.querySelector('.spinner').classList.add('error');
+        // 2) Снимаем "active/done" со всех степов и красим в error-цвет.
+        //    Раньше шаг 3 (на котором упало) продолжал светиться зелёным —
+        //    выглядело так, будто что-то ещё считается параллельно с ошибкой.
+        document.querySelectorAll('.step').forEach(el => {
+          el.classList.remove('active', 'done');
+          el.classList.add('error');
+        });
+        // 3) Сам текст ошибки — friendly из friendly_error() сервера.
         document.getElementById('statusText').textContent = 'Ошибка';
+        const errMsg = data.error || 'Не удалось выполнить расчёт. Попробуйте ещё раз.';
         const errEl = document.getElementById('errorMsg');
-        errEl.textContent = data.error || 'Неизвестная ошибка';
+        errEl.textContent = errMsg;
         errEl.style.display = 'block';
+        // 4) Кнопка возврата — мгновенно доступна (без ожидания auto-redirect).
+        document.getElementById('backBtn').style.display = 'inline-flex';
+        // 5) Сохраняем ошибку для form.html — там JS прочитает и отрендерит
+        //    тот же alert наверху формы (чтобы был контекст после редиректа).
+        try { sessionStorage.setItem('neucast_last_error', errMsg); } catch(_) {}
+        sessionStorage.removeItem(storageKey);
+        // 6) Auto-redirect через 4 сек с visible countdownом — пользователь
+        //    либо успевает прочесть, либо жмёт кнопку и идёт раньше.
+        const hint = document.getElementById('redirectHint');
+        const counterEl = document.getElementById('redirectCounter');
+        hint.style.display = 'block';
+        let secs = 4;
+        const tick = setInterval(() => {
+          secs--;
+          if (secs <= 0) {
+            clearInterval(tick);
+            window.location.href = '/dashboard';
+          } else {
+            counterEl.textContent = secs;
+          }
+        }, 1000);
         return true; // done
       }
       return false;

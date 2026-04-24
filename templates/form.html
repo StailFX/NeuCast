@@ -655,6 +655,27 @@
   </div>
 
   <script>
+    // ── Pop friendly error from sessionStorage ───────────────────────
+    // waiting.html на FAILURE сохраняет туда friendly-message и редиректит
+    // сюда. Если ошибка есть — рендерим в alert-danger над формой (если
+    // сервер уже не вставил такой блок через {% if error %}).
+    (function() {
+      let err = null;
+      try { err = sessionStorage.getItem('neucast_last_error'); } catch(_) {}
+      if (!err) return;
+      try { sessionStorage.removeItem('neucast_last_error'); } catch(_) {}
+      // Если сервер уже отрендерил alert (POST /predict вернул form.html
+      // с ValueError, например) — не дублируем.
+      if (document.querySelector('.alert-danger')) return;
+      const formCard = document.querySelector('.form-card');
+      const formEl = formCard ? formCard.querySelector('form') : null;
+      if (!formCard || !formEl) return;
+      const div = document.createElement('div');
+      div.className = 'alert-danger';
+      div.textContent = err;
+      formCard.insertBefore(div, formEl);
+    })();
+
     // Pre-fill dates: start = 1 year ago, end = today
     (function() {
       const today = new Date();

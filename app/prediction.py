@@ -1775,6 +1775,12 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     # Для multi-step масштабируем quantiles на sqrt(h) (random-walk diffusion).
     future_dates, future_preds, future_upper, future_lower = [], [], [], []
     future_p50, future_p5, future_p95 = [], [], []
+    # Local-cal маркеры — обязаны существовать в ЛЮБОМ code-path. Раньше они
+    # инициализировались внутри `if days_ahead > 0:` → при days_ahead=0
+    # (BTC-USD dashboard mode) return-dict ниже падал с UnboundLocalError.
+    # Внутри `if days_ahead > 0:` блок ниже их перезапишет.
+    local_calibration_applied = False
+    local_sigma_ratio_val = 1.0
 
     if days_ahead > 0:
         # Calibration: residuals on val-фолд (not-test) → exchangeability ок
@@ -1808,10 +1814,9 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         # Median trajectory (drift) — берём из MC: это лучшая оценка центра
         future_preds = np.median(trajectories, axis=0).tolist()
 
-        # Инициализируем local-calibration маркеры заранее — если conformal не
-        # применяется (fallback к MC), возвращаем applied=False, ratio=1.0.
-        local_calibration_applied = False
-        local_sigma_ratio_val = 1.0
+        # local_calibration_applied / local_sigma_ratio_val уже инициализированы
+        # выше (до `if days_ahead > 0`). Перезапишутся ниже если
+        # use_conformal + LOCAL_CALIBRATION=1.
 
         if use_conformal:
             # Signed log-residuals → asymmetry-aware (bull/bear skew)

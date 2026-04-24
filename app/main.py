@@ -29,6 +29,7 @@ from app.prediction import (
 )
 from app.sentiment import analyze_sentiment
 from app.portfolio import optimize_portfolio
+from app.user_errors import friendly_error
 from app import telegram_bot
 
 # ── Paths ──
@@ -649,7 +650,8 @@ async def task_status(task_id: str):
             return {"state": "FAILURE", "error": res["error"]}
         return {"state": "SUCCESS", "task_id": task_id}
     elif result.state == "FAILURE":
-        return {"state": "FAILURE", "error": str(result.info)}
+        # Никогда не отдаём сырой Python-traceback пользователю — только friendly текст.
+        return {"state": "FAILURE", "error": friendly_error(result.info)}
     else:
         return {"state": result.state, "status": "Обработка..."}
 
@@ -691,7 +693,7 @@ async def ws_task_status(websocket: WebSocket, task_id: str):
                     await websocket.close()
                     return
                 elif state == "FAILURE":
-                    await websocket.send_json({"state": "FAILURE", "error": str(result.info)})
+                    await websocket.send_json({"state": "FAILURE", "error": friendly_error(result.info)})
                     await websocket.close()
                     return
                 else:
@@ -916,11 +918,11 @@ async def predict_by_slug(
     if async_result.state == "SUCCESS":
         return await _render_success_result(async_result, request, db, user, role)
 
-    # Таска упала — показываем ошибку в форме
+    # Таска упала — показываем ошибку в форме (friendly, без Python-tracebacks)
     if async_result.state == "FAILURE":
         return templates.TemplateResponse("form.html", {
             "request": request,
-            "error": str(async_result.info) if async_result.info else "Неизвестная ошибка",
+            "error": friendly_error(async_result.info) if async_result.info else "Неизвестная ошибка",
             "ensemble": True,
         })
 

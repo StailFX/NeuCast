@@ -13,6 +13,7 @@ from celery import Celery
 from celery.signals import worker_ready
 
 from app.prediction import run_prediction, fetch_and_preprocess
+from app.user_errors import friendly_error
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,14 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
     try:
         df = fetch_and_preprocess(ticker, start_date, end_date)
     except ValueError as e:
-        return {"error": str(e)}
+        # Известный класс ошибок (плохой тикер, пустой период) — friendly текст
+        # уже формирует prediction.fetch_and_preprocess. Прогоняем через
+        # mapper на случай если message по-английски пришёл от yfinance.
+        logger.warning(f"fetch_and_preprocess ValueError for {ticker}: {e}")
+        return {"error": friendly_error(e)}
+    except Exception as e:
+        logger.exception(f"fetch_and_preprocess unexpected error for {ticker}")
+        return {"error": friendly_error(e)}
 
     pred_status = "Расчёт прогноза (TCN + Ensemble"
     if use_foundation:
@@ -253,7 +261,17 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
     pred_status += ")..."
     self.update_state(state="PREDICTING", meta={"status": pred_status})
 
-    result = run_prediction(df, days_ahead, use_foundation=use_foundation)
+    # Wrap прогноза в try/except чтобы любая внутренняя ошибка (например,
+    # bug типа UnboundLocalError) НЕ улетала в celery FAILURE state с raw
+    # tracebackом в UI. Возвращаем friendly dict, full traceback — в логи.
+    try:
+        result = run_prediction(df, days_ahead, use_foundation=use_foundation)
+    except Exception as e:
+        logger.exception(
+            f"run_prediction failed for {ticker} (days_ahead={days_ahead}, "
+            f"use_foundation={use_foundation})"
+        )
+        return {"error": friendly_error(e)}
 
     # Send Telegram notification
     if user_id:
