@@ -533,9 +533,9 @@
         <div class="metric-sub">Коэф. детерминации</div>
       </div>
       <div class="metric-card">
-        <div class="metric-label">Direction Acc.</div>
-        <div class="metric-value {% if dir_acc|float >= 55 %}green{% elif dir_acc|float >= 50 %}amber{% else %}red{% endif %}">{{ dir_acc }}%</div>
-        <div class="metric-sub">Точность направления</div>
+        <div class="metric-label">Direction Acc.{% if data and data.low_directional_skill %} <span title="Direction accuracy на test-фолде ниже надёжного порога (~52%). Это означает, что прогноз направления статистически не отличим от монетки — не используйте его как trading-signal. Используйте magnitude (цена) и доверительные интервалы, но не знак движения. Возможные причины: высокая авто-корреляция актива (например крипта), короткий период обучения, или режим рынка плохо отражён историей." style="font-size:0.55em;font-weight:700;letter-spacing:0.04em;color:#ef4444;background:rgba(239,68,68,0.12);padding:0.15em 0.45em;border-radius:5px;border:1px solid rgba(239,68,68,0.3);text-transform:uppercase;vertical-align:middle;cursor:help;">⚠️ низкий signal</span>{% endif %}</div>
+        <div class="metric-value {% if dir_acc|float >= 55 %}green{% elif dir_acc|float >= 52 %}amber{% else %}red{% endif %}">{{ dir_acc }}%</div>
+        <div class="metric-sub">{% if data and data.low_directional_skill %}≈ монетка — не trading signal{% else %}Точность направления{% endif %}</div>
       </div>
       {% endif %}
       <div class="metric-card">

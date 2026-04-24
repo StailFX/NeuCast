@@ -29,8 +29,8 @@ from app.prediction import (
 )
 from app.sentiment import analyze_sentiment
 from app.portfolio import optimize_portfolio
-from app.user_errors import friendly_error
 from app import telegram_bot
+from app.user_errors import friendly_error
 
 # ── Paths ──
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -554,10 +554,17 @@ async def predict(
         "sentiment": sentiment_data,
         "foundation_used": result.get("foundation_used", False),
         "foundation_models": result.get("foundation_models", []),
+        # Foundation в test-fold (BTC-USD dir_acc fix): UI показывает badge,
+        # что главная метрика отражает Foundation contribution, а не только TCN/boosting.
+        "foundation_test_used": result.get("foundation_test_used", False),
+        "foundation_test_models": result.get("foundation_test_models", []),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
         "local_calibration_applied": result.get("local_calibration_applied", False),
         "local_sigma_ratio": result.get("local_sigma_ratio", 1.0),
+        # Honest skill warning: dir_acc < ~52% → модель не показала directional skill,
+        # UI должен подсветить это, чтобы пользователь не путал прогноз с trading-signal.
+        "low_directional_skill": result.get("low_directional_skill", False),
     }
 
     # Save full result to prediction history
@@ -647,10 +654,17 @@ async def task_status(task_id: str):
     elif result.state == "SUCCESS":
         res = result.result
         if isinstance(res, dict) and "error" in res:
+            # error из celery_worker уже прошёл через friendly_error()
             return {"state": "FAILURE", "error": res["error"]}
         return {"state": "SUCCESS", "task_id": task_id}
     elif result.state == "FAILURE":
-        # Никогда не отдаём сырой Python-traceback пользователю — только friendly текст.
+        # FAILURE state = worker умер до того как успел вернуть dict (OOM,
+        # SIGKILL, hard time limit). result.info — raw exception. Прогоняем
+        # через friendly_error чтобы пользователь не видел Python traceback.
+        try:
+            logger.error(f"Celery task FAILURE for {task_id}: {result.info!r}")
+        except Exception:
+            pass
         return {"state": "FAILURE", "error": friendly_error(result.info)}
     else:
         return {"state": result.state, "status": "Обработка..."}
@@ -693,7 +707,15 @@ async def ws_task_status(websocket: WebSocket, task_id: str):
                     await websocket.close()
                     return
                 elif state == "FAILURE":
-                    await websocket.send_json({"state": "FAILURE", "error": friendly_error(result.info)})
+                    # См. /api/task/{task_id} — friendly_error скрывает
+                    # raw Python traceback от пользователя.
+                    try:
+                        logger.error(f"Celery WS FAILURE for {task_id}: {result.info!r}")
+                    except Exception:
+                        pass
+                    await websocket.send_json(
+                        {"state": "FAILURE", "error": friendly_error(result.info)}
+                    )
                     await websocket.close()
                     return
                 else:
@@ -824,10 +846,17 @@ async def _render_success_result(async_result, request, db, user, role):
         "sentiment": sentiment_data,
         "foundation_used": result.get("foundation_used", False),
         "foundation_models": result.get("foundation_models", []),
+        # Foundation в test-fold (BTC-USD dir_acc fix): UI показывает badge,
+        # что главная метрика отражает Foundation contribution, а не только TCN/boosting.
+        "foundation_test_used": result.get("foundation_test_used", False),
+        "foundation_test_models": result.get("foundation_test_models", []),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
         "local_calibration_applied": result.get("local_calibration_applied", False),
         "local_sigma_ratio": result.get("local_sigma_ratio", 1.0),
+        # Honest skill warning: dir_acc < ~52% → модель не показала directional skill,
+        # UI должен подсветить это, чтобы пользователь не путал прогноз с trading-signal.
+        "low_directional_skill": result.get("low_directional_skill", False),
     }
 
     saved_context = {
@@ -918,11 +947,19 @@ async def predict_by_slug(
     if async_result.state == "SUCCESS":
         return await _render_success_result(async_result, request, db, user, role)
 
-    # Таска упала — показываем ошибку в форме (friendly, без Python-tracebacks)
+    # Таска упала — показываем ошибку в форме (friendly, без raw traceback)
     if async_result.state == "FAILURE":
+        try:
+            logger.error(
+                f"Celery slug-page FAILURE for {task_id}: {async_result.info!r}"
+            )
+        except Exception:
+            pass
         return templates.TemplateResponse("form.html", {
             "request": request,
-            "error": friendly_error(async_result.info) if async_result.info else "Неизвестная ошибка",
+            "error": friendly_error(async_result.info) if async_result.info else (
+                "Не удалось выполнить расчёт. Попробуйте ещё раз."
+            ),
             "ensemble": True,
         })
 

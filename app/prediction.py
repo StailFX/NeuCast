@@ -1383,14 +1383,25 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             dir_acc = float(np.mean(val_actual_dir == pred_dir))
             val_metrics[name] = {"mape": round(mape, 2), "dir": round(dir_acc * 100, 1)}
 
-    # ── Anti-skill filter: модели с dir_acc < 50% на val исключаются ──
+    # ── Anti-skill filter: модели с dir_acc <= 50.5% на val исключаются ──
     # Это самый важный фильтр — модель хуже монетки на val почти гарантированно
     # будет хуже монетки на test тоже. Включать её = вредить ансамблю.
-    eligible = [n for n, m in val_metrics.items() if m["dir"] >= 50.0 and 0 < m["mape"] < 15.0]
+    # Threshold 50.5% (было 50.0%): coin-flip baseline = 50%, и при шумном val
+    # модель с 50.0-50.5% статистически не отличима от монетки. Берём только
+    # те, кто УВЕРЕННО лучше — иначе фильтр пропускает trivial "tomorrow ≈ today"
+    # модели (типичный кейс на BTC-USD: все 4 модели дают ровно 50.6%).
+    ANTI_SKILL_MIN_DIR = float(os.getenv("ANTI_SKILL_MIN_DIR", "50.5"))
+    eligible = [
+        n for n, m in val_metrics.items()
+        if m["dir"] > ANTI_SKILL_MIN_DIR and 0 < m["mape"] < 15.0
+    ]
     if not eligible:
         # Все модели anti-skill — хотя бы оставим TCN с очень низким весом
         eligible = ["TCN"] if "TCN" in val_preds_ret else list(val_preds_ret.keys())[:1]
-        logger.warning(f"All models < 50%% dir_acc on val (metrics={val_metrics}) — fallback to TCN-only")
+        logger.warning(
+            f"All models <= {ANTI_SKILL_MIN_DIR}%% dir_acc on val "
+            f"(metrics={val_metrics}) — fallback to TCN-only"
+        )
 
     base_weights = {n: 0.0 for n in val_preds_ret}
 
@@ -1651,6 +1662,81 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         model_metrics["LightGBM"] = calc_metrics(y_act_test, lgb_prices[test_start:])
     model_metrics["Ensemble"] = calc_metrics(y_act_test, pred_prices[test_start:])
 
+    # ── Foundation augmentation для test-fold (BTC-USD dir_acc fix) ──
+    # До этой правки Foundation подмешивался ТОЛЬКО в `future_preds` (будущее).
+    # `dir_acc`, который видит пользователь в UI, считается по `pred_prices[test_start:]`
+    # (чистый boosting/TCN ensemble) → Foundation вообще не влиял на главную метрику
+    # качества. На крипте (BTC-USD) все base-модели learn "tomorrow ≈ today" → MAPE
+    # низкий, но dir_acc ≈ 50% (монетка). Foundation (Chronos/TimesFM) обучен на
+    # огромных corpora time-series и часто даёт нетривиальный directional signal.
+    #
+    # Решение: rolling Foundation на test-fold с шагом H=10.
+    #  - history = close_prices[:SEQ_LEN + test_start + i] (no leak: только прошлое
+    #    относительно прогнозируемого chunk)
+    #  - horizon = H (короткий горизонт = лучшая Foundation точность)
+    #  - blend 50/50 с pred_prices[test_start+i : test_start+i+H]
+    # test_n=147, H=10 → ~15 foundation calls ≈ 50s. Только при use_foundation=True.
+    foundation_test_used = False
+    foundation_test_models: list[str] = []
+    foundation_test_chunks = 0
+    if use_foundation and len(actual_prices) > test_start:
+        try:
+            from app.foundation import foundation_forecast
+            test_n = len(actual_prices) - test_start
+            H = int(os.getenv("FOUNDATION_TEST_CHUNK", "10"))
+            fnd_test_arr = np.full(test_n, np.nan, dtype=np.float64)
+            models_seen: set[str] = set()
+            for i in range(0, test_n, H):
+                chunk_h = min(H, test_n - i)
+                # SEQ_LEN — offset (actual_prices = close[SEQ_LEN:]).
+                history_end = SEQ_LEN + test_start + i
+                history = close_prices[:history_end]
+                res = foundation_forecast(history, chunk_h)
+                if res is None or "median" not in res:
+                    continue
+                med = np.array(res["median"], dtype=np.float64)
+                if len(med) != chunk_h:
+                    continue
+                fnd_test_arr[i:i + chunk_h] = med
+                foundation_test_chunks += 1
+                for m in res.get("models_used", []):
+                    models_seen.add(m)
+            valid = ~np.isnan(fnd_test_arr)
+            if valid.any():
+                # Mutate copies — оригиналы могут быть вьюшкой shared array.
+                pred_prices = pred_prices.copy()
+                pred_returns_new = pred_returns.copy()
+                blended_seg = pred_prices[test_start:].astype(np.float64).copy()
+                blended_seg[valid] = (
+                    0.5 * blended_seg[valid] + 0.5 * fnd_test_arr[valid]
+                )
+                pred_prices[test_start:] = blended_seg
+                # Backtest consistency: pred_returns должны соответствовать blended
+                # prices (иначе backtest будет на старом сигнале, а dir_acc на новом).
+                prev_seg = prev_prices[test_start:].astype(np.float64)
+                # Защита от деления на ноль (теоретически не должно случаться).
+                safe = prev_seg > 0
+                new_ret = np.zeros_like(prev_seg)
+                new_ret[safe] = np.log(blended_seg[safe] / prev_seg[safe])
+                pred_returns_new[test_start:] = new_ret
+                pred_returns = pred_returns_new
+                # Пересчитаем Ensemble метрику с blended prices.
+                model_metrics["Ensemble"] = calc_metrics(
+                    y_act_test, pred_prices[test_start:]
+                )
+                foundation_test_used = True
+                foundation_test_models = sorted(models_seen)
+                logger.info(
+                    f"Foundation test-fold blend: chunks={foundation_test_chunks}×{H}d, "
+                    f"{int(valid.sum())}/{test_n} pts blended, "
+                    f"models={foundation_test_models}, "
+                    f"Ensemble→{model_metrics['Ensemble']}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Foundation test-fold blend failed: {e} — using pure ensemble"
+            )
+
     # Feature importance names (3 stats per column: last, momentum, volatility)
     feature_importance = {}
     sel_feat_names = []
@@ -1775,10 +1861,9 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     # Для multi-step масштабируем quantiles на sqrt(h) (random-walk diffusion).
     future_dates, future_preds, future_upper, future_lower = [], [], [], []
     future_p50, future_p5, future_p95 = [], [], []
-    # Local-cal маркеры — обязаны существовать в ЛЮБОМ code-path. Раньше они
-    # инициализировались внутри `if days_ahead > 0:` → при days_ahead=0
-    # (BTC-USD dashboard mode) return-dict ниже падал с UnboundLocalError.
-    # Внутри `if days_ahead > 0:` блок ниже их перезапишет.
+    # Local-cal маркеры — обязаны существовать в любом code-path, иначе при
+    # days_ahead=0 (BTC-USD dashboard mode) return-dict ниже падает с
+    # UnboundLocalError. Внутри `if days_ahead > 0:` блок ниже их перезапишет.
     local_calibration_applied = False
     local_sigma_ratio_val = 1.0
 
@@ -1815,7 +1900,8 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         future_preds = np.median(trajectories, axis=0).tolist()
 
         # local_calibration_applied / local_sigma_ratio_val уже инициализированы
-        # выше (до `if days_ahead > 0`). Перезапишутся ниже если
+        # выше (до `if days_ahead > 0`) — это нужно для случая days_ahead=0,
+        # где этот блок целиком не исполняется. Перезапишутся ниже если
         # use_conformal + LOCAL_CALIBRATION=1.
 
         if use_conformal:
@@ -1833,14 +1919,19 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             # текущих features — даёт локальный inflation-коэффициент в
             # [SIGMA_RATIO_MIN, SIGMA_RATIO_MAX]. Умножаем все quantiles на него.
             # Включение: LOCAL_CALIBRATION=1. Graceful fallback → ratio=1.0 (no-op).
+            #
+            # Rolling window (Polish #1): compute_local_inflation() внутри берёт
+            # последние NGB_ROLLING_WINDOW=100 строк из (X_cal, residuals). Это
+            # держит calibration set близко к X_future по распределению, что
+            # резко снижает частоту упирания σ-ratio в clamp.
             try:
                 from app.calibration import compute_local_inflation
                 # X_cal = те же features что использованы для conformal-residuals.
                 # X_future = последняя известная строка features (≈ состояние "сейчас",
                 # так как future-features недоступны без data leakage).
                 # Alignment: MULTIHORIZON_ENABLED trim'ит X_bst_val_sel на (max_h - 1)
-                # строк с конца, поэтому берём общий префикс — это валидно, т.к.
-                # residuals считаются на том же подотрезке что NGBoost видит.
+                # строк с конца — передаём общий префикс; rolling window берётся уже
+                # внутри calibration.py.
                 n_use = min(len(X_bst_val_sel), len(val_log_resid))
                 X_cal_local = X_bst_val_sel[:n_use] if n_use > 0 else None
                 val_log_resid_local = val_log_resid[:n_use] if n_use > 0 else None
@@ -1972,6 +2063,20 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "backtest": backtest,
         "foundation_used": foundation_used,
         "foundation_models": foundation_models_used,
+        # Foundation-в-test-fold (BTC-USD dir_acc fix): отражает то, что Foundation
+        # подмешан и в test-метрики, не только в future_preds.
+        "foundation_test_used": foundation_test_used,
+        "foundation_test_models": foundation_test_models,
+        "foundation_test_chunks": foundation_test_chunks,
+        # ── Honest skill warning ──────────────────────────────────────
+        # Если dir_acc на test-фолде < LOW_DIR_THRESHOLD (~52%) — модель
+        # не показала надёжного directional skill. UI должен это явно
+        # подсветить, чтобы пользователь не воспринимал прогноз направления
+        # как trading-signal. 52%: с учётом noise на нескольких десятках
+        # точек значение <52% статистически не отличается от монетки.
+        "low_directional_skill": bool(
+            dir_acc < float(os.getenv("LOW_DIR_THRESHOLD", "52.0"))
+        ),
         "local_calibration_applied": local_calibration_applied,
         "local_sigma_ratio": local_sigma_ratio_val,
     }
