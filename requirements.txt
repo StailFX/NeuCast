@@ -23,8 +23,12 @@ transformers>=4.30.0
 torch>=2.0.0
 shap>=0.43.0
 websockets>=12.0
-# Optional: Foundation models для time-series (Tier 4 + Tier 5.2 opt-in checkbox).
+# Optional: Foundation models для time-series (Tier 4, 5.2, 5.3 opt-in checkbox).
 # При отсутствии любой из библиотек foundation.py делает graceful fallback.
-# Если установлены обе — run_prediction ансамблирует их прогнозы (ниже variance).
+# Если установлены несколько — run_prediction ансамблирует их прогнозы (ниже variance).
+# ВНИМАНИЕ: веса Moirai (uni2ts) под CC-BY-NC-4.0 (non-commercial) — по дефолту
+# отключён в FOUNDATION_MODELS, включается явно: FOUNDATION_MODELS="chronos,timesfm,moirai".
+# uni2ts тянет heavy deps (~1GB): gluonts, lightning, jax, torch (CPU). Опционален.
 chronos-forecasting>=1.4.0
 timesfm>=1.3.0
+uni2ts>=1.2.0

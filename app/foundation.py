@@ -4,9 +4,10 @@ Foundation model wrappers для time-series прогнозирования.
 Мы ансамблируем несколько pretrained foundation-моделей для снижения variance:
   • Chronos-Bolt (Amazon) — encoder-decoder, обучен на ~10B точках.
   • TimesFM (Google) — decoder-only, обучен на ~100B точках.
+  • Moirai (Salesforce) — masked encoder, обучен на ~27B точках, мультивариантный.
 
-Обе доступны через opt-in чекбокс. Если обе установлены — blend median
-50/50 между ними, bands — среднее quantiles. Если только одна — fallback
+Все доступны через opt-in чекбокс. Если несколько установлены — blend median
+и bands поэлементно (простое среднее quantiles). Если только одна — fallback
 на неё. Если ни одной — graceful fallback к conformal (как без Foundation).
 
 API высокого уровня:
@@ -16,7 +17,11 @@ API высокого уровня:
 Lazy singleton'ы с threading.Lock, graceful fallback при любой ошибке
 (ImportError / checkpoint fail / inference error).
 
-Tier 4 (Chronos) + Tier 5.2 (TimesFM) — оба на одном чекбоксе.
+Tier 4 (Chronos) + Tier 5.2 (TimesFM) + Tier 5.3 (Moirai) — один чекбокс,
+ансамбль управляется env var FOUNDATION_MODELS.
+
+ВНИМАНИЕ: веса Moirai под лицензией CC-BY-NC-4.0 (non-commercial). Поэтому
+Moirai по дефолту ВЫКЛЮЧЕН — нужно явно добавить "moirai" в FOUNDATION_MODELS.
 """
 
 import os
@@ -47,9 +52,24 @@ TIMESFM_CONTEXT_LEN = int(os.getenv("TIMESFM_CONTEXT_LEN", "512"))
 # horizon_len в модели фиксирован; выставляем >= любого разумного days_ahead.
 TIMESFM_HORIZON_LEN = int(os.getenv("TIMESFM_HORIZON_LEN", "128"))
 
+# ── Moirai config (Tier 5.3) ────────────────────────────────────────
+# Salesforce Moirai-1.1-R — masked encoder foundation, мультивариантный.
+# small (14M params, ~30MB), base (91M, ~180MB), large (311M, ~620MB).
+# small — самый быстрый и достаточный для CPU-inference за 1-3s.
+# Лицензия чекпоинтов: CC-BY-NC-4.0 (non-commercial) — opt-in по дефолту.
+MOIRAI_MODEL_NAME = os.getenv("MOIRAI_MODEL_NAME", "Salesforce/moirai-1.1-R-small")
+MOIRAI_CONTEXT_LEN = int(os.getenv("MOIRAI_CONTEXT_LEN", "200"))
+# Количество Monte-Carlo sample-путей; Moirai стохастичен, 100 — хороший баланс.
+MOIRAI_NUM_SAMPLES = int(os.getenv("MOIRAI_NUM_SAMPLES", "100"))
+# patch_size="auto" выбирается моделью; для коротких историй лучше зафиксировать
+# (32 даёт стабильные результаты, если len(history) < 300).
+MOIRAI_PATCH_SIZE = os.getenv("MOIRAI_PATCH_SIZE", "auto")
+
 # ── Ensembling config ───────────────────────────────────────────────
 # Список foundation-моделей через запятую. Можно отключить отдельную:
-# FOUNDATION_MODELS="chronos" или "timesfm" или "chronos,timesfm".
+# FOUNDATION_MODELS="chronos" или "timesfm" или "chronos,timesfm,moirai".
+# Moirai по дефолту ВЫКЛЮЧЕН — лицензия CC-BY-NC-4.0. Чтобы включить для
+# research/personal use: FOUNDATION_MODELS="chronos,timesfm,moirai".
 FOUNDATION_MODELS = [
     m.strip().lower()
     for m in os.getenv("FOUNDATION_MODELS", "chronos,timesfm").split(",")
@@ -64,6 +84,10 @@ _chronos_lock = threading.Lock()
 _timesfm_pipeline = None
 _timesfm_load_failed = False
 _timesfm_lock = threading.Lock()
+
+_moirai_module = None
+_moirai_load_failed = False
+_moirai_lock = threading.Lock()
 
 
 def _get_chronos():
@@ -301,6 +325,115 @@ def timesfm_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | None:
         return None
 
 
+def _get_moirai():
+    """Синглтон Moirai MoiraiModule (веса). Возвращает None при любых ошибках."""
+    global _moirai_module, _moirai_load_failed
+    if _moirai_load_failed:
+        return None
+    if _moirai_module is not None:
+        return _moirai_module
+    with _moirai_lock:
+        if _moirai_module is not None:
+            return _moirai_module
+        if _moirai_load_failed:
+            return None
+        try:
+            from uni2ts.model.moirai import MoiraiModule  # type: ignore
+            t0 = __import__("time").time()
+            _moirai_module = MoiraiModule.from_pretrained(MOIRAI_MODEL_NAME)
+            logger.info(
+                f"Moirai loaded: {MOIRAI_MODEL_NAME} "
+                f"({__import__('time').time() - t0:.1f}s)"
+            )
+        except ImportError as e:
+            logger.warning(
+                f"uni2ts library not installed ({e}). "
+                f"Install: pip install uni2ts"
+            )
+            _moirai_load_failed = True
+            return None
+        except Exception as e:
+            logger.warning(f"Moirai load failed: {e} — Moirai unavailable")
+            _moirai_load_failed = True
+            return None
+    return _moirai_module
+
+
+def moirai_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | None:
+    """
+    Probabilistic forecast через Salesforce Moirai-1.1-R.
+
+    Moirai — masked-encoder foundation model, обучена на 27B точках из
+    разных доменов (energy, transport, nature, sales, econ/fin, healthcare,
+    CloudOps, web). Ключевое отличие от Chronos/TimesFM: multivariate-ready
+    архитектура (хотя в этом wrapper'е пока используем univariate input).
+
+    Returns dict {median, p5, p25, p75, p95}. Квантили честные (не clamp'д),
+    т.к. Moirai семплирует num_samples путей и мы перцентилим empirically.
+
+    None если Moirai недоступен или inference упал.
+    """
+    if days_ahead <= 0:
+        return None
+    module = _get_moirai()
+    if module is None:
+        return None
+    try:
+        from uni2ts.model.moirai import MoiraiForecast  # type: ignore
+        import pandas as pd
+        from gluonts.dataset.pandas import PandasDataset  # type: ignore
+
+        ctx = np.asarray(close_prices, dtype=np.float32)
+        if len(ctx) > MOIRAI_CONTEXT_LEN:
+            ctx = ctx[-MOIRAI_CONTEXT_LEN:]
+        if len(ctx) < 30:
+            logger.warning(f"Moirai: context too short ({len(ctx)} < 30)")
+            return None
+
+        # Moirai обёртка принимает gluonts-dataset. Создаём PandasDataset
+        # с dummy business-day index (Moirai не использует даты сами по себе,
+        # frequency информирует positional encoding).
+        df = pd.DataFrame(
+            {"target": ctx},
+            index=pd.date_range("2000-01-01", periods=len(ctx), freq="B"),
+        )
+        ds = PandasDataset(df, target="target")
+
+        # patch_size="auto" требует context_len + prediction_length точек
+        # в истории. Если история короткая — форсим patch_size=32.
+        patch = MOIRAI_PATCH_SIZE
+        if patch == "auto" and len(ctx) < MOIRAI_CONTEXT_LEN + days_ahead:
+            patch = 32
+
+        context_len_effective = min(MOIRAI_CONTEXT_LEN, len(ctx))
+
+        forecaster = MoiraiForecast(
+            module=module,
+            prediction_length=days_ahead,
+            context_length=context_len_effective,
+            patch_size=patch,
+            num_samples=MOIRAI_NUM_SAMPLES,
+            target_dim=1,
+            feat_dynamic_real_dim=0,
+            past_feat_dynamic_real_dim=0,
+        )
+        predictor = forecaster.create_predictor(batch_size=1, device="cpu")
+
+        # predict возвращает generator; берём первый forecast (batch=1).
+        forecast = next(iter(predictor.predict(ds)))
+        samples = forecast.samples  # [num_samples, prediction_length]
+        return {
+            "median": np.median(samples, axis=0).astype(float).tolist(),
+            "p5": np.percentile(samples, 5, axis=0).astype(float).tolist(),
+            "p25": np.percentile(samples, 25, axis=0).astype(float).tolist(),
+            "p75": np.percentile(samples, 75, axis=0).astype(float).tolist(),
+            "p95": np.percentile(samples, 95, axis=0).astype(float).tolist(),
+        }
+    except Exception as e:
+        logger.warning(f"Moirai forecast failed: {e}")
+        return None
+
+
 def foundation_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | None:
     """
     Ensemble foundation forecast — усредняет все доступные модели из
@@ -325,6 +458,10 @@ def foundation_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | Non
         r = timesfm_forecast(close_prices, days_ahead)
         if r is not None:
             results.append(("timesfm", r))
+    if "moirai" in FOUNDATION_MODELS:
+        r = moirai_forecast(close_prices, days_ahead)
+        if r is not None:
+            results.append(("moirai", r))
 
     if not results:
         return None
@@ -350,9 +487,13 @@ def foundation_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | Non
 def is_available() -> bool:
     """Проверка доступности без полной загрузки. Полезно для UI-флага."""
     # Хотя бы одна из моделей должна быть доступна
-    if _chronos_load_failed and _timesfm_load_failed:
+    if _chronos_load_failed and _timesfm_load_failed and _moirai_load_failed:
         return False
-    if _chronos_pipeline is not None or _timesfm_pipeline is not None:
+    if (
+        _chronos_pipeline is not None
+        or _timesfm_pipeline is not None
+        or _moirai_module is not None
+    ):
         return True
     try:
         import chronos  # noqa: F401
@@ -361,6 +502,11 @@ def is_available() -> bool:
         pass
     try:
         import timesfm  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    try:
+        import uni2ts  # noqa: F401
         return True
     except ImportError:
         pass
