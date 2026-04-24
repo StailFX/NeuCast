@@ -1845,29 +1845,32 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     #  (b) bands: заменяем на родные Chronos quantiles (probabilistically
     #      калиброваны на 10B time-series точках, обычно лучше нашего
     #      conformal на коротких val-фолдах).
-    # Если chronos не установлен или прогноз упал — silent fallback к conformal.
+    # Tier 5.2: теперь это ensemble из Chronos + TimesFM (если обе доступны).
+    # foundation_forecast внутри усредняет модели и возвращает объединённый
+    # прогноз + список models_used для UI-бейджа. Если ни одна не доступна —
+    # silent fallback к conformal.
     foundation_used = False
+    foundation_models_used: list[str] = []
     if days_ahead > 0 and use_foundation:
         try:
-            from app.foundation import chronos_forecast
-            chr_result = chronos_forecast(close_prices, days_ahead)
-            if chr_result is not None and len(chr_result.get("median", [])) == days_ahead:
-                # Blend: 50/50 наш conformal-median + Chronos median.
-                # Если future_preds пуст (días_ahead=0 был случаем), не должно
-                # сюда попадать благодаря days_ahead>0 проверке.
+            from app.foundation import foundation_forecast
+            fnd_result = foundation_forecast(close_prices, days_ahead)
+            if fnd_result is not None and len(fnd_result.get("median", [])) == days_ahead:
+                # Blend: 50/50 наш conformal-median + foundation median.
                 blended = []
                 for i, h in enumerate(future_preds):
-                    blended.append(round((float(h) + float(chr_result["median"][i])) / 2.0, 4))
+                    blended.append(round((float(h) + float(fnd_result["median"][i])) / 2.0, 4))
                 future_preds = blended
-                # Bands → Chronos quantiles напрямую
-                future_p5 = [round(float(x), 4) for x in chr_result["p5"]]
-                future_p95 = [round(float(x), 4) for x in chr_result["p95"]]
-                future_upper = [round(float(x), 4) for x in chr_result["p75"]]
-                future_lower = [round(float(x), 4) for x in chr_result["p25"]]
+                # Bands → foundation quantiles напрямую (они калиброваны на 10-100B точках)
+                future_p5 = [round(float(x), 4) for x in fnd_result["p5"]]
+                future_p95 = [round(float(x), 4) for x in fnd_result["p95"]]
+                future_upper = [round(float(x), 4) for x in fnd_result["p75"]]
+                future_lower = [round(float(x), 4) for x in fnd_result["p25"]]
                 foundation_used = True
+                foundation_models_used = list(fnd_result.get("models_used", []))
                 logger.info(
-                    f"Foundation model (Chronos) used: days={days_ahead}, "
-                    f"median_blend=50/50, bands=chronos-native"
+                    f"Foundation ensemble used: models={foundation_models_used}, "
+                    f"days={days_ahead}, median_blend=50/50"
                 )
             else:
                 logger.info("Foundation model requested but unavailable — fallback to conformal")
@@ -1919,6 +1922,7 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "corr_labels": corr_labels,
         "backtest": backtest,
         "foundation_used": foundation_used,
+        "foundation_models": foundation_models_used,
     }
 
 

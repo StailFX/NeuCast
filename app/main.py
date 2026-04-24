@@ -552,6 +552,7 @@ async def predict(
         "corr_labels": result["corr_labels"],
         "sentiment": sentiment_data,
         "foundation_used": result.get("foundation_used", False),
+        "foundation_models": result.get("foundation_models", []),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
     }
@@ -818,6 +819,7 @@ async def _render_success_result(async_result, request, db, user, role):
         "corr_labels": result["corr_labels"],
         "sentiment": sentiment_data,
         "foundation_used": result.get("foundation_used", False),
+        "foundation_models": result.get("foundation_models", []),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
     }

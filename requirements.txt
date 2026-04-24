@@ -23,6 +23,8 @@ transformers>=4.30.0
 torch>=2.0.0
 shap>=0.43.0
 websockets>=12.0
-# Optional: Foundation model для time-series (Tier 4 opt-in checkbox)
-# При отсутствии модуля app/foundation.py делает graceful fallback (None).
+# Optional: Foundation models для time-series (Tier 4 + Tier 5.2 opt-in checkbox).
+# При отсутствии любой из библиотек foundation.py делает graceful fallback.
+# Если установлены обе — run_prediction ансамблирует их прогнозы (ниже variance).
 chronos-forecasting>=1.4.0
+timesfm>=1.3.0

@@ -1,17 +1,22 @@
 """
-Foundation model wrapper для time-series прогнозирования.
+Foundation model wrappers для time-series прогнозирования.
 
-Используем Chronos-Bolt от Amazon — pretrained encoder-decoder, обученный на
-~10B time-series точках разной природы (equity, crypto, energy, weather, traffic).
-В zero-shot выдаёт probabilistic forecast (sample-based) на N шагов вперёд.
+Мы ансамблируем несколько pretrained foundation-моделей для снижения variance:
+  • Chronos-Bolt (Amazon) — encoder-decoder, обучен на ~10B точках.
+  • TimesFM (Google) — decoder-only, обучен на ~100B точках.
 
-API: chronos_forecast(close_prices, days_ahead) → dict с median/quantile bands.
-Lazy-load: модель грузится только при первом обращении (~250-400MB).
-Graceful fallback: если chronos не установлен или загрузка упала — функция
-возвращает None, и run_prediction просто пропускает Foundation-аугментацию.
+Обе доступны через opt-in чекбокс. Если обе установлены — blend median
+50/50 между ними, bands — среднее quantiles. Если только одна — fallback
+на неё. Если ни одной — graceful fallback к conformal (как без Foundation).
 
-Tier 4 — opt-in через UI чекбокс "Foundation-модель (медленнее, +5-10% точности)".
-По умолчанию выключено.
+API высокого уровня:
+  foundation_forecast(close_prices, days_ahead) →
+      dict с {median, p5, p25, p75, p95, models_used: [str]} или None.
+
+Lazy singleton'ы с threading.Lock, graceful fallback при любой ошибке
+(ImportError / checkpoint fail / inference error).
+
+Tier 4 (Chronos) + Tier 5.2 (TimesFM) — оба на одном чекбоксе.
 """
 
 import os
@@ -21,8 +26,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ── Config ──────────────────────────────────────────────────────────
-# Chronos-Bolt small (48M params, ~250MB) — баланс speed/quality для CPU.
+# ── Chronos-Bolt config ─────────────────────────────────────────────
+# Small (48M params, ~250MB) — баланс speed/quality для CPU.
 # Для слабых VPS можно "tiny" (9M, 150MB), для GPU — "base" (200M, 1GB).
 CHRONOS_MODEL_NAME = os.getenv("CHRONOS_MODEL_NAME", "amazon/chronos-bolt-small")
 # Длина истории, которую видит модель. 256 — sweet spot: достаточно контекста
@@ -34,10 +39,31 @@ CHRONOS_CONTEXT_LEN = int(os.getenv("CHRONOS_CONTEXT_LEN", "256"))
 # совместимости с обоими family.
 CHRONOS_NUM_SAMPLES = int(os.getenv("CHRONOS_NUM_SAMPLES", "20"))
 
-# Lazy singleton + lock от race condition при первом запросе.
+# ── TimesFM config ──────────────────────────────────────────────────
+# 1.0-200m-pytorch — 200M params, pytorch checkpoint (~800MB на диске).
+# Есть ещё 2.0-500m (лучше accuracy, но медленнее на CPU: 5-10s inference).
+TIMESFM_MODEL_NAME = os.getenv("TIMESFM_MODEL_NAME", "google/timesfm-1.0-200m-pytorch")
+TIMESFM_CONTEXT_LEN = int(os.getenv("TIMESFM_CONTEXT_LEN", "512"))
+# horizon_len в модели фиксирован; выставляем >= любого разумного days_ahead.
+TIMESFM_HORIZON_LEN = int(os.getenv("TIMESFM_HORIZON_LEN", "128"))
+
+# ── Ensembling config ───────────────────────────────────────────────
+# Список foundation-моделей через запятую. Можно отключить отдельную:
+# FOUNDATION_MODELS="chronos" или "timesfm" или "chronos,timesfm".
+FOUNDATION_MODELS = [
+    m.strip().lower()
+    for m in os.getenv("FOUNDATION_MODELS", "chronos,timesfm").split(",")
+    if m.strip()
+]
+
+# Lazy singletons + locks от race condition при первом запросе.
 _chronos_pipeline = None
 _chronos_load_failed = False
 _chronos_lock = threading.Lock()
+
+_timesfm_pipeline = None
+_timesfm_load_failed = False
+_timesfm_lock = threading.Lock()
 
 
 def _get_chronos():
@@ -167,14 +193,175 @@ def chronos_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | None:
         return None
 
 
+def _get_timesfm():
+    """Синглтон TimesFM. Возвращает None при любых ошибках."""
+    global _timesfm_pipeline, _timesfm_load_failed
+    if _timesfm_load_failed:
+        return None
+    if _timesfm_pipeline is not None:
+        return _timesfm_pipeline
+    with _timesfm_lock:
+        if _timesfm_pipeline is not None:
+            return _timesfm_pipeline
+        if _timesfm_load_failed:
+            return None
+        try:
+            import timesfm  # type: ignore
+            t0 = __import__("time").time()
+            # 1.0-200m pytorch config: num_layers=20, model_dims=1280, positional_embedding=True.
+            # 2.0-500m pytorch config: num_layers=50, use_positional_embedding=False.
+            # Определяем по названию чекпоинта (стандартная схема названий от Google).
+            is_v2 = "2.0" in TIMESFM_MODEL_NAME
+            hparams_kwargs = dict(
+                context_len=TIMESFM_CONTEXT_LEN,
+                horizon_len=TIMESFM_HORIZON_LEN,
+                input_patch_len=32,
+                output_patch_len=128,
+                per_core_batch_size=32,
+                backend="cpu",
+                quantiles=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+                point_forecast_mode="median",
+            )
+            if is_v2:
+                hparams_kwargs.update(num_layers=50, use_positional_embedding=False)
+            else:
+                hparams_kwargs.update(num_layers=20, use_positional_embedding=True)
+            hparams = timesfm.TimesFmHparams(**hparams_kwargs)
+            checkpoint = timesfm.TimesFmCheckpoint(huggingface_repo_id=TIMESFM_MODEL_NAME)
+            _timesfm_pipeline = timesfm.TimesFm(hparams=hparams, checkpoint=checkpoint)
+            logger.info(
+                f"TimesFM loaded: {TIMESFM_MODEL_NAME} "
+                f"({__import__('time').time() - t0:.1f}s)"
+            )
+        except ImportError as e:
+            logger.warning(
+                f"timesfm library not installed ({e}). "
+                f"Install: pip install timesfm"
+            )
+            _timesfm_load_failed = True
+            return None
+        except Exception as e:
+            logger.warning(f"TimesFM load failed: {e} — TimesFM unavailable")
+            _timesfm_load_failed = True
+            return None
+    return _timesfm_pipeline
+
+
+def timesfm_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | None:
+    """
+    Probabilistic forecast через Google TimesFM.
+
+    Returns dict {median, p5, p25, p75, p95} — те же ключи что у chronos_forecast
+    для совместимости downstream. Фактические quantile levels: [p10, p30, p50,
+    p70, p90] (TimesFM обучен на [0.1..0.9] с шагом 0.1). p5/p95 = ближайшие
+    доступные p10/p90.
+
+    None если TimesFM недоступен или inference упал.
+    """
+    if days_ahead <= 0:
+        return None
+    pipe = _get_timesfm()
+    if pipe is None:
+        return None
+    try:
+        ctx = np.asarray(close_prices, dtype=np.float32)
+        if len(ctx) > TIMESFM_CONTEXT_LEN:
+            ctx = ctx[-TIMESFM_CONTEXT_LEN:]
+        if len(ctx) < 30:
+            logger.warning(f"TimesFM: context too short ({len(ctx)} < 30)")
+            return None
+        # freq=0 → high-frequency (daily/intraday). Для weekly=1, monthly=2.
+        _point_forecast, quantile_forecast = pipe.forecast(
+            [ctx],
+            freq=[0],
+        )
+        # quantile_forecast: [batch=1, horizon, num_quantiles=9+1]
+        # У TimesFM 10 выходов: [mean, p10, p20, ..., p90].
+        q = quantile_forecast[0]  # [horizon, 10]
+        # Берём только days_ahead первых шагов
+        q = q[:days_ahead]
+        # Индексы в quantile_forecast: [0]=mean, [1]=p10, [2]=p20, ..., [9]=p90
+        # Берём [p10, p30, p50, p70, p90] = индексы 1, 3, 5, 7, 9
+        # (используем как наши p5/p25/p50/p75/p95 — misnomer, но симметрично
+        # тому что делает Chronos на своих trained quantiles).
+        p10 = q[:, 1].tolist()
+        p30 = q[:, 3].tolist()
+        p50 = q[:, 5].tolist()
+        p70 = q[:, 7].tolist()
+        p90 = q[:, 9].tolist()
+        return {
+            "p5": [float(x) for x in p10],
+            "p25": [float(x) for x in p30],
+            "median": [float(x) for x in p50],
+            "p75": [float(x) for x in p70],
+            "p95": [float(x) for x in p90],
+        }
+    except Exception as e:
+        logger.warning(f"TimesFM forecast failed: {e}")
+        return None
+
+
+def foundation_forecast(close_prices: np.ndarray, days_ahead: int) -> dict | None:
+    """
+    Ensemble foundation forecast — усредняет все доступные модели из
+    FOUNDATION_MODELS. Возвращает dict с теми же ключами что chronos/timesfm,
+    плюс "models_used": [list of str].
+
+    Blending:
+      • median / p5 / p25 / p75 / p95 = простое среднее по доступным моделям
+      • Если модели разногласят — среднее сглаживает extreme predictions
+      • Если только одна модель ответила — используем её напрямую
+
+    Returns None если все модели недоступны или упали.
+    """
+    if days_ahead <= 0:
+        return None
+    results: list[tuple[str, dict]] = []
+    if "chronos" in FOUNDATION_MODELS:
+        r = chronos_forecast(close_prices, days_ahead)
+        if r is not None:
+            results.append(("chronos", r))
+    if "timesfm" in FOUNDATION_MODELS:
+        r = timesfm_forecast(close_prices, days_ahead)
+        if r is not None:
+            results.append(("timesfm", r))
+
+    if not results:
+        return None
+
+    if len(results) == 1:
+        blended = dict(results[0][1])
+        blended["models_used"] = [results[0][0]]
+        return blended
+
+    # Среднее по всем моделям покомпонентно
+    keys = ("median", "p5", "p25", "p75", "p95")
+    blended = {"models_used": [name for name, _ in results]}
+    for k in keys:
+        vals = np.array([r[k] for _, r in results], dtype=np.float32)  # [N, days]
+        blended[k] = vals.mean(axis=0).tolist()
+    logger.info(
+        f"Foundation ensemble: {'+'.join(blended['models_used'])}, "
+        f"horizon={days_ahead}"
+    )
+    return blended
+
+
 def is_available() -> bool:
     """Проверка доступности без полной загрузки. Полезно для UI-флага."""
-    if _chronos_load_failed:
+    # Хотя бы одна из моделей должна быть доступна
+    if _chronos_load_failed and _timesfm_load_failed:
         return False
-    if _chronos_pipeline is not None:
+    if _chronos_pipeline is not None or _timesfm_pipeline is not None:
         return True
     try:
         import chronos  # noqa: F401
         return True
     except ImportError:
-        return False
+        pass
+    try:
+        import timesfm  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    return False
