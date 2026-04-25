@@ -658,7 +658,7 @@
     // ── Pop friendly error from sessionStorage ───────────────────────
     // waiting.html на FAILURE сохраняет туда friendly-message и редиректит
     // сюда. Если ошибка есть — рендерим в alert-danger над формой (если
-    // сервер уже не вставил такой блок через {% if error %}).
+    // сервер уже не вставил такой блок через серверный if-error).
     (function() {
       let err = null;
       try { err = sessionStorage.getItem('neucast_last_error'); } catch(_) {}
