@@ -30,12 +30,16 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import pandas as pd
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError, OperationalError
 from sqlalchemy.orm import Session
+
+from app.highfreq.feature_pipeline import build_latest_feature_row
+from app.highfreq.predictor import LivePredictor, get_predictor
 
 # NOTE: ``app.db`` reads ``DATABASE_URL`` at import time, so we **defer**
 # importing ``SessionLocal`` to the request-scoped dependency below. This
@@ -279,6 +283,47 @@ def _fetch_rows_last_60s(db: Session, symbol: str) -> Optional[int]:
     return int(result or 0)
 
 
+# Forecast endpoint reads enough seconds of history to assemble at
+# least one COMPLETE 1-minute feature bar (60s) plus margin so the
+# build_latest_feature_row() helper can drop the in-flight current minute.
+# 180s = ~3 minutes = comfortable headroom even right after a reconnect.
+_FORECAST_LOOKBACK_SECONDS: int = 180
+
+
+def _fetch_recent_seconds(
+    db: Session, symbol: str, lookback_seconds: int = _FORECAST_LOOKBACK_SECONDS,
+) -> Optional[pd.DataFrame]:
+    """Fetch the last ``lookback_seconds`` of 1-s rows for ``symbol``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns matching ``highfreq_ofi_1s`` (ts, symbol, ofi, microprice,
+        depth_imb, spread_bps, trade_imb, n_updates). Sorted by ``ts``
+        ascending. May be empty if the ingestor is down.
+    None
+        If the query failed (DB unreachable / table missing). Caller
+        should surface this as a 503, distinct from "model loaded but
+        nothing to score on".
+    """
+    try:
+        rows = db.execute(
+            text(
+                "SELECT ts, symbol, ofi, microprice, depth_imb, "
+                "spread_bps, trade_imb, n_updates "
+                "FROM highfreq_ofi_1s "
+                "WHERE symbol = :symbol "
+                "  AND ts > now() - make_interval(secs => :secs) "
+                "ORDER BY ts ASC"
+            ),
+            {"symbol": symbol, "secs": int(lookback_seconds)},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("highfreq_ofi_1s recent-rows fetch failed (%s): %s", symbol, exc)
+        return None
+    return pd.DataFrame([dict(r) for r in rows])
+
+
 # ── Router ────────────────────────────────────────────────────────────────
 
 # Templates dir is repo-root/templates; resolved relative to this file so the
@@ -387,4 +432,118 @@ async def get_health(
             "symbol": symbol,
             "rows_last_60s": rows_last_60s,
         }
+    )
+
+
+# ── Forecast endpoint (Phase B scaffold) ──────────────────────────────────
+
+
+def _get_forecast_predictor() -> LivePredictor:
+    """DI-friendly predictor accessor — overrideable in tests."""
+    return get_predictor()
+
+
+@router.get("/api/highfreq/forecast")
+async def get_forecast(
+    symbol: str = DEFAULT_SYMBOL,
+    db: Session = Depends(_get_db),
+    predictor: LivePredictor = Depends(_get_forecast_predictor),
+) -> JSONResponse:
+    """Latest 1-minute directional forecast for ``symbol``.
+
+    Returns 200 with ``prob_up`` once the trainer has produced a
+    ``.cbm`` AND there's a complete recent 1-minute bar to score on.
+    Until then, returns 503 with a structured ``reason``:
+
+    * ``no_model_yet`` — trainer hasn't run yet / no weights file
+    * ``database_unavailable`` — DB unreachable
+    * ``not_enough_recent_data`` — no complete 1-minute bar in the
+      recent window (cold-start, or reconnect just happened)
+
+    The response always includes the predictor ``model`` block so
+    clients can show "model age" / "calibrated?" badges even on 503.
+    """
+    symbol = symbol.upper()
+    status = predictor.status()
+
+    # Branch 1: no model on disk → trainer hasn't shipped weights yet.
+    if not status.has_model:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "reason": "no_model_yet",
+                "symbol": symbol,
+                "model": status.to_dict(),
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    # Branch 2: model loaded but DB unreachable (e.g. ingest restart).
+    df_seconds = _fetch_recent_seconds(db, symbol)
+    if df_seconds is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "reason": "database_unavailable",
+                "symbol": symbol,
+                "model": status.to_dict(),
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    # Branch 3: not enough recent data for a complete bar (cold-start /
+    # reconnect window). build_latest_feature_row drops the in-flight
+    # current minute, so we need at least one previous COMPLETE minute.
+    feature_row = build_latest_feature_row(df_seconds)
+    if feature_row is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "reason": "not_enough_recent_data",
+                "symbol": symbol,
+                "model": status.to_dict(),
+                "rows_seen": int(len(df_seconds)),
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    prob_up = predictor.predict(feature_row)
+    if prob_up is None:
+        # Defensive: status said has_model=True but predict returned None.
+        # Treat as transient — return 503 so the caller retries.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "reason": "model_unavailable",
+                "symbol": symbol,
+                "model": status.to_dict(),
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    # Map probability to a human-readable signal so the UI doesn't have to
+    # re-derive thresholds. Same convention as the future paper-trader:
+    # prob > 0.55 = "up" tilt, prob < 0.45 = "down" tilt, else "neutral".
+    if prob_up >= 0.55:
+        signal = "up"
+    elif prob_up <= 0.45:
+        signal = "down"
+    else:
+        signal = "neutral"
+
+    return JSONResponse(
+        content=_scrub({
+            "ok": True,
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+            "horizon_minutes": 1,
+            "prob_up": float(prob_up),
+            "signal": signal,
+            "calibrated": bool(status.is_calibrated),
+            "model": status.to_dict(),
+        })
     )
