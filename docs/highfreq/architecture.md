@@ -191,6 +191,40 @@ A backtest reporting only one of these is misleading. A backtest reporting only 
 
 ---
 
+### ADR-007 · Binary classification with neutral-band drop
+
+**Context.** Bars where `|return_1m| < 1 bp` (~$7.7 on BTC at $77k) are dominated by tick noise and the typical Binance Spot maker-taker spread. A 50/50 classifier on these bars would be statistically uninformative and operationally unprofitable: even if we predicted them correctly, the gross edge would not survive fees.
+
+**Decision.** Drop bars with `|return_1m| < NEUTRAL_BAND_BPS` (default 1 bp, configurable) before training and evaluation. Train a **binary** classifier on the remaining bars (`y = 1` if up, `y = 0` if down).
+
+**Why this works.**
+- Aligns the training distribution with the deployable distribution — we only ever act on bars where the move is large enough to matter post-fees.
+- Eliminates the degenerate `direction = 0` class that the daily model occasionally collapsed into during low-volatility weeks.
+- `dir_acc ≥ 53 %` becomes a *meaningful* threshold rather than "anything above 50 % flat", because the base rate after the neutral-band drop is reported and required to be near 50 %.
+
+**Trade-off accepted.** ~80 % of bars in calm market regimes (early observation) are dropped. We compensate by collecting weeks of live data — the surviving ~20 % over a month is still ≥ 8 000 minutes of training samples, well above the CatBoost convergence threshold.
+
+**Alternative rejected.** Three-class classification with a "neutral" class. Reason: forces the model to learn a noise-vs-signal decision boundary that is more about volatility than direction, hurting accuracy on the bars we actually care about.
+
+---
+
+### ADR-008 · Expanding-window walk-forward, not random k-fold
+
+**Context.** Random k-fold CV is the default in scikit-learn but catastrophically wrong for time-series finance: it lets the model see future bars during training, which inflates reported `dir_acc` by 3–5 percentage points and produces models that disintegrate on live data.
+
+**Decision.** Use expanding-window walk-forward with a configurable initial training window (default 24 h ≈ 1 440 minutes) and a 1 h test fold that advances by 1 h each step. Predictions from each test fold are concatenated chronologically; the bootstrap CI is computed over the per-prediction outcomes (not per-fold means) so its width reflects sample size honestly.
+
+**Why this works.**
+- Strict time-ordering — every prediction is genuinely out-of-sample.
+- Continuously re-trained models surface non-stationarity (BTC microstructure regime shifts) early.
+- Directly produces the `predictions` DataFrame that the sim-backtest engine consumes for paper P&L.
+
+**Trade-off accepted.** Compute cost is `O(n_folds × n_train)` rather than `O(n_train)` for a single train/eval split. With ≤ 7 days of data and CatBoost at `thread_count=2`, this still runs in under 5 minutes — well within the 04:00 UTC training window (ADR-006).
+
+**Alternative rejected.** Purged k-fold with embargo (López de Prado 2018, *Advances in Financial Machine Learning*, §7.4). Reason: theoretically cleaner but adds implementation complexity for a ~0.3 pp accuracy gain on this dataset size. Documented here as the natural Phase B upgrade.
+
+---
+
 ## 5 · Module layout
 
 ```
@@ -199,23 +233,23 @@ app/
     ├── __init__.py
     ├── l2_consumer.py        # WebSocket → in-memory ring buffer
     ├── ofi_features.py       # OFI / microprice / depth-imbalance computation
-    ├── aggregator.py         # 1-s and 1-m feature aggregation, Postgres writer
-    ├── trainer.py            # CatBoost walk-forward training (Celery task)
-    ├── predictor.py          # Live inference + FastAPI route
+    ├── aggregator.py         # 1-s feature aggregation, Postgres writer
+    ├── runner.py             # Standalone entry: python -m app.highfreq.runner
+    ├── trainer.py            # CatBoost walk-forward CV + bootstrap CI + CLI
+    ├── predictor.py          # Live inference + FastAPI route (Phase A.6)
     ├── backtest.py           # Sim-backtest engine, maker / taker fee model
-    └── paper_trading.py      # Optional paper-PnL tracker (Phase A.5)
+    └── migrations/           # SQL DDL — versioned, applied via psql
+
+tests/
+└── test_highfreq_trainer.py  # pytest — pure-function coverage on the data layer
 
 docs/
 └── highfreq/
     ├── architecture.md       # this file
-    ├── adr-NNN-*.md          # individual ADRs (linked from §4 above)
-    └── results/              # backtest reports, screenshots — populated as we go
+    └── deploy/               # systemd unit + ops runbook (versioned, sanitized)
 
 templates/
-└── highfreq.html             # /highfreq UI page
-
-scripts/
-└── highfreq_health.py        # operator script: WebSocket alive? ticks/min? last forecast?
+└── highfreq.html             # /highfreq UI page (Phase A.6)
 ```
 
 ---
@@ -273,10 +307,10 @@ Both tables coexist with the existing daily-prediction tables — no conflicts.
 | Phase | Effort | Outcome |
 |-------|--------|---------|
 | **A.0 · Setup** ✅ | 1 day | swap added, dirs, this doc |
-| A.1 · Architecture polish | 1 day | this doc finalised, ADR cross-links |
-| A.2 · L2 consumer | 2 days | WebSocket alive, ticks landing in Postgres |
-| A.3 · OFI features | 1 day | feature columns populated correctly |
-| A.4 · CatBoost trainer | 2 days | model trained, reports dir_acc |
+| **A.1 · Architecture polish** ✅ | 1 day | this doc finalised, ADR cross-links |
+| **A.2 · L2 consumer** ✅ | 2 days | WebSocket alive, ticks landing in Postgres |
+| **A.3 · OFI features** ✅ | 1 day | feature columns populated correctly |
+| **A.4 · CatBoost trainer** ✅ | 2 days | walk-forward CV, bootstrap CI, JSON report |
 | A.5 · Sim-backtest | 2 days | maker / taker P&L curves, fill-rate sweep |
 | A.6 · UI page | 1 day | `/highfreq` shows live forecast + backtest |
 | A.7 · Polish + README | 1 day | portfolio-ready repo |
