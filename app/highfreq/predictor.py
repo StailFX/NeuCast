@@ -1,15 +1,22 @@
-"""Live 1-minute predictor — FastAPI route.
+"""Live 1-minute predictor — Phase B placeholder.
 
-Loads the latest CatBoost model from ``weights/highfreq/`` and exposes:
+This module was originally scaffolded in Phase A.0 to host live inference
+(loading the CatBoost model from ``weights/highfreq/``, scoring the most
+recent feature row, exposing per-minute forecasts via FastAPI). Phase A
+shipped a different surface area:
 
-* ``GET /highfreq/latest`` — most recent 1-minute forecast as JSON
-* ``GET /highfreq/history?hours=N`` — recent forecast / outcome pairs for the UI
-* ``GET /highfreq/health`` — operator health endpoint (model age, last
-  successful inference, WebSocket connection state)
+* :mod:`app.highfreq.web`      — UI router + status / health endpoints
+* :mod:`app.highfreq.trainer`  — walk-forward CV + bootstrap CI + CLI
+* :mod:`app.highfreq.backtest` — sim-backtest with maker/taker P&L
 
-The route is mounted by :mod:`app.main` alongside the existing daily-forecast
-routes — see also the ``/highfreq`` UI template at ``templates/highfreq.html``.
+Phase A is sim-only by design (see :doc:`ADR-005 <../../docs/highfreq/architecture>`),
+so live inference is deliberately deferred until Phase B has accumulated
+2 weeks of data and demonstrated `dir_acc ≥ 53 %` with positive maker P&L.
+
+Until then, "live forecast" on the UI is the **most recent 1-second
+feature row** (microprice, OFI, depth-imbalance) — directly observable
+truth, not a model output that could be wrong.
 """
 from __future__ import annotations
 
-# Phase A.0 skeleton — implementation in Phase A.6.
+# Intentionally empty — Phase B will populate this module.

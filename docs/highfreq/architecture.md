@@ -1,9 +1,10 @@
 # NeuCast High-Frequency Module — Architecture (Phase A)
 
-**Status:** Phase A — sim-backtest only
+**Status:** Phase A complete · sim-backtest only · 60 unit tests, ~2.8k LOC source + 780 LOC tests
 **Goal:** 1-minute directional forecast for BTC-USDT, with honest paper-trading simulation
 **Owner:** Stailfx (coursework / portfolio project)
 **Last update:** 2026-04-25
+**Quick links:** [README](README.md) · [demo](demo.md) · [deploy](deploy/README.md)
 
 ---
 
@@ -248,8 +249,10 @@ tests/
 
 docs/
 └── highfreq/
-    ├── architecture.md       # this file
-    └── deploy/               # systemd unit + ops runbook (versioned, sanitized)
+    ├── README.md             # portfolio landing — what / why / how (start here)
+    ├── architecture.md       # this file — design decisions + ADRs
+    ├── demo.md               # end-to-end recipe with sample output
+    └── deploy/               # systemd unit + ops runbook (versioned, sanitised)
 
 templates/
 └── highfreq.html             # /highfreq UI page — live microprice + countdown
@@ -316,7 +319,7 @@ Both tables coexist with the existing daily-prediction tables — no conflicts.
 | **A.4 · CatBoost trainer** ✅ | 2 days | walk-forward CV, bootstrap CI, JSON report |
 | **A.5 · Sim-backtest** ✅ | 2 days | maker / taker P&L curves, fill-rate sweep |
 | **A.6 · UI scaffold** ✅ | 1 day | `/highfreq` page, live microprice, countdown |
-| A.7 · Polish + README | 1 day | portfolio-ready repo, screenshots, demo loop |
+| **A.7 · Polish + README** ✅ | 1 day | portfolio README, demo recipe with sample output, screenshot guide |
 
 **Total: ~11 working days of implementation. Calendar: ~3 weeks at 5–10 h/week of user-side validation.**
 

@@ -4,7 +4,32 @@ AI-платформа для прогнозирования финансовых
 
 **Live:** [neucast.ru](https://neucast.ru)
 
-## Архитектура
+---
+
+## Two products in one repo
+
+| | **NeuCast Daily** (this README) | **NeuCast High-Frequency** |
+|---|---|---|
+| Data | Yahoo Finance (OHLCV daily/hourly) | Binance Spot WebSocket (L2 + trades, 1-s grid) |
+| Horizon | 1-30 days, multi-step | 1 minute, directional |
+| Model | TCN + CatBoost + XGBoost + LightGBM stack | CatBoost binary classifier on `sign(return_1m)` |
+| Loss | MSE / MAPE | log-loss + bootstrap CI on `dir_acc` |
+| Output | Price forecast with Monte Carlo bands | Long / short signal with maker + taker P&L |
+| Status | Production at [neucast.ru](https://neucast.ru) | **Phase A complete · sim-only · [docs/highfreq/](docs/highfreq/README.md)** |
+
+The HF module reuses the same Postgres + FastAPI + systemd backbone but
+addresses the wall the daily side hit: OHLCV-only data converges to
+~1 % MAPE at the price-level optimum but produces zero trading edge.
+HF pivots to microstructure features (OFI / microprice / depth-imbalance)
+where the data carries directional signal, and to walk-forward CV +
+bootstrap CI methodology where a "no skill" outcome is *visible* rather
+than buried.
+
+→ Detailed write-up: [`docs/highfreq/README.md`](docs/highfreq/README.md)
+
+---
+
+## Архитектура (Daily side)
 
 ```
                     ┌──────────────────────────────────────┐
