@@ -558,6 +558,10 @@ async def predict(
         # что главная метрика отражает Foundation contribution, а не только TCN/boosting.
         "foundation_test_used": result.get("foundation_test_used", False),
         "foundation_test_models": result.get("foundation_test_models", []),
+        # Data-driven α: 0 → Foundation вреден, не применился; >0 → применили α.
+        "foundation_alpha": result.get("foundation_alpha", 0.0),
+        "foundation_local_val_mape": result.get("foundation_local_val_mape"),
+        "foundation_blended_val_mape": result.get("foundation_blended_val_mape"),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
         "local_calibration_applied": result.get("local_calibration_applied", False),
@@ -857,6 +861,10 @@ async def _render_success_result(async_result, request, db, user, role):
         # что главная метрика отражает Foundation contribution, а не только TCN/boosting.
         "foundation_test_used": result.get("foundation_test_used", False),
         "foundation_test_models": result.get("foundation_test_models", []),
+        # Data-driven α: 0 → Foundation вреден, не применился; >0 → применили α.
+        "foundation_alpha": result.get("foundation_alpha", 0.0),
+        "foundation_local_val_mape": result.get("foundation_local_val_mape"),
+        "foundation_blended_val_mape": result.get("foundation_blended_val_mape"),
         "sentiment_applied": result.get("sentiment_applied", False),
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
         "local_calibration_applied": result.get("local_calibration_applied", False),

@@ -1710,62 +1710,121 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     #  - horizon = H (короткий горизонт = лучшая Foundation точность)
     #  - blend 50/50 с pred_prices[test_start+i : test_start+i+H]
     # test_n=147, H=10 → ~15 foundation calls ≈ 50s. Только при use_foundation=True.
+    # Data-driven α: считаем Foundation также на val-fold, перебираем
+    # α ∈ {0.0, 0.1, ..., 1.0}, берём α* что минимизирует val MAPE, и
+    # применяем α* к test. Если α*=0 — Foundation вреден на этом активе и
+    # не блендится (Ensemble == чистый local). Это исправляет регрессию,
+    # когда хардкод α=0.5 на BTC выпускал MAPE с 1.85% до 3.05%.
     foundation_test_used = False
     foundation_test_models: list[str] = []
     foundation_test_chunks = 0
+    foundation_alpha_chosen = 0.0
+    foundation_local_val_mape: float | None = None
+    foundation_blended_val_mape: float | None = None
     if use_foundation and len(actual_prices) > test_start:
         try:
             from app.foundation import foundation_forecast
-            test_n = len(actual_prices) - test_start
             H = int(os.getenv("FOUNDATION_TEST_CHUNK", "10"))
-            fnd_test_arr = np.full(test_n, np.nan, dtype=np.float64)
             models_seen: set[str] = set()
-            for i in range(0, test_n, H):
-                chunk_h = min(H, test_n - i)
-                # SEQ_LEN — offset (actual_prices = close[SEQ_LEN:]).
-                history_end = SEQ_LEN + test_start + i
-                history = close_prices[:history_end]
-                res = foundation_forecast(history, chunk_h)
-                if res is None or "median" not in res:
-                    continue
-                med = np.array(res["median"], dtype=np.float64)
-                if len(med) != chunk_h:
-                    continue
-                fnd_test_arr[i:i + chunk_h] = med
-                foundation_test_chunks += 1
-                for m in res.get("models_used", []):
-                    models_seen.add(m)
-            valid = ~np.isnan(fnd_test_arr)
-            if valid.any():
-                # Mutate copies — оригиналы могут быть вьюшкой shared array.
-                pred_prices = pred_prices.copy()
-                pred_returns_new = pred_returns.copy()
-                blended_seg = pred_prices[test_start:].astype(np.float64).copy()
-                blended_seg[valid] = (
-                    0.5 * blended_seg[valid] + 0.5 * fnd_test_arr[valid]
-                )
-                pred_prices[test_start:] = blended_seg
-                # Backtest consistency: pred_returns должны соответствовать blended
-                # prices (иначе backtest будет на старом сигнале, а dir_acc на новом).
-                prev_seg = prev_prices[test_start:].astype(np.float64)
-                # Защита от деления на ноль (теоретически не должно случаться).
-                safe = prev_seg > 0
-                new_ret = np.zeros_like(prev_seg)
-                new_ret[safe] = np.log(blended_seg[safe] / prev_seg[safe])
-                pred_returns_new[test_start:] = new_ret
-                pred_returns = pred_returns_new
-                # Пересчитаем Ensemble метрику с blended prices.
-                model_metrics["Ensemble"] = calc_metrics(
-                    y_act_test, pred_prices[test_start:]
-                )
-                foundation_test_used = True
-                foundation_test_models = sorted(models_seen)
+
+            def _rolling_foundation(start_idx: int, end_idx: int) -> np.ndarray:
+                """Rolling Foundation forecast по сегменту [start_idx, end_idx).
+                Каждый chunk использует только историю до начала chunk'а
+                (no leak). Шаг — H баров, длина прогноза — H. Возвращает
+                массив длиной (end_idx - start_idx) с NaN там где Foundation
+                не вернул прогноз."""
+                seg_n = max(0, end_idx - start_idx)
+                arr = np.full(seg_n, np.nan, dtype=np.float64)
+                if seg_n == 0:
+                    return arr
+                for i in range(0, seg_n, H):
+                    chunk_h = min(H, seg_n - i)
+                    history_end = SEQ_LEN + start_idx + i
+                    history = close_prices[:history_end]
+                    res = foundation_forecast(history, chunk_h)
+                    if res is None or "median" not in res:
+                        continue
+                    med = np.array(res["median"], dtype=np.float64)
+                    if len(med) != chunk_h:
+                        continue
+                    arr[i:i + chunk_h] = med
+                    for m in res.get("models_used", []):
+                        models_seen.add(m)
+                return arr
+
+            # Test-fold rolling (всегда нужно — финальный blend применяется к test)
+            test_n = len(actual_prices) - test_start
+            fnd_test_arr = _rolling_foundation(test_start, len(actual_prices))
+            valid_test = ~np.isnan(fnd_test_arr)
+            foundation_test_chunks = int(np.ceil(valid_test.sum() / H)) if valid_test.any() else 0
+
+            # Val-fold rolling (для honest выбора α)
+            # val_split_idx определён в boosting-блоке выше; защищаемся на случай
+            # когда val-fold пустой (короткая история).
+            val_n = train_seq_end - val_split_idx
+            if val_n >= H and valid_test.any():
+                fnd_val_arr = _rolling_foundation(val_split_idx, train_seq_end)
+                valid_val = ~np.isnan(fnd_val_arr)
+            else:
+                fnd_val_arr = np.full(max(0, val_n), np.nan, dtype=np.float64)
+                valid_val = np.zeros_like(fnd_val_arr, dtype=bool)
+
+            if valid_test.any() and valid_val.any():
+                local_val = pred_prices[val_split_idx:train_seq_end].astype(np.float64)
+                actual_val = actual_prices[val_split_idx:train_seq_end].astype(np.float64)
+
+                def _val_mape(alpha: float) -> float:
+                    blended = local_val.copy()
+                    blended[valid_val] = (1.0 - alpha) * blended[valid_val] + alpha * fnd_val_arr[valid_val]
+                    safe_v = actual_val > 0
+                    if not safe_v.any():
+                        return float("inf")
+                    return float(np.mean(np.abs((blended[safe_v] - actual_val[safe_v]) / actual_val[safe_v])) * 100)
+
+                alphas = np.linspace(0.0, 1.0, 11)  # 0.0, 0.1, ..., 1.0
+                mapes = np.array([_val_mape(a) for a in alphas], dtype=np.float64)
+                best_idx = int(np.argmin(mapes))
+                foundation_alpha_chosen = float(alphas[best_idx])
+                foundation_local_val_mape = float(mapes[0])  # α=0 → local only
+                foundation_blended_val_mape = float(mapes[best_idx])
+
+                grid_str = ", ".join(f"α={a:.1f}→{m:.2f}%" for a, m in zip(alphas, mapes))
                 logger.info(
-                    f"Foundation test-fold blend: chunks={foundation_test_chunks}×{H}d, "
-                    f"{int(valid.sum())}/{test_n} pts blended, "
-                    f"models={foundation_test_models}, "
-                    f"Ensemble→{model_metrics['Ensemble']}"
+                    f"Foundation val-fold α grid: {grid_str} → chosen α={foundation_alpha_chosen:.2f} "
+                    f"(local_val_mape={foundation_local_val_mape:.2f}%, "
+                    f"best_val_mape={foundation_blended_val_mape:.2f}%)"
                 )
+
+                if foundation_alpha_chosen > 0:
+                    a = foundation_alpha_chosen
+                    pred_prices = pred_prices.copy()
+                    pred_returns_new = pred_returns.copy()
+                    blended_seg = pred_prices[test_start:].astype(np.float64).copy()
+                    blended_seg[valid_test] = (1.0 - a) * blended_seg[valid_test] + a * fnd_test_arr[valid_test]
+                    pred_prices[test_start:] = blended_seg
+                    # Backtest consistency: pred_returns соответствуют blended prices.
+                    prev_seg = prev_prices[test_start:].astype(np.float64)
+                    safe = prev_seg > 0
+                    new_ret = np.zeros_like(prev_seg)
+                    new_ret[safe] = np.log(blended_seg[safe] / prev_seg[safe])
+                    pred_returns_new[test_start:] = new_ret
+                    pred_returns = pred_returns_new
+                    model_metrics["Ensemble"] = calc_metrics(
+                        y_act_test, pred_prices[test_start:]
+                    )
+                    foundation_test_used = True
+                    foundation_test_models = sorted(models_seen)
+                    logger.info(
+                        f"Foundation test-fold blend applied: α={a:.2f}, "
+                        f"chunks={foundation_test_chunks}×{H}d, "
+                        f"{int(valid_test.sum())}/{test_n} pts blended, "
+                        f"models={foundation_test_models}, Ensemble→{model_metrics['Ensemble']}"
+                    )
+                else:
+                    logger.info(
+                        "Foundation gated OFF: optimal α=0 on val-fold "
+                        f"(local val MAPE {foundation_local_val_mape:.2f}% — Foundation hurts on this asset)"
+                    )
         except Exception as e:
             logger.warning(
                 f"Foundation test-fold blend failed: {e} — using pure ensemble"
@@ -2126,6 +2185,18 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "foundation_test_used": foundation_test_used,
         "foundation_test_models": foundation_test_models,
         "foundation_test_chunks": foundation_test_chunks,
+        # Data-driven α: какой коэффициент бленда выбран по val-fold.
+        # 0.0 → Foundation вреден на этом активе и НЕ применён к test.
+        # >0  → Foundation помог на val, применили α к test.
+        "foundation_alpha": round(foundation_alpha_chosen, 2),
+        "foundation_local_val_mape": (
+            round(foundation_local_val_mape, 2)
+            if foundation_local_val_mape is not None else None
+        ),
+        "foundation_blended_val_mape": (
+            round(foundation_blended_val_mape, 2)
+            if foundation_blended_val_mape is not None else None
+        ),
         # ── Honest skill warning ──────────────────────────────────────
         # Bootstrap 95% CI (B1) даёт честный ответ "выше монетки или это
         # просто noise". `low_directional_skill=True` если CI пересекает
