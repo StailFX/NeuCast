@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuCast — {{ status_code }} {{ title }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/favicon-192.png">
+  <meta name="robots" content="noindex">
+
+  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
+
+  <style>
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
+      src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap;
+      src: url('/static/fonts/inter-latin-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap;
+      src: url('/static/fonts/inter-latin-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
+      src: url('/static/fonts/inter-latin-700.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter-fallback'; src: local('Arial'), local('Helvetica'), local('sans-serif');
+      size-adjust: 107%; ascent-override: 90%; descent-override: 22%; line-gap-override: 0%; }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
+      min-height: 100vh;
+      background: #0a0e17;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 560px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .logo {
+      display: inline-block;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #cbd5e1;
+      text-decoration: none;
+      margin-bottom: 40px;
+      opacity: 0.7;
+    }
+
+    .logo span.accent { color: #10b981; }
+
+    .code {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: clamp(80px, 18vw, 140px);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-size: clamp(22px, 4vw, 30px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #f1f5f9;
+      margin-bottom: 14px;
+    }
+
+    .description {
+      color: #94a3b8;
+      font-size: 15px;
+      line-height: 1.55;
+      margin-bottom: 32px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 11px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      text-decoration: none;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: transform 100ms ease, background 150ms ease, border-color 150ms ease;
+    }
+
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+
+    .btn-primary {
+      background: #10b981;
+      color: #0a0e17;
+    }
+    .btn-primary:hover { background: #34d399; }
+
+    .btn-ghost {
+      background: rgba(15, 23, 42, 0.6);
+      color: #cbd5e1;
+      border-color: rgba(148, 163, 184, 0.18);
+    }
+    .btn-ghost:hover {
+      border-color: rgba(148, 163, 184, 0.4);
+      color: #f1f5f9;
+    }
+
+    .request-id {
+      margin-top: 36px;
+      font-size: 11px;
+      color: #475569;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="logo" href="/">Neu<span class="accent">Cast</span></a>
+
+    <div class="code">{{ status_code }}</div>
+
+    <h1>{{ title }}</h1>
+
+    <p class="description">{{ description }}</p>
+
+    <div class="actions">
+      <a class="btn btn-primary" href="/">На главную</a>
+      <a class="btn btn-ghost" href="javascript:history.back()">Назад</a>
+    </div>
+
+    {% if request_path %}
+    <div class="request-id">{{ request_method }} {{ request_path }}</div>
+    {% endif %}
+  </div>
+</body>
+</html>

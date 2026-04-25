@@ -15,9 +15,11 @@ import uvicorn
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, PlainTextResponse, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, PlainTextResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 from sqlalchemy.orm import Session
@@ -89,6 +91,157 @@ except Exception:
 # Read-only thin observer over the L2 ingest tables — see app/highfreq/web.py.
 # Renders gracefully ("no data yet") even when the ingest service is down.
 app.include_router(highfreq_router)
+
+
+# ── Custom error pages ──
+# До этого FastAPI отдавал raw JSON {"detail": "Not Found"} даже на запрос
+# из браузера на несуществующую страницу. Теперь:
+#   * для /api/* и Accept: application/json → JSON (как было)
+#   * для всего остального → HTML страница с шапкой NeuCast и ссылкой на главную
+#
+# Покрываются: 404 (страница/роут не найдены), 403 (доступ закрыт),
+# 422 (валидация формы), 500 (внутренние ошибки) — единый templates/error.html.
+
+# Подсказки на русском по статус-кодам — то, что пользователь увидит на странице.
+# Без жаргона: «не найдено» лучше чем «Resource Not Found».
+_ERROR_MESSAGES: dict[int, tuple[str, str]] = {
+    400: (
+        "Некорректный запрос",
+        "Запрос не удалось разобрать. Попробуйте обновить страницу или вернуться на главную.",
+    ),
+    403: (
+        "Доступ закрыт",
+        "У вас нет прав на просмотр этой страницы. Если это ошибка — войдите заново.",
+    ),
+    404: (
+        "Страница не найдена",
+        "Такой страницы нет. Возможно, ссылка устарела или вы попали сюда по ошибке.",
+    ),
+    405: (
+        "Метод не разрешён",
+        "Этот URL не отвечает на такой тип запроса. Откройте страницу через обычную ссылку.",
+    ),
+    422: (
+        "Неверный запрос",
+        "Не удалось обработать данные формы. Проверьте поля и попробуйте ещё раз.",
+    ),
+    429: (
+        "Слишком много запросов",
+        "Подождите минуту и попробуйте снова — мы временно ограничили частоту запросов.",
+    ),
+    500: (
+        "Что-то пошло не так",
+        "На стороне сервера произошла ошибка. Мы уже разбираемся — попробуйте через минуту.",
+    ),
+    502: (
+        "Сервис временно недоступен",
+        "Сервер не отвечает. Попробуйте обновить страницу через минуту.",
+    ),
+    503: (
+        "Сервис временно недоступен",
+        "Мы перегружены или обновляемся. Попробуйте через минуту.",
+    ),
+}
+
+
+def _wants_json_response(request: Request) -> bool:
+    """Решает, что отдавать клиенту: JSON или HTML.
+
+    Правило простое и предсказуемое:
+      * если путь начинается с /api/ → JSON (это API-консьюмеры — curl, JS-фетчи)
+      * если в Accept-заголовке есть application/json и нет text/html → JSON
+      * иначе → HTML (браузер)
+    """
+    if request.url.path.startswith("/api/"):
+        return True
+    accept = (request.headers.get("accept") or "").lower()
+    if "application/json" in accept and "text/html" not in accept:
+        return True
+    return False
+
+
+def _render_error_page(
+    request: Request, status_code: int, detail: str | None = None
+) -> Response:
+    """Единая точка ответа на ошибку (HTML или JSON).
+
+    Никогда не raise'ит сама — иначе попадём в бесконечный exception loop.
+    """
+    title, default_description = _ERROR_MESSAGES.get(
+        status_code,
+        ("Ошибка", "Что-то пошло не так."),
+    )
+    description = detail or default_description
+
+    if _wants_json_response(request):
+        return JSONResponse(
+            status_code=status_code,
+            content={"detail": description, "status_code": status_code},
+        )
+
+    try:
+        return templates.TemplateResponse(
+            "error.html",
+            {
+                "request": request,
+                "status_code": status_code,
+                "title": title,
+                "description": description,
+                "request_path": request.url.path,
+                "request_method": request.method,
+            },
+            status_code=status_code,
+        )
+    except Exception:
+        # Шаблон сломан / templates dir не примонтирован — отдадим сырой HTML
+        # как последнюю линию защиты, чтобы пользователь хоть что-то увидел.
+        logger.exception("error.html render failed")
+        return HTMLResponse(
+            status_code=status_code,
+            content=(
+                f"<!doctype html><meta charset='utf-8'>"
+                f"<title>{status_code} {title}</title>"
+                f"<h1>{status_code} {title}</h1><p>{description}</p>"
+                f"<p><a href='/'>На главную</a></p>"
+            ),
+        )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # Если detail — стандартное «Not Found» / «Forbidden», подменим на наш
+    # человеческий текст из _ERROR_MESSAGES. Если разработчик кинул
+    # HTTPException(detail="свой текст") — оставим его detail как есть.
+    detail = exc.detail
+    if isinstance(detail, str) and detail in {
+        "Not Found", "Forbidden", "Method Not Allowed",
+        "Internal Server Error", "Bad Request",
+    }:
+        detail = None
+    return _render_error_page(request, exc.status_code, detail)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Для /api/* отдаём детали ошибок (как было по умолчанию у FastAPI)
+    # — это полезно при разработке клиента. Для HTML-страниц прячем за
+    # generic «проверьте поля и попробуйте ещё раз».
+    if _wants_json_response(request):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(), "status_code": 422},
+        )
+    return _render_error_page(request, 422)
+
+
+@app.exception_handler(Exception)
+async def _generic_exception_handler(request: Request, exc: Exception):
+    # Полный traceback ушёл в логи (uvicorn + journalctl), пользователь
+    # видит только friendly сообщение. См. user_errors.py за philosophy:
+    # внутренности Python — в логи, не в UI.
+    logger.exception("unhandled exception on %s %s", request.method, request.url.path)
+    return _render_error_page(request, 500)
+
 
 # Limit concurrent predictions to avoid OOM on VPS
 MAX_CONCURRENT_PREDICTIONS = 2
