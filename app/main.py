@@ -562,9 +562,12 @@ async def predict(
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
         "local_calibration_applied": result.get("local_calibration_applied", False),
         "local_sigma_ratio": result.get("local_sigma_ratio", 1.0),
-        # Honest skill warning: dir_acc < ~52% → модель не показала directional skill,
-        # UI должен подсветить это, чтобы пользователь не путал прогноз с trading-signal.
+        # Honest skill warning + bootstrap CI (B1): low_directional_skill=True
+        # если 95% CI пересекает 50% (direction не отличим от монетки даже при
+        # point estimate 55%). dir_acc_ci_low/high — bootstrap percentile bounds.
         "low_directional_skill": result.get("low_directional_skill", False),
+        "dir_acc_ci_low": result.get("dir_acc_ci_low"),
+        "dir_acc_ci_high": result.get("dir_acc_ci_high"),
     }
 
     # Save full result to prediction history
@@ -854,9 +857,12 @@ async def _render_success_result(async_result, request, db, user, role):
         "sentiment_bias_pct": result.get("sentiment_bias_pct", 0.0),
         "local_calibration_applied": result.get("local_calibration_applied", False),
         "local_sigma_ratio": result.get("local_sigma_ratio", 1.0),
-        # Honest skill warning: dir_acc < ~52% → модель не показала directional skill,
-        # UI должен подсветить это, чтобы пользователь не путал прогноз с trading-signal.
+        # Honest skill warning + bootstrap CI (B1): low_directional_skill=True
+        # если 95% CI пересекает 50% (direction не отличим от монетки даже при
+        # point estimate 55%). dir_acc_ci_low/high — bootstrap percentile bounds.
         "low_directional_skill": result.get("low_directional_skill", False),
+        "dir_acc_ci_low": result.get("dir_acc_ci_low"),
+        "dir_acc_ci_high": result.get("dir_acc_ci_high"),
     }
 
     saved_context = {

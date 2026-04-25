@@ -1477,6 +1477,40 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
             base_weights = {n: (1.0 if n == "TCN" else 0.0) for n in val_preds_ret}
             logger.info("Val fold too small — TCN-only fallback")
 
+    # ── Direction-aware stacking blend (B2) ──────────────────────────
+    # NNLS минимизирует ||X*w - y_returns||² → оптимизирует MAPE. На крипте
+    # все модели learn "tomorrow ≈ today" → MAPE одинаковый, NNLS выбирает
+    # одну "случайно" (XGBoost) с весом 1.0 — а её dir_acc такой же как у
+    # остальных. Direction-aware blend подмешивает веса, пропорциональные
+    # `excess_dir = max(0, val_dir - 50%)`. Если все модели на 50.6% →
+    # равномерное распределение (лучше чем "1 модель 1.0", т.к. averaging
+    # снижает variance). Если одна модель 60% и три 50% → ей дают веса.
+    #
+    # alpha=0.5 (default): half MAPE-optimal, half direction-optimal.
+    # alpha=0 → выключено (старое поведение). alpha=1 → чистый dir-stacking.
+    nnls_or_fallback_w = dict(base_weights)  # snapshot для лога
+    DIRECTION_STACKING_ALPHA = float(os.getenv("DIRECTION_STACKING_ALPHA", "0.5"))
+    if DIRECTION_STACKING_ALPHA > 0 and len(eligible) >= 2:
+        excess = {n: max(0.0, val_metrics[n]["dir"] - 50.0) for n in eligible}
+        total_skill = sum(excess.values())
+        if total_skill > 0:
+            dir_w = {n: excess[n] / total_skill for n in eligible}
+            # Blend NNLS-веса (отлично для MAPE) и dir-веса (отлично для dir_acc)
+            blended = {n: 0.0 for n in val_preds_ret}
+            for n in eligible:
+                base_w = base_weights.get(n, 0.0)
+                d_w = dir_w.get(n, 0.0)
+                blended[n] = (1 - DIRECTION_STACKING_ALPHA) * base_w + DIRECTION_STACKING_ALPHA * d_w
+            total = sum(blended.values())
+            if total > 0:
+                base_weights = {k: v / total for k, v in blended.items()}
+                logger.info(
+                    f"Direction-aware blend (α={DIRECTION_STACKING_ALPHA}): "
+                    f"NNLS={ {n: round(nnls_or_fallback_w[n], 2) for n in eligible} } "
+                    f"× dir_w={ {n: round(dir_w[n], 2) for n in eligible} } "
+                    f"→ final={ {n: round(base_weights[n], 2) for n in eligible} }"
+                )
+
     logger.info(f"Final ensemble weights: {base_weights} | val_metrics: {val_metrics}")
 
     # Get regime for each data point
@@ -1837,6 +1871,9 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
     actual_dir = (actual_prices[test_start:] > prev_prices[test_start:]).astype(int)
     pred_dir = (pred_prices[test_start:] > prev_prices[test_start:]).astype(int)
     dir_acc = float(np.mean(actual_dir == pred_dir) * 100)
+    # `final_hits` — массив 0/1 совпадений direction, который пойдёт в bootstrap.
+    # Может быть переопределён ниже, если direction-classifier head побеждает.
+    final_hits = (actual_dir == pred_dir).astype(int)
 
     if tcn_direction_pred is not None:
         dir_cls = tcn_direction_pred[test_start:]
@@ -1844,6 +1881,27 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         dir_acc_cls = float(np.mean(actual_dir == pred_dir_cls) * 100)
         if dir_acc_cls > dir_acc:
             dir_acc = dir_acc_cls
+            final_hits = (actual_dir == pred_dir_cls).astype(int)
+
+    # ── Bootstrap 95% CI на dir_acc (B1: честная оценка vs noise) ──
+    # Точечная оценка dir_acc на N≈200 точках имеет стандартную ошибку
+    # ~sqrt(p(1-p)/N) ≈ 3.5% при p=0.5 → 95% CI ≈ [43%, 57%]. Без CI
+    # пользователь видит "49%" и думает "плохо", хотя честный ответ
+    # "не отличимо от 55%". Bootstrap percentile на исходных hits даёт
+    # асимметричный CI (учитывает форму распределения), и считается на
+    # тех hits, что используются для финального dir_acc (с учётом
+    # direction-classifier override выше).
+    n_hits = len(final_hits)
+    dir_acc_ci_low = dir_acc
+    dir_acc_ci_high = dir_acc
+    if n_hits >= 30:
+        rng = np.random.default_rng(seed=42)  # детерминизм для стабильности UI
+        B = int(os.getenv("DIR_ACC_BOOTSTRAP", "1000"))
+        # vectorized bootstrap: одна матрица [B, N] индексов, mean по axis=1.
+        idx_matrix = rng.integers(0, n_hits, size=(B, n_hits))
+        boot = final_hits[idx_matrix].mean(axis=1)
+        dir_acc_ci_low = float(np.percentile(boot, 2.5) * 100)
+        dir_acc_ci_high = float(np.percentile(boot, 97.5) * 100)
 
     corr_cols = ["Close", "Volume", "RSI", "MACD", "MA_5", "MA_20", "MA_50", "ATR", "BB_upper", "BB_lower"]
     corr_data = df[corr_cols].corr().round(3).values.tolist()
@@ -2069,13 +2127,18 @@ def run_prediction(df: pd.DataFrame, days_ahead: int, sentiment_score: float = 0
         "foundation_test_models": foundation_test_models,
         "foundation_test_chunks": foundation_test_chunks,
         # ── Honest skill warning ──────────────────────────────────────
-        # Если dir_acc на test-фолде < LOW_DIR_THRESHOLD (~52%) — модель
-        # не показала надёжного directional skill. UI должен это явно
-        # подсветить, чтобы пользователь не воспринимал прогноз направления
-        # как trading-signal. 52%: с учётом noise на нескольких десятках
-        # точек значение <52% статистически не отличается от монетки.
+        # Bootstrap 95% CI (B1) даёт честный ответ "выше монетки или это
+        # просто noise". `low_directional_skill=True` если CI пересекает
+        # 50% (нижняя граница ≤ 50%) — direction статистически не
+        # отличается от coin-flip даже при point estimate 55%. До B1
+        # был грубый порог dir_acc < 52%; теперь принимаем решение по CI.
+        # Fallback на старый порог если CI=точечная оценка (n<30).
+        "dir_acc_ci_low": dir_acc_ci_low,
+        "dir_acc_ci_high": dir_acc_ci_high,
         "low_directional_skill": bool(
-            dir_acc < float(os.getenv("LOW_DIR_THRESHOLD", "52.0"))
+            dir_acc_ci_low <= 50.0
+            if dir_acc_ci_low != dir_acc
+            else dir_acc < float(os.getenv("LOW_DIR_THRESHOLD", "52.0"))
         ),
         "local_calibration_applied": local_calibration_applied,
         "local_sigma_ratio": local_sigma_ratio_val,
