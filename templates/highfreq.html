@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuCast — High-Frequency (Phase A, sim-only)</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/favicon-192.png">
+
+  <meta name="description" content="NeuCast High-Frequency — 1-минутный directional-форкаст BTC-USDT на L2-фичах (OFI, microprice, depth-imbalance). Sim-backtest only.">
+  <meta name="robots" content="noindex">
+
+  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
+
+  <style>
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
+      src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap;
+      src: url('/static/fonts/inter-latin-500.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap;
+      src: url('/static/fonts/inter-latin-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
+      src: url('/static/fonts/inter-latin-700.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter-fallback'; src: local('Arial'), local('Helvetica'), local('sans-serif');
+      size-adjust: 107%; ascent-override: 90%; descent-override: 22%; line-gap-override: 0%; }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', 'Inter-fallback', sans-serif;
+      min-height: 100vh;
+      background: #0a0e17;
+      background-image:
+        radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
+      color: #e2e8f0;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .logo {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #f1f5f9;
+      text-decoration: none;
+    }
+
+    .logo span.accent { color: #10b981; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      background: rgba(245, 158, 11, 0.1);
+      color: #fbbf24;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      letter-spacing: -0.02em;
+      color: #f1f5f9;
+    }
+
+    .subtitle {
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+
+    .subtitle a { color: #60a5fa; text-decoration: none; }
+    .subtitle a:hover { text-decoration: underline; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+
+    .card .label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 6px;
+    }
+
+    .card .value {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 20px;
+      font-weight: 600;
+      color: #f1f5f9;
+      letter-spacing: -0.01em;
+    }
+
+    .card .value.muted { color: #64748b; font-weight: 400; }
+    .card .value.up    { color: #10b981; }
+    .card .value.down  { color: #f87171; }
+
+    .progress-card {
+      grid-column: 1 / -1;
+      padding: 18px 20px 20px;
+    }
+
+    .progress-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 10px;
+    }
+
+    .progress-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #cbd5e1;
+    }
+
+    .progress-pct {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: #10b981;
+    }
+
+    .progress-track {
+      height: 8px;
+      background: rgba(15, 23, 42, 0.8);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.08);
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #10b981 0%, #3b82f6 100%);
+      border-radius: 999px;
+      transition: width 600ms ease-out;
+    }
+
+    .progress-meta {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #64748b;
+    }
+
+    .live-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #475569;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    .live-dot.on {
+      background: #10b981;
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+      animation: pulse 1.6s infinite;
+    }
+
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+      70%  { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+
+    .footer {
+      margin-top: 32px;
+      font-size: 12px;
+      color: #475569;
+      line-height: 1.6;
+    }
+
+    .footer code {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+
+    .disclaimer {
+      margin-top: 18px;
+      padding: 12px 16px;
+      border-left: 3px solid #fbbf24;
+      background: rgba(245, 158, 11, 0.06);
+      font-size: 13px;
+      color: #cbd5e1;
+      line-height: 1.55;
+      border-radius: 0 8px 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <a class="logo" href="/">Neu<span class="accent">Cast</span></a>
+      <span class="badge">
+        <span class="live-dot" id="live-dot"></span>
+        Phase A · Sim only
+      </span>
+    </div>
+
+    <h1>High-Frequency Forecast</h1>
+    <p class="subtitle">
+      Live <code style="font-family: 'JetBrains Mono', monospace; background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.12); padding: 1px 6px; border-radius: 4px; font-size: 12px;">{{ symbol }}</code>
+      ingest from Binance Spot WebSocket — order-flow imbalance, microprice
+      и depth-imbalance на 1-секундной решётке. Тренировка walk-forward
+      CatBoost-классификатора стартует автоматически после накопления
+      <strong>{{ minutes_required }}</strong> минут данных.
+      Подробнее в
+      <a href="https://github.com/stailfx" target="_blank" rel="noopener">архитектурном документе</a>.
+    </p>
+
+    <div class="grid" id="metrics">
+      <div class="card">
+        <div class="label">Microprice</div>
+        <div class="value muted" id="microprice">—</div>
+      </div>
+      <div class="card">
+        <div class="label">OFI (1s)</div>
+        <div class="value muted" id="ofi">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Depth imbalance</div>
+        <div class="value muted" id="depth-imb">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Spread, bps</div>
+        <div class="value muted" id="spread-bps">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Rows / second</div>
+        <div class="value muted" id="rps">—</div>
+      </div>
+      <div class="card">
+        <div class="label">Last update</div>
+        <div class="value muted" id="age">—</div>
+      </div>
+
+      <div class="card progress-card">
+        <div class="progress-row">
+          <div class="progress-label">Накоплено данных для первого фолда обучения</div>
+          <div class="progress-pct" id="progress-pct">0.0%</div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-meta" id="progress-meta">
+          0 / {{ minutes_required }} минут
+        </div>
+      </div>
+    </div>
+
+    <div class="disclaimer">
+      <strong style="color:#fbbf24;">Sim-only.</strong>
+      Никаких живых ордеров не выставляется (см. ADR-005).
+      Все P&amp;L цифры в backtest-репортах — paper trading с явной
+      maker/taker fee-моделью (-1bps / +10bps на сторону).
+    </div>
+
+    <div class="footer">
+      Health probe: <code>GET /api/highfreq/health?symbol={{ symbol }}</code><br>
+      Status JSON: <code>GET /api/highfreq/status?symbol={{ symbol }}</code>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const SYMBOL = {{ symbol|tojson }};
+      const POLL_MS = 2000;
+
+      const $ = (id) => document.getElementById(id);
+      const elDot = $('live-dot');
+      const elMicroprice = $('microprice');
+      const elOfi = $('ofi');
+      const elDepthImb = $('depth-imb');
+      const elSpread = $('spread-bps');
+      const elRps = $('rps');
+      const elAge = $('age');
+      const elProgressPct = $('progress-pct');
+      const elProgressFill = $('progress-fill');
+      const elProgressMeta = $('progress-meta');
+
+      let lastMicroprice = null;
+
+      function fmtNum(x, digits = 2) {
+        if (x === null || x === undefined || Number.isNaN(x)) return '—';
+        return Number(x).toLocaleString('ru-RU', {
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
+        });
+      }
+
+      function fmtAge(seconds) {
+        if (seconds === null || seconds === undefined) return '—';
+        if (seconds < 1.5) return 'just now';
+        if (seconds < 60) return Math.round(seconds) + 's ago';
+        if (seconds < 3600) return Math.round(seconds / 60) + 'm ago';
+        return Math.round(seconds / 3600) + 'h ago';
+      }
+
+      function setValue(el, value, formatter) {
+        const formatted = formatter(value);
+        el.textContent = formatted;
+        if (formatted === '—') {
+          el.classList.add('muted');
+          el.classList.remove('up', 'down');
+        } else {
+          el.classList.remove('muted');
+        }
+      }
+
+      function applySnapshot(snapshot) {
+        if (!snapshot) {
+          [elMicroprice, elOfi, elDepthImb, elSpread, elAge].forEach((el) => {
+            el.textContent = '—';
+            el.classList.add('muted');
+            el.classList.remove('up', 'down');
+          });
+          return;
+        }
+
+        // Microprice with up/down colour vs previous tick.
+        const mp = snapshot.microprice;
+        if (mp !== null && mp !== undefined) {
+          elMicroprice.textContent = fmtNum(mp, 2);
+          elMicroprice.classList.remove('muted');
+          if (lastMicroprice !== null) {
+            if (mp > lastMicroprice)      { elMicroprice.classList.remove('down'); elMicroprice.classList.add('up'); }
+            else if (mp < lastMicroprice) { elMicroprice.classList.remove('up');   elMicroprice.classList.add('down'); }
+          }
+          lastMicroprice = mp;
+        } else {
+          elMicroprice.textContent = '—';
+          elMicroprice.classList.add('muted');
+        }
+
+        setValue(elOfi, snapshot.ofi, (x) => fmtNum(x, 3));
+        setValue(elDepthImb, snapshot.depth_imb, (x) => fmtNum(x, 3));
+        setValue(elSpread, snapshot.spread_bps, (x) => fmtNum(x, 2));
+        setValue(elAge, snapshot.age_seconds, fmtAge);
+      }
+
+      function applyStatus(s) {
+        // Live dot reflects ingest health.
+        if (s.is_live) elDot.classList.add('on');
+        else           elDot.classList.remove('on');
+
+        applySnapshot(s.snapshot);
+
+        // Throughput.
+        setValue(elRps, s.rows_per_second_estimate, (x) => fmtNum(x, 2));
+
+        // Progress bar.
+        const pct = Math.max(0, Math.min(100, Number(s.progress_pct) || 0));
+        elProgressPct.textContent = pct.toFixed(1) + '%';
+        elProgressFill.style.width = pct + '%';
+
+        const acc = s.minutes_accumulated;
+        const req = s.minutes_required;
+        if (s.has_enough_data) {
+          elProgressMeta.textContent =
+            'Готово: ' + acc + ' минут собрано (требуется ' + req + ').';
+        } else {
+          elProgressMeta.textContent =
+            acc + ' / ' + req + ' минут — осталось ' + s.minutes_remaining + ' мин.';
+        }
+      }
+
+      async function poll() {
+        try {
+          const url = '/api/highfreq/status?symbol=' + encodeURIComponent(SYMBOL);
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          applyStatus(data);
+        } catch (err) {
+          // Silent — keep last visible state, dim the dot.
+          elDot.classList.remove('on');
+        }
+      }
+
+      poll();
+      setInterval(poll, POLL_MS);
+    })();
+  </script>
+</body>
+</html>

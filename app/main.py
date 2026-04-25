@@ -31,6 +31,7 @@ from app.sentiment import analyze_sentiment
 from app.portfolio import optimize_portfolio
 from app import telegram_bot
 from app.user_errors import friendly_error
+from app.highfreq.web import router as highfreq_router
 
 # ── Paths ──
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,6 +83,12 @@ try:
     templates.env.auto_reload = False  # prod: не перепарсивать при каждом запросе
 except Exception:
     pass
+
+# ── High-frequency UI (Phase A.6) ──
+# Routes: /highfreq, /api/highfreq/status, /api/highfreq/health.
+# Read-only thin observer over the L2 ingest tables — see app/highfreq/web.py.
+# Renders gracefully ("no data yet") even when the ingest service is down.
+app.include_router(highfreq_router)
 
 # Limit concurrent predictions to avoid OOM on VPS
 MAX_CONCURRENT_PREDICTIONS = 2

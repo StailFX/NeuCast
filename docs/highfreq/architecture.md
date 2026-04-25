@@ -236,12 +236,15 @@ app/
     ├── aggregator.py         # 1-s feature aggregation, Postgres writer
     ├── runner.py             # Standalone entry: python -m app.highfreq.runner
     ├── trainer.py            # CatBoost walk-forward CV + bootstrap CI + CLI
-    ├── predictor.py          # Live inference + FastAPI route (Phase A.6)
+    ├── predictor.py          # Live inference helper (Phase B+)
     ├── backtest.py           # Sim-backtest engine, maker / taker fee model
+    ├── web.py                # FastAPI router: /highfreq + /api/highfreq/*
     └── migrations/           # SQL DDL — versioned, applied via psql
 
 tests/
-└── test_highfreq_trainer.py  # pytest — pure-function coverage on the data layer
+├── test_highfreq_trainer.py  # pytest — data-layer pure-function coverage
+├── test_highfreq_backtest.py # pytest — fee model, ledger, summarise, sweep
+└── test_highfreq_web.py      # pytest — UI status payload, JSON sanitisation
 
 docs/
 └── highfreq/
@@ -249,7 +252,7 @@ docs/
     └── deploy/               # systemd unit + ops runbook (versioned, sanitized)
 
 templates/
-└── highfreq.html             # /highfreq UI page (Phase A.6)
+└── highfreq.html             # /highfreq UI page — live microprice + countdown
 ```
 
 ---
@@ -311,9 +314,9 @@ Both tables coexist with the existing daily-prediction tables — no conflicts.
 | **A.2 · L2 consumer** ✅ | 2 days | WebSocket alive, ticks landing in Postgres |
 | **A.3 · OFI features** ✅ | 1 day | feature columns populated correctly |
 | **A.4 · CatBoost trainer** ✅ | 2 days | walk-forward CV, bootstrap CI, JSON report |
-| A.5 · Sim-backtest | 2 days | maker / taker P&L curves, fill-rate sweep |
-| A.6 · UI page | 1 day | `/highfreq` shows live forecast + backtest |
-| A.7 · Polish + README | 1 day | portfolio-ready repo |
+| **A.5 · Sim-backtest** ✅ | 2 days | maker / taker P&L curves, fill-rate sweep |
+| **A.6 · UI scaffold** ✅ | 1 day | `/highfreq` page, live microprice, countdown |
+| A.7 · Polish + README | 1 day | portfolio-ready repo, screenshots, demo loop |
 
 **Total: ~11 working days of implementation. Calendar: ~3 weeks at 5–10 h/week of user-side validation.**
 
