@@ -29,16 +29,31 @@
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    body {
-      font-family: 'Inter', 'Inter-fallback', sans-serif;
-      min-height: 100vh;
-      background: #0a0e17;
-      background-image:
-        radial-gradient(ellipse at 20% 50%, rgba(16, 185, 129, 0.06) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
-      color: #e2e8f0;
+    /* Дизайн-токены — синхронизированы с landing.html, чтобы /highfreq
+       не выглядел чужой страницей. Один палитра, один навбар, одни карточки. */
+    :root {
+      --green: #10b981;
+      --green-dark: #059669;
+      --blue: #3b82f6;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --bg: #060a13;
+      --bg-card: rgba(12, 20, 35, 0.85);
+      --border: rgba(51, 65, 85, 0.35);
+      --text: #e2e8f0;
+      --text-muted: #b0bdd0;
+      --text-dim: #b8c4d6;
     }
 
+    body {
+      font-family: 'Inter', 'Inter-fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Сетка-фон, как на лендинге. Тонкая, не отвлекает. */
     body::before {
       content: '';
       position: fixed;
@@ -46,84 +61,175 @@
       background-image:
         linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
         linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
-      background-size: 60px 60px;
+      background-size: 80px 80px;
       z-index: 0;
       pointer-events: none;
     }
 
-    .container {
-      position: relative;
-      z-index: 1;
-      max-width: 920px;
-      margin: 0 auto;
-      padding: 32px 24px 64px;
+    /* Floating orbs — те же, что на лендинге, для визуальной связности.
+       Убраны на очень узких экранах: blur(40px) дорого красится. */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(40px);
+      pointer-events: none;
+      z-index: 0;
+      contain: layout style paint;
+    }
+    .orb-1 {
+      width: 420px; height: 420px;
+      background: rgba(16, 185, 129, 0.07);
+      top: -120px; left: -80px;
+    }
+    .orb-2 {
+      width: 360px; height: 360px;
+      background: rgba(59, 130, 246, 0.06);
+      top: 40%; right: -100px;
+    }
+    @media (max-width: 640px) {
+      .orb { display: none; }
     }
 
-    .header {
+    /* ─── Navbar (1:1 с лендингом) ─── */
+    .nav {
+      position: sticky;
+      top: 0;
+      width: 100%;
+      z-index: 100;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 3rem;
+      background: rgba(6, 10, 19, 0.85);
+      border-bottom: 1px solid var(--border);
+    }
+    @supports (backdrop-filter: blur(1px)) {
+      @media (min-width: 769px) {
+        .nav { backdrop-filter: blur(24px); background: rgba(6, 10, 19, 0.6); }
+      }
+    }
+
+    .nav-brand {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      margin-bottom: 28px;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-
-    .logo {
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: #f1f5f9;
+      gap: 0.75rem;
       text-decoration: none;
     }
 
-    .logo span.accent { color: #10b981; }
+    .nav-logo {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--green), var(--blue));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+      transition: transform 0.3s;
+    }
+    .nav-brand:hover .nav-logo { transform: rotate(-5deg) scale(1.05); }
+    .nav-logo svg { width: 18px; height: 18px; fill: white; }
+    .nav-name { font-size: 1.2rem; font-weight: 700; color: #f1f5f9; letter-spacing: -0.01em; }
 
-    .badge {
+    .nav-links { display: flex; gap: 0.75rem; align-items: center; }
+    .nav-btn {
+      padding: 0.5rem 1.1rem;
+      border-radius: 10px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .nav-btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+    .nav-btn-ghost:hover {
+      color: #f1f5f9;
+      border-color: rgba(59, 130, 246, 0.4);
+      background: rgba(59, 130, 246, 0.05);
+    }
+
+    @media (max-width: 768px) {
+      .nav { padding: 0.85rem 1.25rem; }
+      .nav-name { font-size: 1rem; }
+    }
+
+    /* ─── Page content ─── */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 36px 32px 64px;
+    }
+
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: #f1f5f9;
+    }
+
+    .phase-badge {
       display: inline-flex;
       align-items: center;
       gap: 8px;
       padding: 6px 12px;
       border-radius: 999px;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
-      border: 1px solid rgba(245, 158, 11, 0.4);
-      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      background: rgba(245, 158, 11, 0.08);
       color: #fbbf24;
     }
 
-    h1 {
-      font-size: 28px;
-      font-weight: 700;
-      margin-bottom: 6px;
-      letter-spacing: -0.02em;
+    .subtitle {
+      color: var(--text-dim);
+      font-size: 14px;
+      margin-bottom: 32px;
+      line-height: 1.6;
+      max-width: 760px;
+    }
+
+    .subtitle code.symbol {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 12px;
       color: #f1f5f9;
     }
 
-    .subtitle {
-      color: #94a3b8;
-      font-size: 14px;
-      margin-bottom: 28px;
-      line-height: 1.5;
-    }
-
-    .subtitle a { color: #60a5fa; text-decoration: none; }
-    .subtitle a:hover { text-decoration: underline; }
-
+    /* ─── Metrics grid ─── */
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
+      gap: 14px;
       margin-bottom: 24px;
     }
 
     .card {
-      background: rgba(15, 23, 42, 0.6);
+      background: var(--bg-card);
       backdrop-filter: blur(8px);
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      border-radius: 12px;
-      padding: 16px 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .card:hover {
+      border-color: rgba(59, 130, 246, 0.25);
     }
 
     .card .label {
@@ -131,45 +237,58 @@
       font-weight: 600;
       letter-spacing: 0.06em;
       text-transform: uppercase;
-      color: #64748b;
-      margin-bottom: 6px;
+      color: var(--text-muted);
+      opacity: 0.6;
+      margin-bottom: 8px;
     }
 
     .card .value {
       font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 600;
       color: #f1f5f9;
       letter-spacing: -0.01em;
     }
-
     .card .value.muted { color: #64748b; font-weight: 400; }
-    .card .value.up    { color: #10b981; }
-    .card .value.down  { color: #f87171; }
 
+    /* Краткая вспышка на тик. Без «застревания» в красном:
+       микропрайс это табло наблюдения, не P&L. */
+    .card .value.flash-up   { animation: flashUp   320ms ease-out; }
+    .card .value.flash-down { animation: flashDown 320ms ease-out; }
+    @keyframes flashUp {
+      0%   { color: var(--green); }
+      100% { color: #f1f5f9; }
+    }
+    @keyframes flashDown {
+      0%   { color: var(--red); }
+      100% { color: #f1f5f9; }
+    }
+
+    /* ─── Progress card (full-width) ─── */
     .progress-card {
       grid-column: 1 / -1;
-      padding: 18px 20px 20px;
+      padding: 20px 22px 22px;
     }
 
     .progress-row {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
+      gap: 12px;
     }
 
     .progress-label {
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
-      color: #cbd5e1;
+      color: var(--text-dim);
     }
 
     .progress-pct {
       font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 600;
-      color: #10b981;
+      color: var(--green);
     }
 
     .progress-track {
@@ -177,92 +296,91 @@
       background: rgba(15, 23, 42, 0.8);
       border-radius: 999px;
       overflow: hidden;
-      border: 1px solid rgba(148, 163, 184, 0.08);
+      border: 1px solid var(--border);
     }
 
     .progress-fill {
       height: 100%;
       width: 0%;
-      background: linear-gradient(90deg, #10b981 0%, #3b82f6 100%);
+      background: linear-gradient(90deg, var(--green) 0%, var(--blue) 100%);
       border-radius: 999px;
       transition: width 600ms ease-out;
     }
 
     .progress-meta {
-      margin-top: 8px;
+      margin-top: 10px;
       font-size: 12px;
-      color: #64748b;
+      color: var(--text-muted);
+      opacity: 0.7;
     }
 
+    /* Live dot — как у hero-badge .dot на лендинге. */
     .live-dot {
       display: inline-block;
       width: 8px;
       height: 8px;
       border-radius: 50%;
       background: #475569;
-      margin-right: 6px;
-      vertical-align: middle;
     }
-
     .live-dot.on {
-      background: #10b981;
+      background: var(--green);
       box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
       animation: pulse 1.6s infinite;
     }
-
     @keyframes pulse {
       0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
       70%  { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
       100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
     }
 
-    .footer {
-      margin-top: 32px;
-      font-size: 12px;
-      color: #475569;
-      line-height: 1.6;
-    }
-
-    .footer code {
-      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
-      background: rgba(15, 23, 42, 0.6);
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      padding: 1px 6px;
-      border-radius: 4px;
-      font-size: 11px;
-    }
-
+    /* ─── Sim-only disclaimer ─── */
     .disclaimer {
-      margin-top: 18px;
-      padding: 12px 16px;
-      border-left: 3px solid #fbbf24;
+      margin-top: 22px;
+      padding: 14px 18px;
+      border-left: 3px solid var(--amber);
       background: rgba(245, 158, 11, 0.06);
       font-size: 13px;
-      color: #cbd5e1;
+      color: var(--text-dim);
       line-height: 1.55;
-      border-radius: 0 8px 8px 0;
+      border-radius: 0 10px 10px 0;
+    }
+    .disclaimer strong { color: #fbbf24; font-weight: 600; }
+
+    @media (max-width: 768px) {
+      .container { padding: 24px 16px 48px; }
+      h1 { font-size: 24px; }
     }
   </style>
 </head>
 <body>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+
+  <nav class="nav" aria-label="Main navigation">
+    <a href="/" class="nav-brand">
+      <div class="nav-logo">
+        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      </div>
+      <span class="nav-name">NeuCast</span>
+    </a>
+    <div class="nav-links">
+      <a href="/" class="nav-btn nav-btn-ghost">← Главная</a>
+    </div>
+  </nav>
+
   <div class="container">
-    <div class="header">
-      <a class="logo" href="/">Neu<span class="accent">Cast</span></a>
-      <span class="badge">
+    <div class="header-row">
+      <h1>High-Frequency Forecast</h1>
+      <span class="phase-badge">
         <span class="live-dot" id="live-dot"></span>
         Phase A · Sim only
       </span>
     </div>
-
-    <h1>High-Frequency Forecast</h1>
     <p class="subtitle">
-      Live <code style="font-family: 'JetBrains Mono', monospace; background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.12); padding: 1px 6px; border-radius: 4px; font-size: 12px;">{{ symbol }}</code>
-      ingest from Binance Spot WebSocket — order-flow imbalance, microprice
-      и depth-imbalance на 1-секундной решётке. Тренировка walk-forward
-      CatBoost-классификатора стартует автоматически после накопления
-      <strong>{{ minutes_required }}</strong> минут данных.
-      Подробнее в
-      <a href="https://github.com/stailfx" target="_blank" rel="noopener">архитектурном документе</a>.
+      Поток L2-стакана и трейдов <code class="symbol">{{ symbol }}</code>
+      с Binance Spot WebSocket — OFI, microprice, depth-imbalance на 1-секундной решётке.
+      Walk-forward CatBoost стартует после накопления
+      <strong style="color:#f1f5f9;">{{ minutes_required }}</strong> минут.
     </p>
 
     <div class="grid" id="metrics">
@@ -306,15 +424,10 @@
     </div>
 
     <div class="disclaimer">
-      <strong style="color:#fbbf24;">Sim-only.</strong>
+      <strong>Sim-only.</strong>
       Никаких живых ордеров не выставляется (см. ADR-005).
       Все P&amp;L цифры в backtest-репортах — paper trading с явной
       maker/taker fee-моделью (-1bps / +10bps на сторону).
-    </div>
-
-    <div class="footer">
-      Health probe: <code>GET /api/highfreq/health?symbol={{ symbol }}</code><br>
-      Status JSON: <code>GET /api/highfreq/status?symbol={{ symbol }}</code>
     </div>
   </div>
 
@@ -347,10 +460,10 @@
 
       function fmtAge(seconds) {
         if (seconds === null || seconds === undefined) return '—';
-        if (seconds < 1.5) return 'just now';
-        if (seconds < 60) return Math.round(seconds) + 's ago';
-        if (seconds < 3600) return Math.round(seconds / 60) + 'm ago';
-        return Math.round(seconds / 3600) + 'h ago';
+        if (seconds < 1.5)  return 'только что';
+        if (seconds < 60)   return Math.round(seconds) + ' сек';
+        if (seconds < 3600) return Math.round(seconds / 60) + ' мин';
+        return Math.round(seconds / 3600) + ' ч';
       }
 
       function setValue(el, value, formatter) {
@@ -358,10 +471,19 @@
         el.textContent = formatted;
         if (formatted === '—') {
           el.classList.add('muted');
-          el.classList.remove('up', 'down');
         } else {
           el.classList.remove('muted');
         }
+      }
+
+      function flashTick(el, direction) {
+        // Снять предыдущую анимацию и перезапустить — иначе CSS animation
+        // не сработает на повторный класс.
+        el.classList.remove('flash-up', 'flash-down');
+        // Force reflow.
+        // eslint-disable-next-line no-unused-expressions
+        el.offsetWidth;
+        el.classList.add(direction > 0 ? 'flash-up' : 'flash-down');
       }
 
       function applySnapshot(snapshot) {
@@ -369,19 +491,18 @@
           [elMicroprice, elOfi, elDepthImb, elSpread, elAge].forEach((el) => {
             el.textContent = '—';
             el.classList.add('muted');
-            el.classList.remove('up', 'down');
+            el.classList.remove('flash-up', 'flash-down');
           });
           return;
         }
 
-        // Microprice with up/down colour vs previous tick.
+        // Microprice — нейтральный цвет с короткой вспышкой на тик.
         const mp = snapshot.microprice;
         if (mp !== null && mp !== undefined) {
           elMicroprice.textContent = fmtNum(mp, 2);
           elMicroprice.classList.remove('muted');
-          if (lastMicroprice !== null) {
-            if (mp > lastMicroprice)      { elMicroprice.classList.remove('down'); elMicroprice.classList.add('up'); }
-            else if (mp < lastMicroprice) { elMicroprice.classList.remove('up');   elMicroprice.classList.add('down'); }
+          if (lastMicroprice !== null && mp !== lastMicroprice) {
+            flashTick(elMicroprice, mp - lastMicroprice);
           }
           lastMicroprice = mp;
         } else {
@@ -396,16 +517,12 @@
       }
 
       function applyStatus(s) {
-        // Live dot reflects ingest health.
         if (s.is_live) elDot.classList.add('on');
         else           elDot.classList.remove('on');
 
         applySnapshot(s.snapshot);
-
-        // Throughput.
         setValue(elRps, s.rows_per_second_estimate, (x) => fmtNum(x, 2));
 
-        // Progress bar.
         const pct = Math.max(0, Math.min(100, Number(s.progress_pct) || 0));
         elProgressPct.textContent = pct.toFixed(1) + '%';
         elProgressFill.style.width = pct + '%';
@@ -429,7 +546,6 @@
           const data = await resp.json();
           applyStatus(data);
         } catch (err) {
-          // Silent — keep last visible state, dim the dot.
           elDot.classList.remove('on');
         }
       }

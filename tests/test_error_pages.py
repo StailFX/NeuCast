@@ -183,12 +183,16 @@ def test_404_json_when_accept_is_json(client: TestClient):
     assert r.json()["status_code"] == 404
 
 
-def test_404_template_shows_request_path(client: TestClient):
+def test_404_template_does_not_leak_request_path(client: TestClient):
+    # Раньше шаблон показывал «GET /requested/path» внизу — это dev-внутрянка
+    # на пользовательской странице. Теперь не показывает: путь не должен
+    # утекать в HTML (а в JSON через /api/* — уходит в логи запроса, не в UI).
     r = client.get("/some/deep/path", headers={"Accept": "text/html"})
     assert r.status_code == 404
-    # request_id блок выводит метод и путь — полезно для ребуг-репорта.
-    assert "/some/deep/path" in r.text
-    assert "GET" in r.text
+    assert "/some/deep/path" not in r.text
+    # «GET» как слово может встретиться в комментариях/JS лендинга, но
+    # точная строка «GET /some/deep/path» не должна.
+    assert "GET /some/deep/path" not in r.text
 
 
 # ───────────────────── 403 — Forbidden ──────────────────────────
