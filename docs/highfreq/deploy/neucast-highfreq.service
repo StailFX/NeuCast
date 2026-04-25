@@ -1,0 +1,36 @@
+[Unit]
+Description=NeuCast High-Frequency L2 Ingest (Phase A)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+Environment=PATH=/opt/neucast/venv/bin:/usr/bin
+# Replace ${POSTGRES_PASSWORD} with the real value or use an EnvironmentFile=
+Environment=DATABASE_URL=postgresql://neucast:${POSTGRES_PASSWORD}@127.0.0.1:5433/neucast
+Environment=HIGHFREQ_SYMBOLS=BTCUSDT
+Environment=HIGHFREQ_DEPTH_LEVELS=20
+Environment=HIGHFREQ_UPDATE_SPEED_MS=100
+Environment=HIGHFREQ_FLUSH_BATCH=5
+Environment=LOG_LEVEL=INFO
+# Suppress TensorFlow noise that comes from app/__init__.py side-imports.
+Environment=TF_CPP_MIN_LOG_LEVEL=3
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.runner
+Restart=always
+RestartSec=5
+# Coexist with neucast.service / neucast-celery.service on shared 8 GB VPS.
+# See ADR-006 — soft cap, kernel will OOM-kill before host swaps to death.
+MemoryMax=1500M
+MemoryHigh=1200M
+# Keep the consumer responsive even under load — websocket is latency-sensitive.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+
+[Install]
+WantedBy=multi-user.target
