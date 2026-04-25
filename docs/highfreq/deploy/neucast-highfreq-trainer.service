@@ -1,0 +1,59 @@
+[Unit]
+Description=NeuCast High-Frequency CatBoost Trainer (Phase A — nightly)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+# Trainer reads from highfreq_ofi_1s, so postgres must be up. We don't
+# Require= the ingest service — trainer can run on stale data if ingest
+# is briefly down (it'll just log "no fresh bars" and exit non-fatally).
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+# oneshot: timer fires this once, no restart loop. Failures of the
+# *trainer itself* (DB unreachable, etc) become a failed unit that the
+# next timer firing retries; the timer is the source of truth for cadence.
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+Environment=PATH=/opt/neucast/venv/bin:/usr/bin
+# Replace ${POSTGRES_PASSWORD} with the real value or use an EnvironmentFile=
+Environment=DATABASE_URL=postgresql://neucast:${POSTGRES_PASSWORD}@127.0.0.1:5433/neucast
+Environment=LOG_LEVEL=INFO
+Environment=TF_CPP_MIN_LOG_LEVEL=3
+Environment=PYTHONDONTWRITEBYTECODE=1
+# CatBoost respects this; coexist nicely with the always-on ingest +
+# main webapp on the shared 8 GB VPS.  ADR-006.
+Environment=OMP_NUM_THREADS=2
+
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.trainer \
+    --symbol BTCUSDT \
+    --since-hours 72 \
+    --out /opt/neucast/weights/highfreq/btcusdt_1m.cbm \
+    --report /opt/neucast/weights/highfreq/btcusdt_1m_metrics.json
+
+# Trainer's exit-code contract:
+#   0 = at least one walk-forward fold completed (model written or skipped)
+#   1 = "no folds yet" — not enough post-neutral-band bars for one fold;
+#       expected during the first ~1-2 days of accumulation, NOT a bug.
+#   2 = real error (DB down, schema drift, OOM, code bug)
+# Treating 1 as success keeps `systemctl list-timers` clean during ramp-up.
+SuccessExitStatus=0 1
+
+# Training is more memory-hungry than ingest (CatBoost holds the whole
+# feature matrix + tree boosters in RAM). Cap, but allow some headroom —
+# a fold-eval matrix on 14 days of 1-min data is ~20 k rows × 30 cols
+# ~= a few MB, but CatBoost itself + bootstrap is ~hundreds of MB.
+MemoryMax=2500M
+MemoryHigh=2000M
+
+# Lower CPU/IO priority than ingest: training is batch, ingest is realtime.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+# 30-minute hard timeout — even on a year of data the walk-forward
+# should finish in ~5 min; anything longer means a runaway loop.
+TimeoutStartSec=1800
+
+[Install]
+# Activated by the .timer unit, not socket / multi-user. No WantedBy.

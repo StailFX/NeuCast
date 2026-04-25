@@ -1,0 +1,21 @@
+[Unit]
+Description=NeuCast High-Frequency Trainer — daily 04:00 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 04:00 UTC = 07:00 MSK = pre-EU-open + post-US-close lull. Picked
+# because (a) lowest concurrent load on the VPS, (b) trains on a clean
+# 24h+ window of past data, (c) any failure is observable by morning.
+OnCalendar=*-*-* 04:00:00 UTC
+
+# Don't drift: if the VPS was off when the timer was supposed to fire,
+# run as soon as systemd is up (e.g. after reboot or maintenance).
+Persistent=true
+
+# 5-min jitter so we don't slam Postgres at exactly :00 if ever clustered.
+RandomizedDelaySec=300
+
+# Implicit: Unit=neucast-highfreq-trainer.service (same basename).
+
+[Install]
+WantedBy=timers.target

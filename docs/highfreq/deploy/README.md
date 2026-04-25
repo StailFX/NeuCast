@@ -21,9 +21,11 @@ The production VPS predates Phase A and uses a hybrid layout:
 └── docs/highfreq/             # architecture + deploy docs
 
 /etc/systemd/system/
-├── neucast.service            # uvicorn (FastAPI) — pre-existing
-├── neucast-celery.service     # celery worker — pre-existing
-└── neucast-highfreq.service   # NEW: Phase A L2 consumer
+├── neucast.service                     # uvicorn (FastAPI) — pre-existing
+├── neucast-celery.service              # celery worker — pre-existing
+├── neucast-highfreq.service            # Phase A — L2 consumer (always-on)
+├── neucast-highfreq-trainer.service    # Phase A — nightly trainer (oneshot)
+└── neucast-highfreq-trainer.timer      # Phase A — fires .service at 04:00 UTC
 
 # Bare docker-run containers (managed outside compose):
 neucast-postgres   postgres:15-alpine   127.0.0.1:5433 → 5432
@@ -49,9 +51,46 @@ scp docs/highfreq/deploy/neucast-highfreq.service vps:/tmp/
 ssh vps 'sudo install -m 0644 -o root -g root \
     /tmp/neucast-highfreq.service /etc/systemd/system/neucast-highfreq.service'
 
-# 5. Enable + start
+# 5. Enable + start the ingest unit
 ssh vps 'sudo systemctl daemon-reload \
     && sudo systemctl enable --now neucast-highfreq.service'
+
+# 6. Install the trainer unit + timer (substitute ${POSTGRES_PASSWORD})
+scp docs/highfreq/deploy/neucast-highfreq-trainer.service vps:/tmp/
+scp docs/highfreq/deploy/neucast-highfreq-trainer.timer   vps:/tmp/
+ssh vps 'sudo install -m 0644 -o root -g root \
+    /tmp/neucast-highfreq-trainer.service /etc/systemd/system/ \
+    && sudo install -m 0644 -o root -g root \
+    /tmp/neucast-highfreq-trainer.timer /etc/systemd/system/ \
+    && sudo systemctl daemon-reload \
+    && sudo systemctl enable --now neucast-highfreq-trainer.timer'
+
+# Verify the timer is scheduled
+ssh vps 'systemctl list-timers neucast-highfreq-trainer.timer --no-pager'
+```
+
+## Trainer cadence + exit codes
+
+The `.service` is a `Type=oneshot` and the `.timer` fires it at 04:00 UTC
+daily (with up to 5 min random jitter). The trainer's exit-code contract:
+
+| Code | Meaning | systemd treats as |
+|---|---|---|
+| `0` | At least one walk-forward fold completed | success |
+| `1` | "No folds yet" — not enough post-neutral-band bars (ramp-up) | success (via `SuccessExitStatus=0 1`) |
+| `2` | Real error: DB unreachable, OOM, code bug | failed |
+
+To run the trainer manually outside the timer:
+
+```bash
+ssh vps 'sudo systemctl start neucast-highfreq-trainer.service \
+    && sudo journalctl -u neucast-highfreq-trainer.service -f'
+```
+
+To inspect the latest report:
+
+```bash
+ssh vps 'cat /opt/neucast/weights/highfreq/btcusdt_1m_metrics.json | jq .'
 ```
 
 ## Health check
