@@ -273,6 +273,34 @@ def run_prediction_task(self, ticker: str, start_date: str, end_date: str,
         )
         return {"error": friendly_error(e)}
 
+    # ── A1: Hourly directional-skill probe (crypto-only diagnostic) ──
+    # Honestly answers "is there ANY directional signal at all" via 17K
+    # hourly bars (vs 200 daily test points → CI ±1.5% vs ±7%). Не трогает
+    # основной прогноз: hourly-probe = отдельная LightGBM-classifier
+    # на short-horizon, результат — в дополнительные поля результата.
+    # Off by default (HOURLY_DIAGNOSTIC), потому что добавляет ~10-30s
+    # на yfinance hourly fetch + LightGBM train. Crypto-only: для акций
+    # hourly-данные имеют gaps (только торговые часы) → отдельная задача.
+    if os.getenv("HOURLY_DIAGNOSTIC", "0") == "1":
+        try:
+            from app.hourly_skill import compute_hourly_skill, is_crypto_ticker
+            if is_crypto_ticker(ticker):
+                self.update_state(
+                    state="PREDICTING",
+                    meta={"status": "Hourly skill probe..."},
+                )
+                hourly = compute_hourly_skill(ticker)
+                if hourly is not None:
+                    result["hourly_skill"] = hourly
+                    logger.info(
+                        "hourly_skill attached to %s: %s%% [%s%%–%s%%]",
+                        ticker, hourly.get("skill"),
+                        hourly.get("ci_low"), hourly.get("ci_high"),
+                    )
+        except Exception:
+            # Любая ошибка hourly-probe не должна валить основной прогноз.
+            logger.exception("hourly_skill probe failed for %s — continuing", ticker)
+
     # Send Telegram notification
     if user_id:
         _send_telegram_notification(user_id, ticker, result, task_id=self.request.id)

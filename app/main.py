@@ -568,6 +568,10 @@ async def predict(
         "low_directional_skill": result.get("low_directional_skill", False),
         "dir_acc_ci_low": result.get("dir_acc_ci_low"),
         "dir_acc_ci_high": result.get("dir_acc_ci_high"),
+        # A1: Hourly skill probe (crypto-only, opt-in HOURLY_DIAGNOSTIC=1).
+        # Узкий CI на ≈4800 hourly точках → отделить coin-flip от настоящего
+        # signal'а. None если probe не запускался (env off / не крипто).
+        "hourly_skill": result.get("hourly_skill"),
     }
 
     # Save full result to prediction history
@@ -863,6 +867,8 @@ async def _render_success_result(async_result, request, db, user, role):
         "low_directional_skill": result.get("low_directional_skill", False),
         "dir_acc_ci_low": result.get("dir_acc_ci_low"),
         "dir_acc_ci_high": result.get("dir_acc_ci_high"),
+        # A1: Hourly skill probe (crypto-only, opt-in HOURLY_DIAGNOSTIC=1).
+        "hourly_skill": result.get("hourly_skill"),
     }
 
     saved_context = {

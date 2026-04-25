@@ -538,6 +538,14 @@
         <div class="metric-sub" {% if data and data.dir_acc_ci_low is not none and data.dir_acc_ci_high is not none %}title="Bootstrap 95% доверительный интервал на dir_acc по N точек test-фолда. Если интервал пересекает 50% — прогноз направления не отличим от монетки. Если нижняя граница > 50% — реально лучше монетки."{% endif %}>{% if data and data.dir_acc_ci_low is not none and data.dir_acc_ci_high is not none %}95% CI: [{{ '%.1f'|format(data.dir_acc_ci_low) }}% – {{ '%.1f'|format(data.dir_acc_ci_high) }}%]{% elif data and data.low_directional_skill %}≈ монетка — не trading signal{% else %}Точность направления{% endif %}</div>
       </div>
       {% endif %}
+      {% if data and data.hourly_skill %}
+      {% set hs = data.hourly_skill %}
+      <div class="metric-card" title="Honest hourly directional-skill probe: отдельная LightGBM-модель на {{ hs.n_train + hs.n_test }} барах ({{ hs.n_test }} test-точек). Узкий CI даёт честный ответ — есть ли вообще directional-signal в этом тикере. Не участвует в основном прогнозе цены, только diagnostic. Источник: {{ hs.source|upper if hs.source else '—' }}.">
+        <div class="metric-label">Hourly Skill{% if hs.source %} <span title="Источник данных. Binance — direct exchange data, до 5 лет истории. yfinance — fallback (Yahoo aggregator), до 720 дней." style="font-size:0.55em;font-weight:600;color:#94a3b8;background:rgba(100,116,139,0.1);padding:0.15em 0.4em;border-radius:4px;border:1px solid rgba(100,116,139,0.2);vertical-align:middle;text-transform:uppercase;letter-spacing:0.03em;">{{ hs.source }}</span>{% endif %}{% if hs.low_skill %} <span title="Hourly bootstrap CI пересекает 50% — на коротком горизонте signal не отличим от монетки. Это сильный сигнал что рынок эффективен и для этого актива даже на hourly уровне нельзя ожидать stable directional-skill." style="font-size:0.55em;font-weight:700;letter-spacing:0.04em;color:#ef4444;background:rgba(239,68,68,0.12);padding:0.15em 0.45em;border-radius:5px;border:1px solid rgba(239,68,68,0.3);text-transform:uppercase;vertical-align:middle;cursor:help;">⚠️ coin-flip</span>{% endif %}</div>
+        <div class="metric-value {% if hs.skill >= 55 %}green{% elif hs.skill >= 52 %}amber{% else %}red{% endif %}">{{ '%.1f'|format(hs.skill) }}%</div>
+        <div class="metric-sub" title="Bootstrap 95% CI на {{ hs.n_test }} hourly test-точках. Узкий CI = более надёжный ответ.">95% CI: [{{ '%.1f'|format(hs.ci_low) }}% – {{ '%.1f'|format(hs.ci_high) }}%]{% if hs.last_signal_label %} · сейчас: <strong style="color:{% if hs.last_signal_label == 'up' %}#22c55e{% elif hs.last_signal_label == 'down' %}#ef4444{% else %}#94a3b8{% endif %};">{{ hs.last_signal_label }}</strong>{% endif %}</div>
+      </div>
+      {% endif %}
       <div class="metric-card">
         <div class="metric-label">Train / Test</div>
         <div class="metric-value" id="mDays">&mdash;</div>
