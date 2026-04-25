@@ -65,6 +65,30 @@ services:
       redis:
         condition: service_healthy
 
+  # ── High-frequency L2 ingest pipeline (Phase A) ──
+  # See docs/highfreq/architecture.md (ADR-001 / ADR-006).
+  # Subscribes to Binance Spot @depth20@100ms + @trade for HIGHFREQ_SYMBOLS,
+  # aggregates 1-second OFI/microprice/depth_imb/trade_imb into highfreq_ofi_1s.
+  # Resource cap: 1.5 GB RAM — coexists with app/celery on shared 8 GB VPS.
+  highfreq-l2:
+    build: .
+    restart: always
+    command: python -m app.highfreq.runner
+    environment:
+      DATABASE_URL: postgresql://neucast:${POSTGRES_PASSWORD:-changeme}@postgres:5432/neucast
+      HIGHFREQ_SYMBOLS: ${HIGHFREQ_SYMBOLS:-BTCUSDT}
+      HIGHFREQ_DEPTH_LEVELS: ${HIGHFREQ_DEPTH_LEVELS:-20}
+      HIGHFREQ_UPDATE_SPEED_MS: ${HIGHFREQ_UPDATE_SPEED_MS:-100}
+      HIGHFREQ_FLUSH_BATCH: ${HIGHFREQ_FLUSH_BATCH:-5}
+      LOG_LEVEL: ${HIGHFREQ_LOG_LEVEL:-INFO}
+      # Avoid pulling heavy ML libs into this lightweight consumer.
+      PYTHONDONTWRITEBYTECODE: "1"
+    mem_limit: 1.5g
+    mem_reservation: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ── Nginx (для нового сервера без системного nginx) ──
   # На текущем VPS используется системный nginx, поэтому профиль standalone.
   # Запуск с nginx: docker compose --profile standalone up -d
