@@ -250,6 +250,36 @@ A backtest reporting only one of these is misleading. A backtest reporting only 
 
 ---
 
+### ADR-010 · WireGuard tunnel for Finland↔Tokyo HTTP traffic
+
+**Context.** ADR-009 introduced a Tokyo→Finland reverse-proxy hop carrying read-only `/highfreq*` API responses. The original implementation restricted Tokyo's public TCP port 8000 to Finland's IP via UFW, but the traffic itself went over the public internet in cleartext. The data is non-sensitive (public market quotes, no auth tokens), so the residual risk is *observability* — anyone on the path between Hostkey Helsinki and 4VPS.su Tokyo can read what BTCUSDT did 30 seconds ago. That's a low-impact leak for our specific workload, but "we encrypt VPS-to-VPS traffic by default" is the correct security posture and the cost of doing it is half a day's setup.
+
+**Decision.** Establish a point-to-point WireGuard tunnel between Tokyo (`10.99.0.1/24`, `ListenPort = 51820`) and Finland (`10.99.0.2/24`, dial-out). Move all HTTP traffic onto the tunnel:
+
+- Tokyo's `neucast-highfreq-web.service` binds `uvicorn` to `10.99.0.1:8000` instead of `0.0.0.0:8000`. The OS itself refuses traffic on any other interface — UFW becomes belt-and-suspenders, not the only line of defence.
+- Finland's nginx upstream `neucast_tokyo` points at `10.99.0.1:8000` instead of the public IP.
+- Tokyo UFW: replace the `allow 8000/tcp from 151.245.139.21` rule with `allow 8000/tcp from 10.99.0.2`. Port 8000 is no longer reachable from the public internet at all.
+- New UFW rule: `allow 51820/udp from 151.245.139.21` (Finland's public IP) — the only WireGuard handshake the Tokyo box will accept.
+
+**Why this works.**
+- **Defence in depth.** Three independent barriers between an attacker and our app:
+  1. Public interface no longer listens on 8000.
+  2. Even if it did, UFW would deny the source IP.
+  3. Even if UFW failed, the WireGuard handshake (Curve25519 + ChaCha20-Poly1305) requires the peer's private key — which never leaves the host.
+- **Modern crypto, kernel-fast.** WireGuard ships in the Linux kernel (5.6+), zero userland data path. Measured RTT 240 ms over the tunnel — same as the underlying network, so we pay only the public-internet latency, not a userspace VPN penalty.
+- **One UDP port, one config file per side.** No certificates to rotate, no PKI to manage. Key rotation is `wg genkey | wg pubkey` plus a config edit on both ends.
+- **Right architectural shape.** When we eventually add a third host (e.g. a separate trainer box with a fast GPU), it slots into the same `10.99.0.0/24` network as a new peer — symmetric, no special cases.
+
+**Trade-off accepted.** Adds two services to babysit (`wg-quick@wg0` on each host) and a hard dependency edge (`neucast-highfreq-web.service` requires `wg-quick@wg0.service` — if the tunnel goes down, the slim FastAPI deliberately fails to bind, surfacing the issue rather than masking it). PersistentKeepalive every 25 s costs ~70 bytes/sec — negligible. Operational complexity is real but bounded by a single runbook ([`deploy/wireguard_setup.md`](deploy/wireguard_setup.md)).
+
+**Alternative rejected — TLS upstream (nginx → Tokyo HTTPS).** Would require running certbot on Tokyo and exposing port 443 publicly, doubling the attack surface vs WireGuard's single UDP port. Also encrypts only the HTTP layer, leaving SNI and packet sizes observable.
+
+**Alternative rejected — Tailscale.** Easier setup but third-party service in the trust chain (their coordination server sees connection metadata), and adds an external dependency for our защита-critical path. WireGuard self-hosted has the same protocol with none of those trade-offs.
+
+**Alternative rejected — IPSec.** Strictly more capable, also strictly more setup pain (two daemons, kernel config, racoon-style tooling). WireGuard is "the IPSec we'd want if we redesigned it from scratch in 2018", and that's exactly what it is.
+
+---
+
 ## 5 · Module layout
 
 ```
