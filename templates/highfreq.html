@@ -335,6 +335,56 @@
       opacity: 0.7;
     }
 
+    /* ─── Live microprice chart (Phase C.5c) ─── */
+    .mp-chart-card {
+      grid-column: 1 / -1;
+      padding: 14px 18px 14px;
+      margin-top: -10px;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .mp-chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+    .mp-chart-stats {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+    .mp-chart-stats.green { color: var(--green); }
+    .mp-chart-stats.red { color: var(--red); }
+    .mp-chart {
+      width: 100%;
+      height: 100px;
+      display: block;
+    }
+    .mp-chart-line {
+      stroke: var(--blue);
+      stroke-width: 1.4;
+      fill: none;
+      vector-effect: non-scaling-stroke;
+    }
+    .mp-chart-area {
+      fill: rgba(59, 130, 246, 0.08);
+      stroke: none;
+    }
+    .mp-chart-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      opacity: 0.55;
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .mp-chart-empty.hidden { display: none; }
+
     /* ─── Forecast widget (Phase C.5) ─── */
     .forecast-card .value { font-size: 24px; }
     .forecast-card .value.green { color: var(--green); }
@@ -714,6 +764,22 @@
       </div>
     </div>
 
+    <!-- ─── Phase C.5c: Live microprice chart ─── -->
+    <div class="card mp-chart-card">
+      <div class="mp-chart-header">
+        <div class="label">Microprice · last 5 min</div>
+        <div class="mp-chart-stats" id="mp-chart-stats">—</div>
+      </div>
+      <svg class="mp-chart" id="mp-chart"
+           viewBox="0 0 800 100" preserveAspectRatio="none">
+        <path class="mp-chart-area" id="mp-chart-area" d=""></path>
+        <path class="mp-chart-line" id="mp-chart-line" d=""></path>
+      </svg>
+      <div class="mp-chart-empty" id="mp-chart-empty">
+        ждём первые точки...
+      </div>
+    </div>
+
     <div class="disclaimer">
       <strong>Sim-only.</strong>
       Никаких живых ордеров не выставляется (см. ADR-005).
@@ -994,6 +1060,79 @@
 
       poll();
       setInterval(poll, POLL_MS);
+
+      // ─── Live microprice chart polling (Phase C.5c) ─────────────────
+      const elMpChartLine = $('mp-chart-line');
+      const elMpChartArea = $('mp-chart-area');
+      const elMpChartStats = $('mp-chart-stats');
+      const elMpChartEmpty = $('mp-chart-empty');
+      const MP_CHART_W = 800;
+      const MP_CHART_H = 100;
+      const MP_HISTORY_SECONDS = 300;  // 5 min
+
+      function renderMpChart(rows) {
+        if (!rows || rows.length < 2) {
+          elMpChartLine.setAttribute('d', '');
+          elMpChartArea.setAttribute('d', '');
+          elMpChartEmpty.classList.remove('hidden');
+          elMpChartStats.textContent = '—';
+          return;
+        }
+        elMpChartEmpty.classList.add('hidden');
+
+        const ys = rows.map((r) => r.microprice).filter((v) => v != null);
+        if (ys.length < 2) return;
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const rangeY = (maxY - minY) || 1e-6;
+        // Pad 5 % top/bottom so line doesn't kiss the edge.
+        const padded = rangeY * 0.10;
+        const yMinPad = minY - padded * 0.5;
+        const yMaxPad = maxY + padded * 0.5;
+        const xStep = MP_CHART_W / (rows.length - 1);
+
+        const toY = (v) =>
+          MP_CHART_H - ((v - yMinPad) / (yMaxPad - yMinPad)) * MP_CHART_H;
+
+        let pts = [];
+        rows.forEach((r, i) => {
+          if (r.microprice == null) return;
+          pts.push(`${(i * xStep).toFixed(1)},${toY(r.microprice).toFixed(1)}`);
+        });
+        const linePath = 'M' + pts.join(' L');
+        const areaPath = linePath +
+          ` L${MP_CHART_W},${MP_CHART_H} L0,${MP_CHART_H} Z`;
+        elMpChartLine.setAttribute('d', linePath);
+        elMpChartArea.setAttribute('d', areaPath);
+
+        const last = ys[ys.length - 1];
+        const first = ys[0];
+        const delta = last - first;
+        const deltaBps = (delta / first) * 1e4;
+        const sign = delta >= 0 ? '+' : '−';
+        const cls = delta >= 0 ? 'green' : (delta < 0 ? 'red' : '');
+        elMpChartStats.textContent =
+          last.toFixed(2) + '   ' + sign + Math.abs(delta).toFixed(2) +
+          '  (' + sign + Math.abs(deltaBps).toFixed(1) + ' bps over ' +
+          rows.length + 's)';
+        elMpChartStats.classList.remove('green', 'red');
+        if (cls) elMpChartStats.classList.add(cls);
+      }
+
+      async function pollMpChart() {
+        try {
+          const url = '/api/highfreq/microprice_history?symbol=' +
+                      encodeURIComponent(currentSymbol()) +
+                      '&seconds=' + MP_HISTORY_SECONDS;
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          renderMpChart(data.rows);
+        } catch (_) { /* keep last shown */ }
+      }
+
+      pollMpChart();
+      setInterval(pollMpChart, POLL_MS);
 
       // ─── Paper trading polling (Phase C) ────────────────────────────
       // Slower than the metrics poll since trades happen at most once per
@@ -1402,6 +1541,7 @@
           poll();
           pollPaper();
           pollForecast();
+          pollMpChart();
         });
       }
     })();

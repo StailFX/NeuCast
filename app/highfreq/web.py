@@ -869,6 +869,82 @@ def _enrich_folds_with_ci(folds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# ── Microprice history endpoint (live chart, Phase C.5c) ──────────────
+
+
+# Default chart window: 5 minutes = 300 seconds = 300 rows at 1 row/sec.
+# Configurable per-request via ?seconds= but capped at 1 hour to keep
+# the response under ~50 KB even on the slowest dial-up.
+DEFAULT_HISTORY_SECONDS: int = 300
+MAX_HISTORY_SECONDS: int = 3600
+
+
+def _fetch_microprice_history(
+    db: Session, symbol: str, seconds: int,
+) -> Optional[list[dict[str, Any]]]:
+    """Return ``[{ts, microprice}, ...]`` for the last ``seconds``.
+
+    Lightweight (only 2 columns) — designed for the live chart's
+    2-second polling cadence. Sorted ASC by ts so the chart can
+    append without re-sorting.
+
+    ``None`` distinguishes DB unavailable from "no rows yet".
+    """
+    try:
+        rows = db.execute(
+            text(
+                "SELECT ts, microprice "
+                "FROM highfreq_ofi_1s "
+                "WHERE symbol = :symbol "
+                "  AND ts > now() - make_interval(secs => :secs) "
+                "ORDER BY ts ASC"
+            ),
+            {"symbol": symbol, "secs": int(seconds)},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("microprice_history fetch failed (%s): %s", symbol, exc)
+        return None
+    return [
+        {
+            "ts": r["ts"].isoformat() if isinstance(r["ts"], datetime) else r["ts"],
+            "microprice": _to_float(r["microprice"]),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/api/highfreq/microprice_history")
+async def get_microprice_history(
+    symbol: str = DEFAULT_SYMBOL,
+    seconds: int = DEFAULT_HISTORY_SECONDS,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Recent microprice trajectory for the live chart on /highfreq.
+
+    Returns up to ``seconds`` worth of 1-s rows. Empty list during
+    cold-start / DB hiccup is a valid 200 — the chart just shows its
+    empty-state placeholder.
+    """
+    symbol = symbol.upper()
+    seconds = max(10, min(int(seconds), MAX_HISTORY_SECONDS))
+    rows = _fetch_microprice_history(db, symbol, seconds)
+    if rows is None:
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "rows": [],
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    return JSONResponse(content={
+        "ok": True,
+        "symbol": symbol,
+        "rows": rows,
+        "seconds": seconds,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    })
+
+
 @router.get("/api/highfreq/training_report")
 async def get_training_report(
     symbol: str = DEFAULT_SYMBOL,

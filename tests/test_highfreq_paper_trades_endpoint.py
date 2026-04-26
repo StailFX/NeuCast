@@ -564,6 +564,110 @@ def test_enrich_folds_adds_ci_low_and_high_per_fold():
     assert 0.55 <= out[0]["dir_acc_ci_high"] <= 0.70
 
 
+# ───────────────────────── /api/highfreq/microprice_history ─────────────────────────
+
+
+def test_microprice_history_empty_returns_200():
+    """Cold-start: empty rows is a valid 200 (UI shows "ждём первые точки...")."""
+    app = _make_app()
+    fake_db = MagicMock()
+    fake_db.execute.return_value.mappings.return_value.all.return_value = []
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    r = client.get("/api/highfreq/microprice_history?symbol=BTCUSDT&seconds=60")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is True
+    assert j["rows"] == []
+    assert j["seconds"] == 60
+    app.dependency_overrides.clear()
+
+
+def test_microprice_history_returns_rows_with_iso_ts():
+    """Datetime columns serialised as ISO strings (JSON-friendly)."""
+    app = _make_app()
+    rows = [
+        {"ts": _ts(hour=12, minute=0, second=10), "microprice": 78_000.5},
+        {"ts": _ts(hour=12, minute=0, second=11), "microprice": 78_001.2},
+    ]
+    fake_db = MagicMock()
+    fake_db.execute.return_value.mappings.return_value.all.return_value = rows
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    j = client.get("/api/highfreq/microprice_history?seconds=60").json()
+    assert len(j["rows"]) == 2
+    assert isinstance(j["rows"][0]["ts"], str)
+    assert j["rows"][0]["ts"].startswith("2026-04-26T12:00:10")
+    assert j["rows"][1]["microprice"] == 78_001.2
+    app.dependency_overrides.clear()
+
+
+def test_microprice_history_clamps_seconds_to_max():
+    """?seconds=99999999 must clamp to MAX_HISTORY_SECONDS (1 hour)."""
+    from app.highfreq.web import MAX_HISTORY_SECONDS
+    app = _make_app()
+    captured = {}
+
+    def execute_side_effect(stmt, params=None):
+        captured["secs"] = params.get("secs") if params else None
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = []
+        return result
+
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = execute_side_effect
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    client.get("/api/highfreq/microprice_history?seconds=99999999")
+    assert captured["secs"] == MAX_HISTORY_SECONDS
+    app.dependency_overrides.clear()
+
+
+def test_microprice_history_floors_seconds_to_10():
+    """?seconds=0 or negative → floor 10."""
+    app = _make_app()
+    captured = {}
+
+    def execute_side_effect(stmt, params=None):
+        captured["secs"] = params.get("secs") if params else None
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = []
+        return result
+
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = execute_side_effect
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    client.get("/api/highfreq/microprice_history?seconds=-5")
+    assert captured["secs"] == 10
+    app.dependency_overrides.clear()
+
+
+def test_microprice_history_db_unavailable_returns_soft_fail_200():
+    """Database error → 200 with db_status='unavailable' (UI still loads)."""
+    from sqlalchemy.exc import OperationalError
+    app = _make_app()
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = OperationalError("conn refused", None, None)
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    r = client.get("/api/highfreq/microprice_history")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert j["db_status"] == "unavailable"
+    assert j["rows"] == []
+    app.dependency_overrides.clear()
+
+
+# ───────────────────────── /api/highfreq/training_report — folds enrichment ─────────────────────────
+
+
 def test_training_report_returns_enriched_folds(tmp_path, monkeypatch):
     """Endpoint must include per-fold ci_low/ci_high so the UI plot
     can draw error bars without a second round-trip."""
