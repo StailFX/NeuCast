@@ -1,10 +1,11 @@
 # NeuCast
 
-![tests](https://img.shields.io/badge/tests-268%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-341%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
-![status](https://img.shields.io/badge/status-Phase%20C%20%C2%B7%20sim--only-orange)
+![status](https://img.shields.io/badge/status-Phase%20D%20%C2%B7%20sim--only-orange)
 ![tokyo](https://img.shields.io/badge/HFT%20ingest-Tokyo%20%C2%B7%2019ms%20to%20Binance-purple)
+![monitoring](https://img.shields.io/badge/monitoring-Prom%20%2B%20Grafana%20%2B%20Telegram-blueviolet)
 
 AI-платформа для прогнозирования финансовых активов: дневные горизонты на стекинг-ансамбле и **HFT-минутный directional forecasting на Binance L2** в едином codebase.
 
@@ -21,10 +22,12 @@ AI-платформа для прогнозирования финансовых
 | Model | TCN + CatBoost + XGBoost + LightGBM stack | CatBoost binary classifier on `sign(return_1m)` |
 | Loss | MSE / MAPE | log-loss + bootstrap CI on `dir_acc` |
 | Output | Price forecast with Monte Carlo bands | Long / short signal with maker + taker P&L |
-| Status | Production at [neucast.ru](https://neucast.ru) | **Phase B+C sim-only · 3 symbols live · [docs/highfreq/](docs/highfreq/README.md)** |
+| Status | Production at [neucast.ru](https://neucast.ru) | **Phase D sim-only · 3 symbols live · [docs/highfreq/](docs/highfreq/README.md)** |
 | Symbols | 200+ tickers (yfinance) | BTCUSDT · ETHUSDT · BNBUSDT |
 | Update cadence | Daily / hourly | 1 row/sec into Postgres, prediction every minute |
-| Test suite | inherits root | **268 tests · 100% passing** |
+| Test suite | inherits root | **341 tests · 100% passing** |
+| Observability | systemd + nginx logs | Prometheus + Grafana + Telegram alerts (5 rules) |
+| Cold storage | none | Yandex S3 (Parquet+snappy, hot-cold pattern, 7-day hot retention) |
 
 The HF module reuses the same Postgres + FastAPI + systemd backbone but
 addresses the wall the daily side hit: OHLCV-only data converges to
@@ -77,10 +80,14 @@ than buried.
 
 * **Latency:** TCP RTT Tokyo ↔ Binance ≈ **19 ms** (median; vs ~250 ms from Finland)
 * **Architecture decisions:** 11 ADRs in [`docs/highfreq/architecture.md`](docs/highfreq/architecture.md)
-* **Test coverage:** 268 tests, every state-machine branch + endpoint pinned
-* **Live UI:** [`/highfreq`](https://neucast.ru/highfreq) — symbol dropdown, live microprice, predictor status, paper-trader log, walk-forward calibration plot
-* **Single source of truth:** all HFT data lives in Tokyo Postgres; Finland nginx reverse-proxies the read endpoints over the encrypted tunnel
-* **Operational hardening:** SSH key-only, password auth disabled, UFW deny-all + 3 explicit allow rules, EnvironmentFile root-only
+* **Test coverage:** 341 tests, every state-machine branch + endpoint pinned
+* **Live UIs:**
+    * [`/highfreq`](https://neucast.ru/highfreq) — business dashboard: symbol dropdown, live microprice, **orderbook density heatmap**, predictor status, paper-trader log, **feature importance**, walk-forward **calibration plot**
+    * [`/grafana`](https://neucast.ru/grafana) — operations dashboard: ingest health, predictor latency, system metrics, paper P&L trends
+* **Single source of truth:** all HFT data lives in Tokyo Postgres; Finland nginx reverse-proxies the read endpoints over the encrypted WireGuard tunnel
+* **Hot-cold storage:** 7-day hot Postgres + cold Yandex S3 archival via daily atomic verify-before-delete cron (Parquet+snappy)
+* **Observability:** self-hosted Prometheus + Grafana on Tokyo, daily TSDB snapshots backed up to Yandex S3, 5 alert rules → Telegram bot
+* **Operational hardening:** SSH key-only, password auth disabled, UFW deny-all + explicit allow rules, EnvironmentFile root-only, 2-layer auth on Grafana (nginx Basic + Grafana login)
 
 → Detailed write-up: [`docs/highfreq/README.md`](docs/highfreq/README.md)
 

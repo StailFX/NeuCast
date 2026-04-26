@@ -10,18 +10,55 @@ based on where you're starting from.
 | Docker Compose | `docker-compose.yml` → `highfreq-l2` service | Local dev only |
 | Systemd (legacy) | `neucast-highfreq.service` (this dir) | Existing Hostkey Finland VPS where app/celery already run as systemd units. Per ADR-009, ingest no longer runs here — kept for reference. |
 
-## Production layout (post ADR-009)
+## Production layout (post ADR-009 / ADR-010 / monitoring)
 
 ```
 TOKYO 147.45.49.40 (4VPS.su JP-cx21, Ubuntu 24.04)    FINLAND 151.245.139.21 (Hostkey)
-├─ neucast-highfreq.service       (L2 ingest)         ├─ nginx → reverse-proxies /highfreq* to Tokyo:8000
-├─ neucast-highfreq-web.service   (slim FastAPI)      ├─ neucast.service       (uvicorn, main webapp)
-├─ Postgres 5433  (single source of truth)            ├─ neucast-celery.service
-├─ UFW: 22 = world, 8000 = Finland-only               └─ Postgres 5433  (no highfreq tables)
-└─ /etc/neucast/env (DATABASE_URL + POSTGRES_PASSWORD)
+─ neucast-highfreq.service       (L2 ingest)          ─ nginx + Let's Encrypt TLS
+─ neucast-highfreq-web.service   (slim FastAPI)         ├─ /highfreq*  → Tokyo:8000 via WG
+─ neucast-paper-trader@btcusdt   (paper trader)         ├─ /grafana*   → Tokyo:3000 via WG
+─ neucast-paper-trader@ethusdt                           │              + nginx Basic Auth + rate-limit
+─ neucast-paper-trader@bnbusdt                           └─ /, /charts, /predict, … → Finland uvicorn
+─ neucast-highfreq-trainer@*.timer (3 timers, 04:00)
+─ neucast-l2-archive.timer        (02:00 UTC, → S3)   ─ neucast.service       (uvicorn, main webapp)
+─ neucast-prom-backup.timer       (03:30 UTC, → S3)   ─ neucast-celery.service
+─ prometheus + grafana + node-exporter                ─ Postgres 5433  (no HFT tables — dropped per ADR-009)
+─ Postgres 5433 (single SoT for HFT data)             ─ wg0 [10.99.0.2]
+─ wg0 [10.99.0.1]
+─ /etc/neucast/env (chmod 600 root-only)
+   ├─ DATABASE_URL + POSTGRES_PASSWORD
+   ├─ HIGHFREQ_SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT
+   ├─ HIGHFREQ_STORE_L2_SNAPSHOTS=1
+   ├─ YANDEX_S3_* (bucket + access keys)
+   ├─ GRAFANA_ADMIN_PASSWORD
+   └─ TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
 ```
 
-See [ADR-009 in architecture.md](../architecture.md#adr-009--tokyo-vps-as-the-hft-data-plane-supersedes-adr-006-for-the-hft-slice) for the rationale.
+See [ADR-009](../architecture.md#adr-009--tokyo-vps-as-the-hft-data-plane-supersedes-adr-006-for-the-hft-slice) (Tokyo placement),
+[ADR-010](../architecture.md#adr-010--wireguard-tunnel-for-finland↔tokyo-http-traffic) (encryption),
+[ADR-011](../architecture.md#adr-011--paper-trading-contract-time-stop-maker-only-fees-sim-only-by-construction) (paper trading).
+
+## Deploy artefacts in this directory
+
+| File | Role |
+|---|---|
+| **Bootstrap & app services** | |
+| `bootstrap_tokyo.sh` | One-script bring-up of clean Ubuntu 22.04/24.04 → working ingest |
+| `requirements-highfreq.txt` | Slim Python deps (no TF/Torch) — installed by bootstrap |
+| `neucast-highfreq.service` | L2 ingest (always-on) — single-symbol legacy |
+| `neucast-highfreq-web.service` | Slim FastAPI on 10.99.0.1:8000 (WG-only) |
+| `neucast-paper-trader@.service` | Templated paper trader, one instance per symbol |
+| `neucast-highfreq-trainer.service` + `.timer` | Single-symbol trainer (legacy) |
+| `neucast-highfreq-trainer@.service` + `.timer` | Templated trainer for multi-symbol deploys |
+| **Storage / archival** | |
+| `neucast-l2-archive.service` + `.timer` | 02:00 UTC daily — L2 snapshots > 7 days → Yandex S3 |
+| `neucast-prom-backup.service` + `.timer` | 03:30 UTC daily — Prometheus TSDB → Yandex S3 |
+| **Monitoring (Prometheus + Grafana, hybrid)** | |
+| `grafana/dashboards/hf-overview.json` | Auto-provisioned dashboard: 4 row groups (ingest/predictor/paper/system) |
+| `grafana/alerting/alerts.yaml` | 5 alert rules with `{job="..."}` filters + custom thresholds |
+| `grafana/alerting/contact-points.yaml` | Telegram contact point + HTML message template |
+| **Networking** | |
+| `wireguard_setup.md` | 10-step runbook for WG tunnel between Tokyo + Finland |
 
 ## Production VPS layout (Hostkey Finland)
 
@@ -133,3 +170,41 @@ For BTCUSDT @depth20@100ms:
 * `rows_emitted` ≈ 1/sec (1-second aggregation)
 * `rows_written` ≈ rows_emitted (lags by `flush_batch_size` rows)
 * `reconnects` should stay at 0 over 24 h+; >5/day means the WS is unstable
+* `l2snaps_written` (when `HIGHFREQ_STORE_L2_SNAPSHOTS=1`) ≈ 1/sec/symbol
+
+## Monitoring access (Prometheus + Grafana)
+
+* **Grafana UI**: <https://neucast.ru/grafana> (basic-auth + admin login, 2 layers)
+  * Dashboard: `NeuCast HF · Overview` (auto-provisioned, in `NeuCast` folder)
+  * 4 row groups: ingest pipeline / predictor / paper trader / Tokyo system
+* **Prometheus** (internal): `http://10.99.0.1:9099` — only reachable via WG
+* **/metrics endpoints** (internal):
+  * `:9090` ingest, `:9091/2/3` paper-traders (BTC/ETH/BNB), `:8000/metrics/` web, `:9100` node-exporter
+* **Telegram alerts**: 5 rules wired to `telegram-stailfx` contact point with HTML template
+
+```bash
+# List active alerts via API
+ADMIN_PASS=$(grep ^GRAFANA_ADMIN_PASSWORD /etc/neucast/env | cut -d= -f2-)
+curl -s -u admin:$ADMIN_PASS http://10.99.0.1:3000/grafana/api/v1/provisioning/alert-rules | jq '.[].title'
+```
+
+## Yandex S3 archival check
+
+```bash
+ssh tokyo '
+  source /etc/neucast/env
+  /opt/neucast/venv/bin/python -c "
+import os, boto3
+s3 = boto3.client(\"s3\",
+    endpoint_url=os.environ[\"YANDEX_S3_ENDPOINT\"],
+    region_name=os.environ[\"YANDEX_S3_REGION\"],
+    aws_access_key_id=os.environ[\"YANDEX_S3_ACCESS_KEY_ID\"],
+    aws_secret_access_key=os.environ[\"YANDEX_S3_SECRET_ACCESS_KEY\"],
+)
+for prefix in (\"highfreq_l2/\", \"prometheus_snapshots/\"):
+    r = s3.list_objects_v2(Bucket=os.environ[\"YANDEX_S3_BUCKET\"], Prefix=prefix)
+    n = len(r.get(\"Contents\", []))
+    size = sum(o[\"Size\"] for o in r.get(\"Contents\", [])) / 1024 / 1024
+    print(f\"{prefix} : {n} objects, {size:.1f} MB\")
+"'
+```
