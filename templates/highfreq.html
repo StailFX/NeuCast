@@ -335,6 +335,55 @@
       opacity: 0.7;
     }
 
+    /* ─── Orderbook heatmap (Phase D.1) ─── */
+    .ob-heatmap-card {
+      grid-column: 1 / -1;
+      padding: 14px 18px 14px;
+      margin-top: 4px;
+      margin-bottom: 18px;
+      position: relative;
+    }
+    .ob-heatmap-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .ob-heatmap-sub {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+      opacity: 0.7;
+    }
+    .ob-heatmap-stats {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    #ob-heatmap {
+      display: block;
+      width: 100%;
+      height: 240px;
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 6px;
+    }
+    .ob-heatmap-empty {
+      position: absolute;
+      inset: 50px 20px 20px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      opacity: 0.6;
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .ob-heatmap-empty.hidden { display: none; }
+
     /* ─── Live microprice chart (Phase C.5c) ─── */
     .mp-chart-card {
       grid-column: 1 / -1;
@@ -913,6 +962,24 @@
       </div>
     </div>
 
+    <!-- ─── Phase D.1: Orderbook heatmap (Bookmap-style) ─── -->
+    <div class="card ob-heatmap-card">
+      <div class="ob-heatmap-header">
+        <div>
+          <div class="label">Orderbook density · last 5 min · top-10 each side</div>
+          <div class="ob-heatmap-sub">
+            X = время · Y = цена (зелёный = bid liquidity · красный = ask) ·
+            интенсивность ∝ log(qty)
+          </div>
+        </div>
+        <div class="ob-heatmap-stats" id="ob-heatmap-stats">—</div>
+      </div>
+      <canvas id="ob-heatmap" width="800" height="240"></canvas>
+      <div class="ob-heatmap-empty" id="ob-heatmap-empty">
+        ждём первые snapshot'ы...
+      </div>
+    </div>
+
     <div class="disclaimer">
       <strong>Sim-only.</strong>
       Никаких живых ордеров не выставляется (см. ADR-005).
@@ -1287,6 +1354,141 @@
 
       pollMpChart();
       setInterval(pollMpChart, POLL_MS);
+
+      // ─── Orderbook heatmap polling + render (Phase D.1) ─────────────
+      const OB_POLL_MS = 5000;        // slower than microprice — heatmap densest
+      const OB_HISTORY_SECONDS = 300;  // 5 min
+      const OB_PRICE_BUCKETS = 60;     // Y resolution (rows in the heatmap grid)
+
+      const elObCanvas = $('ob-heatmap');
+      const elObEmpty = $('ob-heatmap-empty');
+      const elObStats = $('ob-heatmap-stats');
+      // CSS scaled width/height — for crisp rendering use device pixel ratio.
+      const dpr = window.devicePixelRatio || 1;
+
+      function resizeObCanvas() {
+        const w = elObCanvas.clientWidth;
+        const h = elObCanvas.clientHeight;
+        if (elObCanvas.width !== Math.floor(w * dpr) ||
+            elObCanvas.height !== Math.floor(h * dpr)) {
+          elObCanvas.width = Math.floor(w * dpr);
+          elObCanvas.height = Math.floor(h * dpr);
+        }
+        return [elObCanvas.width, elObCanvas.height];
+      }
+
+      function renderObHeatmap(rows) {
+        const [W, H] = resizeObCanvas();
+        const ctx = elObCanvas.getContext('2d');
+        ctx.clearRect(0, 0, W, H);
+
+        if (!rows || rows.length === 0) {
+          elObEmpty.classList.remove('hidden');
+          elObStats.textContent = '—';
+          return;
+        }
+        elObEmpty.classList.add('hidden');
+
+        // Step 1: find global price min/max across all snapshots'
+        // bid/ask levels (top + bottom of the book over the window).
+        let priceMin = +Infinity, priceMax = -Infinity;
+        let qtyMax = 0;
+        for (const r of rows) {
+          for (const p of r.bids_price) if (p < priceMin) priceMin = p;
+          for (const p of r.asks_price) if (p > priceMax) priceMax = p;
+          for (const q of r.bids_qty) if (q > qtyMax) qtyMax = q;
+          for (const q of r.asks_qty) if (q > qtyMax) qtyMax = q;
+        }
+        if (!isFinite(priceMin) || !isFinite(priceMax) || priceMax <= priceMin) {
+          elObEmpty.classList.remove('hidden');
+          return;
+        }
+
+        // Step 2: build a 2-D grid [time × price_bucket] of summed qty,
+        // separately for bids vs asks (so we can colour them differently).
+        const nT = rows.length;
+        const nP = OB_PRICE_BUCKETS;
+        const bidGrid = new Float32Array(nT * nP);
+        const askGrid = new Float32Array(nT * nP);
+
+        const priceRange = priceMax - priceMin;
+        const priceToBucket = (p) => {
+          const idx = Math.floor(((p - priceMin) / priceRange) * nP);
+          return Math.max(0, Math.min(nP - 1, idx));
+        };
+
+        for (let t = 0; t < nT; t++) {
+          const r = rows[t];
+          for (let i = 0; i < r.bids_price.length; i++) {
+            const b = priceToBucket(r.bids_price[i]);
+            bidGrid[t * nP + b] += r.bids_qty[i];
+          }
+          for (let i = 0; i < r.asks_price.length; i++) {
+            const b = priceToBucket(r.asks_price[i]);
+            askGrid[t * nP + b] += r.asks_qty[i];
+          }
+        }
+
+        // Step 3: log-normalise. log(1 + qty) compresses the long tail.
+        const logMax = Math.log1p(qtyMax) || 1;
+
+        // Step 4: paint cells. Y inverted (top = max price = ask side).
+        const cellW = W / nT;
+        const cellH = H / nP;
+
+        for (let t = 0; t < nT; t++) {
+          for (let b = 0; b < nP; b++) {
+            const bidQ = bidGrid[t * nP + b];
+            const askQ = askGrid[t * nP + b];
+            // Pick whichever side has more qty in this cell (one is
+            // typically zero since bids and asks don't overlap in price).
+            let r_ = 0, g_ = 0, b_ = 0, a = 0;
+            if (askQ > bidQ) {
+              const intensity = Math.log1p(askQ) / logMax;
+              r_ = 239; g_ = 68; b_ = 68;  // var(--red)
+              a = Math.min(1, intensity * 1.4);
+            } else if (bidQ > 0) {
+              const intensity = Math.log1p(bidQ) / logMax;
+              r_ = 16; g_ = 185; b_ = 129;  // var(--green)
+              a = Math.min(1, intensity * 1.4);
+            }
+            if (a < 0.02) continue;  // skip near-empty cells (perf)
+
+            ctx.fillStyle = `rgba(${r_},${g_},${b_},${a.toFixed(3)})`;
+            // Y inverted: bucket 0 = lowest price = bottom of canvas.
+            const x = Math.floor(t * cellW);
+            const y = Math.floor(H - (b + 1) * cellH);
+            const w = Math.ceil(cellW) + 0.5;
+            const h = Math.ceil(cellH) + 0.5;
+            ctx.fillRect(x, y, w, h);
+          }
+        }
+
+        // Stats line: window summary.
+        const lastSnap = rows[rows.length - 1];
+        const lastMid = (lastSnap.bids_price[0] + lastSnap.asks_price[0]) / 2;
+        elObStats.textContent =
+          nT + ' snapshots · price [' + priceMin.toFixed(2) + ', ' +
+          priceMax.toFixed(2) + '] · mid≈' + lastMid.toFixed(2);
+      }
+
+      async function pollObHeatmap() {
+        try {
+          const url = '/api/highfreq/orderbook?symbol=' +
+                      encodeURIComponent(currentSymbol()) +
+                      '&seconds=' + OB_HISTORY_SECONDS;
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          renderObHeatmap(data.rows);
+        } catch (_) { /* keep last frame */ }
+      }
+
+      pollObHeatmap();
+      setInterval(pollObHeatmap, OB_POLL_MS);
+
+      // Re-render on window resize (canvas needs DPR re-fit).
+      window.addEventListener('resize', () => pollObHeatmap());
 
       // ─── Paper trading polling (Phase C) ────────────────────────────
       // Slower than the metrics poll since trades happen at most once per
@@ -1790,6 +1992,7 @@
           pollForecast();
           pollMpChart();
           pollFeatureImportance();
+          pollObHeatmap();
         });
       }
     })();

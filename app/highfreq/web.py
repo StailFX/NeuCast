@@ -945,6 +945,88 @@ async def get_microprice_history(
     })
 
 
+# ── Orderbook heatmap endpoint (Phase D.1) ────────────────────────────
+
+
+# Default heatmap window: 5 minutes = 300 snapshots at 1 Hz. Matches
+# the microprice chart's window so users compare side-by-side.
+DEFAULT_OB_HEATMAP_SECONDS: int = 300
+MAX_OB_HEATMAP_SECONDS: int = 1800  # 30 min — keeps response < 1 MB
+
+
+def _fetch_orderbook_window(
+    db: Session, symbol: str, seconds: int,
+) -> Optional[list[dict[str, Any]]]:
+    """Recent ``highfreq_l2_snapshots`` rows. Powers the canvas heatmap.
+
+    Returns one dict per snapshot with the four price/qty arrays cast to
+    Python lists (asyncpg/psycopg2 handle PG arrays natively, but
+    SQLAlchemy returns them as Python lists already so no conversion
+    needed).
+
+    ``None`` distinguishes DB unavailable from "no rows yet" (cold-start
+    or HIGHFREQ_STORE_L2_SNAPSHOTS=0 deploy).
+    """
+    try:
+        rows = db.execute(
+            text(
+                "SELECT ts, bids_price, bids_qty, asks_price, asks_qty "
+                "FROM highfreq_l2_snapshots "
+                "WHERE symbol = :symbol "
+                "  AND ts > now() - make_interval(secs => :secs) "
+                "ORDER BY ts ASC"
+            ),
+            {"symbol": symbol, "secs": int(seconds)},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("orderbook fetch failed (%s): %s", symbol, exc)
+        return None
+    out = []
+    for r in rows:
+        out.append({
+            "ts": r["ts"].isoformat() if isinstance(r["ts"], datetime) else r["ts"],
+            "bids_price": list(r["bids_price"] or []),
+            "bids_qty": list(r["bids_qty"] or []),
+            "asks_price": list(r["asks_price"] or []),
+            "asks_qty": list(r["asks_qty"] or []),
+        })
+    return out
+
+
+@router.get("/api/highfreq/orderbook")
+async def get_orderbook(
+    symbol: str = DEFAULT_SYMBOL,
+    seconds: int = DEFAULT_OB_HEATMAP_SECONDS,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Recent L2 snapshots for the heatmap UI.
+
+    Returns 200 always; empty rows during cold-start / writer-disabled
+    is a valid state surfaced via empty ``rows`` array. The UI shows
+    its own "ждём данные…" placeholder.
+    """
+    symbol = symbol.upper()
+    seconds = max(10, min(int(seconds), MAX_OB_HEATMAP_SECONDS))
+
+    rows = _fetch_orderbook_window(db, symbol, seconds)
+    if rows is None:
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "rows": [],
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    return JSONResponse(content={
+        "ok": True,
+        "symbol": symbol,
+        "seconds": seconds,
+        "n_snapshots": len(rows),
+        "rows": rows,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    })
+
+
 # ── Regime detection endpoint (Phase C.5e) ────────────────────────────
 
 

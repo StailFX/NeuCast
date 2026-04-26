@@ -564,6 +564,118 @@ def test_enrich_folds_adds_ci_low_and_high_per_fold():
     assert 0.55 <= out[0]["dir_acc_ci_high"] <= 0.70
 
 
+# ───────────────────────── /api/highfreq/orderbook ─────────────────────────
+
+
+def test_orderbook_endpoint_empty_returns_200_with_empty_rows():
+    """Cold-start (table empty / writer disabled) → 200 ok with rows=[]."""
+    app = _make_app()
+    fake_db = MagicMock()
+    fake_db.execute.return_value.mappings.return_value.all.return_value = []
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    r = client.get("/api/highfreq/orderbook?symbol=BTCUSDT&seconds=60")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is True
+    assert j["rows"] == []
+    assert j["n_snapshots"] == 0
+    assert j["seconds"] == 60
+    app.dependency_overrides.clear()
+
+
+def test_orderbook_endpoint_returns_arrays_as_lists():
+    """asyncpg/SQLAlchemy give us PG arrays as Python lists; endpoint
+    must serialise them as JSON arrays of floats (not opaque strings)."""
+    app = _make_app()
+    rows = [
+        {
+            "ts": _ts(hour=12, minute=0, second=10),
+            "bids_price": [78_000.0, 77_999.5, 77_999.0],
+            "bids_qty": [1.5, 2.0, 0.8],
+            "asks_price": [78_000.5, 78_001.0, 78_001.5],
+            "asks_qty": [1.0, 1.2, 0.5],
+        },
+    ]
+    fake_db = MagicMock()
+    fake_db.execute.return_value.mappings.return_value.all.return_value = rows
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    j = client.get("/api/highfreq/orderbook?seconds=60").json()
+    assert j["n_snapshots"] == 1
+    row = j["rows"][0]
+    assert isinstance(row["bids_price"], list)
+    assert row["bids_price"] == [78_000.0, 77_999.5, 77_999.0]
+    assert row["asks_qty"] == [1.0, 1.2, 0.5]
+    assert isinstance(row["ts"], str)
+    assert row["ts"].startswith("2026-04-26T12:00:10")
+    app.dependency_overrides.clear()
+
+
+def test_orderbook_endpoint_clamps_seconds_to_max():
+    from app.highfreq.web import MAX_OB_HEATMAP_SECONDS
+    app = _make_app()
+    captured = {}
+
+    def execute_side_effect(stmt, params=None):
+        captured["secs"] = params.get("secs") if params else None
+        result = MagicMock()
+        result.mappings.return_value.all.return_value = []
+        return result
+
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = execute_side_effect
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    client.get("/api/highfreq/orderbook?seconds=99999999")
+    assert captured["secs"] == MAX_OB_HEATMAP_SECONDS
+    app.dependency_overrides.clear()
+
+
+def test_orderbook_endpoint_db_unavailable_returns_soft_fail_200():
+    """DB error → 200 with db_status='unavailable', UI keeps rendering."""
+    from sqlalchemy.exc import OperationalError
+    app = _make_app()
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = OperationalError("conn refused", None, None)
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    r = client.get("/api/highfreq/orderbook")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert j["db_status"] == "unavailable"
+    assert j["rows"] == []
+    app.dependency_overrides.clear()
+
+
+def test_orderbook_endpoint_handles_null_arrays_defensively():
+    """Defensive: PG could return NULL for an array (theoretical) — must
+    serialise as empty list, not ``None`` (UI can't loop NULL)."""
+    app = _make_app()
+    rows = [
+        {
+            "ts": _ts(hour=12, minute=0),
+            "bids_price": None, "bids_qty": None,
+            "asks_price": None, "asks_qty": None,
+        },
+    ]
+    fake_db = MagicMock()
+    fake_db.execute.return_value.mappings.return_value.all.return_value = rows
+    app.dependency_overrides[_get_db] = lambda: fake_db
+
+    client = TestClient(app)
+    j = client.get("/api/highfreq/orderbook").json()
+    row = j["rows"][0]
+    assert row["bids_price"] == []
+    assert row["asks_price"] == []
+    app.dependency_overrides.clear()
+
+
 # ───────────────────────── /api/highfreq/microprice_history ─────────────────────────
 
 
