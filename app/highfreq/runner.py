@@ -30,6 +30,12 @@ import sys
 
 from app.highfreq.aggregator import Aggregator
 from app.highfreq.l2_consumer import L2Consumer
+from app.highfreq.l2_snapshot_writer import (
+    DEFAULT_FLUSH_BATCH as L2_SNAP_FLUSH_BATCH,
+    DEFAULT_SAMPLE_EVERY_N as L2_SNAP_SAMPLE_EVERY,
+    DEFAULT_TOP_N as L2_SNAP_TOP_N,
+    L2SnapshotWriter,
+)
 
 
 def _configure_logging() -> None:
@@ -83,9 +89,35 @@ async def _main() -> None:
     )
     await aggregator.start()
 
+    # Optional: also write sub-sampled top-N L2 snapshots into
+    # highfreq_l2_snapshots for the heatmap UI + Yandex S3 archival.
+    # Toggled via HIGHFREQ_STORE_L2_SNAPSHOTS=1; off by default to keep
+    # the ingest box lean for deploys that don't need the heatmap.
+    snapshot_writer: L2SnapshotWriter | None = None
+    if os.getenv("HIGHFREQ_STORE_L2_SNAPSHOTS", "0") == "1":
+        snapshot_writer = L2SnapshotWriter(
+            database_url=dsn,
+            sample_every_n=int(os.getenv("HIGHFREQ_L2_SAMPLE_EVERY_N",
+                                         str(L2_SNAP_SAMPLE_EVERY))),
+            top_n_levels=int(os.getenv("HIGHFREQ_L2_TOP_N", str(L2_SNAP_TOP_N))),
+            flush_batch_size=int(os.getenv("HIGHFREQ_L2_FLUSH_BATCH",
+                                           str(L2_SNAP_FLUSH_BATCH))),
+        )
+        await snapshot_writer.start()
+        logger.info("L2 snapshot writer enabled")
+
+    # Fan-out the WS snapshot dispatch when both subscribers exist.
+    if snapshot_writer is not None:
+        async def _on_snapshot_fanout(snap):
+            await aggregator.on_snapshot(snap)
+            await snapshot_writer.on_snapshot(snap)
+        snapshot_cb = _on_snapshot_fanout
+    else:
+        snapshot_cb = aggregator.on_snapshot
+
     consumer = L2Consumer(
         symbols=symbols,
-        on_snapshot=aggregator.on_snapshot,
+        on_snapshot=snapshot_cb,
         on_trade=aggregator.on_trade,
         depth_levels=depth_levels,
         update_speed_ms=update_speed_ms,
@@ -115,12 +147,16 @@ async def _main() -> None:
                 await asyncio.wait_for(stop_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
+            snap_stats = (
+                f" l2snaps_written={snapshot_writer.snapshots_written}"
+                if snapshot_writer is not None else ""
+            )
             logger.info(
                 "health: frames=%d snaps=%d trades=%d rows_emitted=%d "
-                "rows_written=%d reconnects=%d",
+                "rows_written=%d reconnects=%d%s",
                 consumer.frames_received, consumer.snapshots_dispatched,
                 consumer.trades_dispatched, aggregator.rows_emitted,
-                aggregator.rows_written, consumer.reconnect_count,
+                aggregator.rows_written, consumer.reconnect_count, snap_stats,
             )
 
     health_task = asyncio.create_task(_health_log())
@@ -131,9 +167,12 @@ async def _main() -> None:
         health_task.cancel()
         await aggregator.flush()
         await aggregator.close()
+        if snapshot_writer is not None:
+            await snapshot_writer.close()
         logger.info(
-            "stopped: frames=%d rows_written=%d",
+            "stopped: frames=%d rows_written=%d snapshots_written=%d",
             consumer.frames_received, aggregator.rows_written,
+            snapshot_writer.snapshots_written if snapshot_writer else 0,
         )
 
 
