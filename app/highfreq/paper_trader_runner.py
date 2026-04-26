@@ -377,6 +377,21 @@ async def process_one_tick(
     except Exception:
         logger.warning("predictions_log write failed", exc_info=True)
 
+    # Inline backfill: the row at (ts - 1 min) had its realized_*
+    # columns NULL when written. Now we know the t+1 microprice (it
+    # IS this bar's close) — fill it. Single UPDATE per tick, no
+    # JOIN needed since we already have the value.
+    try:
+        from app.highfreq.predictions_backfill import backfill_inline_async
+        await backfill_inline_async(
+            pool,
+            symbol=symbol,
+            current_ts=bar_close_ts,
+            current_microprice=float(microprice_close),
+        )
+    except Exception:
+        logger.warning("predictions_backfill inline failed", exc_info=True)
+
     # Telegram signal-flip alert (Level 3). Fires on direction change;
     # cold start (first observation since restart) does not notify to
     # avoid spam on systemd-driven restarts.

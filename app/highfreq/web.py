@@ -1341,6 +1341,93 @@ async def get_training_report(
     }))
 
 
+@router.get("/api/highfreq/actionable_signal")
+async def get_actionable_signal(
+    symbol: str = DEFAULT_SYMBOL,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Level-4 trade-signal payload — what the trader WOULD do right
+    now with the latest predictor output.
+
+    Composes:
+    * Latest row from ``predictions_log`` (the predictor's last word).
+    * Trader's threshold logic + position sizer (pure).
+    * Calibration / demo-mode flags from env + predictor status.
+
+    Returns 200 always:
+    * cold start (no predictions yet) → ``ok=False, reason="no_predictions_yet"``.
+    * DB error → ``ok=False, db_status="unavailable"``.
+    * normal → full decision object.
+
+    The UI renders this as an actionable "trade card" alongside the
+    existing Forecast block — defence-grade artefact showing the
+    complete decision pipeline end-to-end.
+    """
+    import os
+    from app.highfreq.actionable_signal import (
+        compute_decision,
+        fetch_latest_prediction_sync,
+    )
+    from app.highfreq.paper_trader import PaperTraderConfig
+
+    symbol = symbol.upper()
+
+    try:
+        latest = fetch_latest_prediction_sync(db, symbol=symbol)
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("actionable_signal fetch failed (%s): %s", symbol, exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    if latest is None:
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_predictions_yet",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    # Demo mode → require_calibrated=False (mirrors paper_trader_runner).
+    demo_mode = os.environ.get("HF_PAPER_DEMO_MODE", "").strip() in ("1", "true", "yes")
+    config = PaperTraderConfig(require_calibrated=not demo_mode)
+
+    # Trader's calibration state lives in the predictor; we approximate
+    # via the model_version tag on the prediction (pre-calibration-demo
+    # ⇔ uncalibrated). Future improvement: include a calibrated flag in
+    # predictions_log directly.
+    calibrated = (latest["model_version"] != "pre-calibration-demo")
+
+    decision = compute_decision(
+        prob_up=float(latest["prob_up"]),
+        microprice=float(latest["microprice"]),
+        ts=latest["ts"],
+        config=config,
+        model_version=latest["model_version"],
+        calibrated=calibrated,
+        demo_mode=demo_mode,
+        halted_reason=None,  # halt state is per-runner; not surfaced here yet
+    )
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "decision": decision,
+        "config": {
+            "entry_long_threshold": config.entry_long_threshold,
+            "entry_short_threshold": config.entry_short_threshold,
+            "horizon_minutes": config.horizon_minutes,
+            "max_qty_usd": config.max_qty_usd,
+            "maker_fee_bps_per_side": config.maker_fee_bps_per_side,
+            "require_calibrated": config.require_calibrated,
+        },
+    }))
+
+
 @router.get("/api/highfreq/predictions_history")
 async def get_predictions_history(
     symbol: str = DEFAULT_SYMBOL,
