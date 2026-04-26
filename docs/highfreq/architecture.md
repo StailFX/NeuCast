@@ -280,6 +280,67 @@ A backtest reporting only one of these is misleading. A backtest reporting only 
 
 ---
 
+### ADR-011 · Paper-trading contract: time-stop, maker-only fees, sim-only by construction
+
+**Context.** ADR-005 declared the project sim-only and ADR-007 documented the binary classification target, but the *trading contract* — what does the runner actually DO with each prediction, what costs does it pretend to pay, what counts as a halt — was scattered across docstrings in `app/highfreq/paper_trader.py`. Comissia (and future-me reading this in three months) needs one document where all those choices live together with their rationale.
+
+This ADR formalises the decisions already implemented in code; nothing here is new behaviour.
+
+**Decision — entry semantics.**
+* Open one position per minute-bar close, exactly when `prob_up >= entry_long_threshold` (default `0.55`) or `prob_up <= entry_short_threshold` (default `0.45`). Probabilities in the neutral band trigger no trade.
+* Defaults are symmetric around `0.50`. We have no prior on which direction the model is more accurate at; a single-sided bias would silently bake one in.
+* One position at a time per symbol — a runaway loop can never accumulate exposure even if a bug fires `on_bar_close` at sub-second cadence (this is also tested as `test_one_position_at_a_time_invariant`).
+
+**Decision — exit semantics (time-stop only).**
+* Open at bar `t`, close at bar `t + horizon_minutes` (default `1`). No prob-flip mid-horizon.
+* Why no early exit: the trainer fits exactly the `signal at t → return at t+H` map. Closing on a flipped probability mid-horizon throws away the predictive content the model was fit on. Adding stop-losses or trailing stops becomes possible *only* with retraining on a different label; documented as a Tier 3 upgrade.
+* `ExitReason` is currently a closed `Literal["time_stop", "halt_close"]`. `stop_loss` is reserved for that future.
+
+**Decision — fee model (Binance Spot, maker, BNB-paid).**
+* `maker_fee_bps_per_side = 7.5` (= 0.075 %). Standard tier with BNB discount; without BNB the rate is 10 bp.
+* Round-trip cost ≈ 15 bp on a zero-move trade (tested as `test_compute_pnl_round_trip_fee_cost_matches_15_bps`). This is **the bar Tier 3 has to clear** — a model whose mean post-fee return is negative is not deployable, no matter how good its directional accuracy looks.
+* Each leg's fee is computed at *that leg's price*, not symmetrically — so `compute_pnl(side="long", entry=100, exit=99, qty=1, fee=7.5bps) = -1.14925`, not the naive `-1.15`. Tiny but documented because it would otherwise look like a floating-point bug.
+
+**Decision — position sizing (fixed-notional, soon vol-adjusted).**
+* `qty = max_qty_usd / entry_microprice` per trade — currently `max_qty_usd = 100`. Keeps P&L math interpretable across price regimes.
+* Long/short symmetric: Binance Spot doesn't allow shorting without margin, but for *measuring directional accuracy* we treat shorts symbolically (sell high, buy back lower). The UI says "sim-only" prominently — we are not pretending we could short BTC at the spot exchange tomorrow.
+* A `vol_adjusted_qty(target_vol_bps, realized_vol_bps)` knob is on the roadmap; sizing then becomes `max_qty_usd × (target / realized)` clipped to `[0.5×, 2×]`. Improves Sharpe; design preserved in ADR-011 history once landed.
+
+**Decision — risk caps (3 hard kill-switches, UTC midnight reset).**
+1. `max_consecutive_losses = 5` — halts on regime-shift evidence (the model was fit on 7d, market is now 8d in). Persists across UTC-midnight rollover (a long losing streak shouldn't auto-clear because the clock ticked).
+2. `max_daily_loss_usd = 5.0` — bounds worst-case in any 24-hour window. Clears at UTC midnight (this is the whole point of a daily cap).
+3. **One position at a time** — doubles as a position cap; see entry semantics above.
+
+When halted, `on_bar_close` returns `None` for any new entry but **still closes** an open position on time-stop — we never strand state in `trader.state.open_position` between restarts.
+
+**Decision — calibration gate (refuse to trade an unvalidated model).**
+* `require_calibrated = True` (default). Trades open only when `predictor.is_calibrated()` returns `True`, which itself requires `dir_acc_ci_low > 0.50` from the trainer's bootstrap CI (ADR-008's walk-forward).
+* Operationally this means: the moment the trainer ships a model whose lower confidence bound is above random, the runner starts opening trades on the next minute boundary — no code change.
+* Override (`require_calibrated=False`) exists for backtest sweeps; never set for the production runner (gated by docs).
+
+**Decision — model versioning (mtime as the version field).**
+* Every `PaperTrade` row carries `model_version = str(predictor._weights_mtime or 0.0)`. Lets us slice "P&L since model v3 went live" via SQL without ambiguous timestamp games.
+* Trainer writes weights atomically; predictor's mtime hot-reload (tested in `test_hot_reload_picks_up_new_weights`) means the next trade after a `.cbm` swap automatically carries the new version.
+
+**Trade-off accepted — sim ≠ live in three known ways.**
+1. **No slippage modelling.** We close at the same `microprice` we'd open at on the next bar — no spread crossing, no impact. Real maker fills can be partial or never fill at all; we assume 100 % fill rate. Documented expansion: `slippage_bps_per_side` knob with a fill-rate model from the existing sim-backtest engine (Phase A).
+2. **No latency in the path Binance → predictor.** Every bar is scored on `microprice_close` of the bar that just ended — a real maker order would have to be in the book *before* that close to fill at that price. Adding a one-bar offset is a one-line patch when we go live.
+3. **Long shorts assumed available.** As above, Binance Spot doesn't support shorts without margin. The UI flags this and the ADR-005 sim-only contract makes it explicit.
+
+**What would change to go live (the migration runbook).**
+1. Replace the `paper_trades` writer with a `live_trades` writer that posts orders via the Binance REST/WS trading endpoints. Keep the schema identical so cohort analysis still works.
+2. Add `kill_switch.py` daemon: external file that the runner checks on every tick — `touch /etc/neucast/halt` to drop into pure-close mode immediately.
+3. Tighten risk caps: `max_qty_usd = $1` for the first week; ramp by 2× weekly only if cumulative live P&L is positive.
+4. Add slippage modelling against the sim-backtest fill-rate curve so we calibrate vs. live drift.
+5. Audit log every API request/response to a separate `live_orders_audit` table — non-truncatable, append-only.
+6. ADR-005 amendment ("sim-only → first $100/day live with explicit kill switches"); compliance review (РФ нерезидент Binance — отдельная тема).
+
+**Alternative rejected — fractional Kelly sizing.** Theoretically optimal under known edge; in practice we don't know our edge precisely (the bootstrap CI is wide for the first few weeks of data) and Kelly becomes destabilising under estimation error. Fixed-notional is robust by construction; the vol-adjusted variant adds the right amount of dynamism without the Kelly fragility.
+
+**Alternative rejected — dynamic-horizon (close on prob-flip).** Tempting but invalidates the trainer's target. Right move is to retrain on a "best-exit-within-H" label, not to override the time-stop ad-hoc — a Phase D research project.
+
+---
+
 ## 5 · Module layout
 
 ```
