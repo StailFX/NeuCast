@@ -39,6 +39,7 @@ from sqlalchemy.exc import ProgrammingError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.highfreq.feature_pipeline import build_latest_feature_row
+from app.highfreq.paper_trader import PaperTraderConfig, RiskCaps
 from app.highfreq.predictor import LivePredictor, get_predictor
 
 # NOTE: ``app.db`` reads ``DATABASE_URL`` at import time, so we **defer**
@@ -551,3 +552,224 @@ async def get_forecast(
             "model": status.to_dict(),
         })
     )
+
+
+# ── Paper trades endpoint (Phase C UI block) ──────────────────────────────
+
+
+# Default page size for the recent-trades list. Big enough that the UI's
+# 24h sparkline + recent table don't both need separate queries; small
+# enough that even after months of trading the response is a few KB.
+DEFAULT_PAPER_TRADES_LIMIT: int = 50
+
+# Hard cap to prevent a `?limit=99999999` browser-bug from melting the DB.
+MAX_PAPER_TRADES_LIMIT: int = 500
+
+
+def _fetch_recent_paper_trades(
+    db: Session, symbol: str, limit: int,
+) -> Optional[list[dict[str, Any]]]:
+    """Return the ``limit`` most recent closed paper trades for ``symbol``.
+
+    ``None`` distinguishes "DB unreachable / table missing" (caller
+    surfaces 503) from "no trades yet" (caller returns empty list — a
+    valid 200).
+    """
+    try:
+        rows = db.execute(
+            text(
+                "SELECT id, symbol, side, qty, "
+                "entry_ts, entry_price, entry_prob_up, "
+                "exit_ts, exit_price, exit_reason, "
+                "fee_paid_total_usd, pnl_usd, pnl_bps, "
+                "model_version, written_at "
+                "FROM paper_trades "
+                "WHERE symbol = :symbol "
+                "ORDER BY exit_ts DESC "
+                "LIMIT :limit"
+            ),
+            {"symbol": symbol, "limit": int(limit)},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("paper_trades fetch failed (%s): %s", symbol, exc)
+        return None
+    return [dict(r) for r in rows]
+
+
+def _fetch_paper_trades_total(db: Session, symbol: str) -> Optional[int]:
+    """Lifetime trade count (for the "X trades total" badge). ``None``
+    on DB error — caller treats as unknown without 503-ing the page."""
+    try:
+        return int(db.execute(
+            text("SELECT COUNT(*) FROM paper_trades WHERE symbol = :symbol"),
+            {"symbol": symbol},
+        ).scalar() or 0)
+    except (ProgrammingError, OperationalError):
+        return None
+
+
+def compute_paper_stats(
+    *,
+    trades_recent: list[dict[str, Any]],
+    total_trades_lifetime: Optional[int],
+    now: datetime,
+    config: PaperTraderConfig,
+    risk_caps: RiskCaps,
+) -> dict[str, Any]:
+    """Pure function — derive the stats block shown above the trades table.
+
+    Designed to mirror what ``PaperTrader.status()`` would compute in
+    the runner process, but reconstructed from history. There's a
+    small race window when the runner has just opened a position (the
+    DB doesn't see it until close) — the UI accepts that and labels
+    the *open* position state via a separate snapshot endpoint if we
+    ever need it. For Phase C this is fine: the UI is a *read-only
+    log*, not a control surface.
+
+    ``trades_recent`` must be sorted DESC by ``exit_ts`` (matches what
+    :func:`_fetch_recent_paper_trades` returns).
+    """
+    # "Today" is computed in UTC since exit_ts is TIMESTAMPTZ stored as UTC.
+    today_utc = now.astimezone(timezone.utc).date()
+
+    trades_today = [
+        t for t in trades_recent
+        if t["exit_ts"].astimezone(timezone.utc).date() == today_utc
+    ]
+    today_pnl_usd = sum(float(t["pnl_usd"]) for t in trades_today)
+    wins_today = sum(1 for t in trades_today if float(t["pnl_usd"]) >= 0)
+    losses_today = len(trades_today) - wins_today
+
+    # Consecutive losses ending at the most recent trade. Walk newest →
+    # oldest; stop at the first non-losing trade.
+    consecutive_losses = 0
+    for t in trades_recent:
+        if float(t["pnl_usd"]) < 0:
+            consecutive_losses += 1
+        else:
+            break
+
+    halted_reason: Optional[str] = None
+    if consecutive_losses >= risk_caps.max_consecutive_losses:
+        halted_reason = "loss_streak"
+    elif today_pnl_usd <= -risk_caps.max_daily_loss_usd:
+        halted_reason = "daily_loss"
+
+    last_trade_ts = trades_recent[0]["exit_ts"] if trades_recent else None
+    latest_model_version = (
+        trades_recent[0]["model_version"] if trades_recent else None
+    )
+
+    # Cumulative P&L for the last N trades (newest first → reverse to
+    # plot left-to-right). One pass; cheap.
+    cumulative_pnl_series: list[dict[str, Any]] = []
+    running = 0.0
+    for t in reversed(trades_recent):
+        running += float(t["pnl_usd"])
+        cumulative_pnl_series.append({
+            "exit_ts": t["exit_ts"].isoformat(),
+            "cum_pnl_usd": round(running, 6),
+        })
+
+    return {
+        "total_trades": total_trades_lifetime,
+        "trades_today": len(trades_today),
+        "today_pnl_usd": round(today_pnl_usd, 4),
+        "wins_today": wins_today,
+        "losses_today": losses_today,
+        "consecutive_losses": consecutive_losses,
+        "halted_reason": halted_reason,
+        "last_trade_ts": last_trade_ts.isoformat() if last_trade_ts else None,
+        "latest_model_version": latest_model_version,
+        "cumulative_pnl_series": cumulative_pnl_series,
+    }
+
+
+def _serialise_trade(t: dict[str, Any]) -> dict[str, Any]:
+    """asyncpg/sqlalchemy give us datetimes — JSON-encode them as ISO."""
+    out = dict(t)
+    for k in ("entry_ts", "exit_ts", "written_at"):
+        v = out.get(k)
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+    # Decimal → float for JSON.
+    for k in (
+        "qty", "entry_price", "entry_prob_up",
+        "exit_price", "fee_paid_total_usd", "pnl_usd", "pnl_bps",
+    ):
+        v = out.get(k)
+        if v is not None:
+            out[k] = float(v)
+    return out
+
+
+@router.get("/api/highfreq/paper_trades")
+async def get_paper_trades(
+    symbol: str = DEFAULT_SYMBOL,
+    limit: int = DEFAULT_PAPER_TRADES_LIMIT,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Recent closed paper trades + computed running stats.
+
+    Returns 200 always (never 503): empty trades list is a valid state
+    during the cold-start period before the trainer ships a model.
+    Database unavailability degrades to ``trades=[]`` with a structured
+    ``db_status`` flag — the UI can show "DB hiccup" without losing the
+    page entirely.
+    """
+    symbol = symbol.upper()
+    limit = max(1, min(int(limit), MAX_PAPER_TRADES_LIMIT))
+
+    config = PaperTraderConfig()
+    risk_caps = RiskCaps()
+
+    trades_raw = _fetch_recent_paper_trades(db, symbol, limit)
+    if trades_raw is None:
+        # DB unreachable — return a soft-failed 200 so the UI keeps
+        # rendering the rest of the page.
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "trades": [],
+            "stats": None,
+            "config": _config_to_dict(config, risk_caps),
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    total_lifetime = _fetch_paper_trades_total(db, symbol)
+    now = datetime.now(tz=timezone.utc)
+
+    stats = compute_paper_stats(
+        trades_recent=trades_raw,
+        total_trades_lifetime=total_lifetime,
+        now=now,
+        config=config,
+        risk_caps=risk_caps,
+    )
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "db_status": "ok",
+        "symbol": symbol,
+        "trades": [_serialise_trade(t) for t in trades_raw],
+        "stats": stats,
+        "config": _config_to_dict(config, risk_caps),
+        "ts": now.isoformat(),
+    }))
+
+
+def _config_to_dict(
+    config: PaperTraderConfig, risk_caps: RiskCaps,
+) -> dict[str, Any]:
+    """Expose the trader's tunables to the UI so it can label thresholds
+    correctly (e.g. "halted: ≥5 consecutive losses")."""
+    return {
+        "entry_long_threshold": config.entry_long_threshold,
+        "entry_short_threshold": config.entry_short_threshold,
+        "horizon_minutes": config.horizon_minutes,
+        "max_qty_usd": config.max_qty_usd,
+        "maker_fee_bps_per_side": config.maker_fee_bps_per_side,
+        "max_consecutive_losses": risk_caps.max_consecutive_losses,
+        "max_daily_loss_usd": risk_caps.max_daily_loss_usd,
+    }

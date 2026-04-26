@@ -314,6 +314,77 @@
       opacity: 0.7;
     }
 
+    /* ─── Paper trading section (Phase C) ─── */
+    .section-h {
+      margin-top: 36px;
+      margin-bottom: 8px;
+      font-size: 22px;
+      font-weight: 700;
+      color: #f1f5f9;
+      letter-spacing: -0.02em;
+    }
+    .section-sub {
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.55;
+      margin-bottom: 18px;
+      max-width: 820px;
+    }
+    .section-sub span { color: #f1f5f9; font-weight: 600; }
+
+    .paper-card .value { font-size: 20px; }
+    .paper-card .value.green { color: var(--green); }
+    .paper-card .value.red { color: var(--red); }
+    .paper-card .value.amber { color: #fbbf24; }
+
+    .paper-table-card {
+      grid-column: 1 / -1;
+      padding: 18px 20px 12px;
+      margin-bottom: 24px;
+    }
+    .paper-table-card .label { margin-bottom: 12px; }
+    .trades-wrap { overflow-x: auto; }
+
+    .trades-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 12.5px;
+    }
+    .trades-table th,
+    .trades-table td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+      white-space: nowrap;
+    }
+    .trades-table th {
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      opacity: 0.7;
+      border-bottom-color: var(--border);
+    }
+    .trades-table td.num,
+    .trades-table th.num { text-align: right; }
+    .trades-table tbody tr:hover { background: rgba(59, 130, 246, 0.04); }
+    .trades-table tr.empty td {
+      text-align: center;
+      color: var(--text-muted);
+      opacity: 0.55;
+      font-family: var(--font-sans, system-ui);
+      font-size: 13px;
+      padding: 18px;
+    }
+    .trades-table .side-long  { color: var(--green); font-weight: 600; }
+    .trades-table .side-short { color: var(--red);   font-weight: 600; }
+    .trades-table .pnl-pos    { color: var(--green); }
+    .trades-table .pnl-neg    { color: var(--red); }
+    .trades-table .reason-time_stop  { color: var(--text-dim); }
+    .trades-table .reason-halt_close { color: #fbbf24; font-weight: 600; }
+
     /* Live dot — как у hero-badge .dot на лендинге. */
     .live-dot {
       display: inline-block;
@@ -428,6 +499,67 @@
       Никаких живых ордеров не выставляется (см. ADR-005).
       Все P&amp;L цифры в backtest-репортах — paper trading с явной
       maker/taker fee-моделью (-1bps / +10bps на сторону).
+    </div>
+
+    <!-- ─── Phase C: Paper trading live block ─── -->
+    <h2 class="section-h">Paper trading</h2>
+    <p class="section-sub">
+      Симулированные сделки на минутных барах. Maker fee 7.5 bps/side
+      (Binance Spot + BNB), time-stop через
+      <span id="paper-cfg-horizon">1</span> минуту,
+      $<span id="paper-cfg-qty">100</span> на сделку. Halt при
+      <span id="paper-cfg-losses">5</span> подряд убыточных
+      или дневном P&amp;L ≤ &minus;$<span id="paper-cfg-daily">5</span>.
+    </p>
+
+    <div class="grid">
+      <div class="card paper-card">
+        <div class="label">Status</div>
+        <div class="value muted" id="paper-status">—</div>
+      </div>
+      <div class="card paper-card">
+        <div class="label">Today P&amp;L (USD)</div>
+        <div class="value muted" id="paper-pnl-today">—</div>
+      </div>
+      <div class="card paper-card">
+        <div class="label">Trades today (W / L)</div>
+        <div class="value muted" id="paper-trades-today">—</div>
+      </div>
+      <div class="card paper-card">
+        <div class="label">Loss streak</div>
+        <div class="value muted" id="paper-streak">—</div>
+      </div>
+      <div class="card paper-card">
+        <div class="label">Total trades (lifetime)</div>
+        <div class="value muted" id="paper-total">—</div>
+      </div>
+      <div class="card paper-card">
+        <div class="label">Last trade</div>
+        <div class="value muted" id="paper-last-ts">—</div>
+      </div>
+    </div>
+
+    <div class="card paper-table-card">
+      <div class="label">Recent trades</div>
+      <div class="trades-wrap">
+        <table class="trades-table">
+          <thead>
+            <tr>
+              <th>Exit</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Exit price</th>
+              <th>Qty</th>
+              <th class="num">P&amp;L USD</th>
+              <th class="num">P&amp;L bps</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="paper-trades-tbody">
+            <tr class="empty"><td colspan="8">пока нет сделок — ждём первую модель</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -552,6 +684,149 @@
 
       poll();
       setInterval(poll, POLL_MS);
+
+      // ─── Paper trading polling (Phase C) ────────────────────────────
+      // Slower than the metrics poll since trades happen at most once per
+      // minute. 5s gives a feel of "live" without spamming the DB.
+      const PAPER_POLL_MS = 5000;
+
+      const elPaperStatus = $('paper-status');
+      const elPaperPnlToday = $('paper-pnl-today');
+      const elPaperTradesToday = $('paper-trades-today');
+      const elPaperStreak = $('paper-streak');
+      const elPaperTotal = $('paper-total');
+      const elPaperLastTs = $('paper-last-ts');
+      const elPaperTbody = $('paper-trades-tbody');
+      const elCfgHorizon = $('paper-cfg-horizon');
+      const elCfgQty = $('paper-cfg-qty');
+      const elCfgLosses = $('paper-cfg-losses');
+      const elCfgDaily = $('paper-cfg-daily');
+
+      function setText(el, text, cls) {
+        el.textContent = text;
+        el.classList.remove('muted', 'green', 'red', 'amber');
+        if (text === '—') el.classList.add('muted');
+        if (cls) el.classList.add(cls);
+      }
+
+      function fmtUsd(x) {
+        if (x === null || x === undefined || Number.isNaN(x)) return '—';
+        const n = Number(x);
+        const sign = n >= 0 ? '+' : '−';
+        return sign + '$' + Math.abs(n).toFixed(4);
+      }
+
+      function fmtTime(iso) {
+        if (!iso) return '—';
+        try {
+          const d = new Date(iso);
+          // hh:mm:ss in user's local TZ (the page-wide convention).
+          return d.toLocaleTimeString('ru-RU', { hour12: false });
+        } catch (_) {
+          return '—';
+        }
+      }
+
+      function applyConfig(cfg) {
+        if (!cfg) return;
+        elCfgHorizon.textContent = cfg.horizon_minutes;
+        elCfgQty.textContent = Number(cfg.max_qty_usd).toFixed(0);
+        elCfgLosses.textContent = cfg.max_consecutive_losses;
+        elCfgDaily.textContent = Number(cfg.max_daily_loss_usd).toFixed(0);
+      }
+
+      function applyPaperStats(stats, cfg) {
+        if (!stats) {
+          [elPaperStatus, elPaperPnlToday, elPaperTradesToday,
+           elPaperStreak, elPaperTotal, elPaperLastTs].forEach((el) => {
+            el.textContent = '—';
+            el.classList.add('muted');
+            el.classList.remove('green', 'red', 'amber');
+          });
+          return;
+        }
+
+        // Status: halted / running / waiting-for-model.
+        if (stats.halted_reason === 'loss_streak') {
+          setText(elPaperStatus, 'HALT — loss streak', 'red');
+        } else if (stats.halted_reason === 'daily_loss') {
+          setText(elPaperStatus, 'HALT — daily loss', 'red');
+        } else if (stats.total_trades && stats.total_trades > 0) {
+          setText(elPaperStatus, 'running', 'green');
+        } else {
+          setText(elPaperStatus, 'waiting for model', 'amber');
+        }
+
+        // Today P&L — coloured by sign.
+        const pnl = stats.today_pnl_usd;
+        const pnlCls = pnl > 0 ? 'green' : (pnl < 0 ? 'red' : null);
+        setText(elPaperPnlToday, fmtUsd(pnl), pnlCls);
+
+        // Trades today (W / L).
+        if (stats.trades_today > 0) {
+          setText(
+            elPaperTradesToday,
+            stats.trades_today + '  (' + stats.wins_today + 'W / ' + stats.losses_today + 'L)',
+          );
+        } else {
+          setText(elPaperTradesToday, '0');
+        }
+
+        // Loss streak — red if at-or-near cap.
+        const streak = stats.consecutive_losses;
+        const cap = (cfg && cfg.max_consecutive_losses) || 5;
+        let streakCls = null;
+        if (streak >= cap)         streakCls = 'red';
+        else if (streak >= cap - 1) streakCls = 'amber';
+        setText(elPaperStreak, String(streak), streakCls);
+
+        setText(elPaperTotal, stats.total_trades !== null ? String(stats.total_trades) : '—');
+        setText(elPaperLastTs, fmtTime(stats.last_trade_ts));
+      }
+
+      function renderTrades(trades) {
+        if (!trades || trades.length === 0) {
+          elPaperTbody.innerHTML =
+            '<tr class="empty"><td colspan="8">пока нет сделок — ждём первую модель</td></tr>';
+          return;
+        }
+        const html = trades.slice(0, 20).map((t) => {
+          const pnlCls = t.pnl_usd >= 0 ? 'pnl-pos' : 'pnl-neg';
+          const sideCls = 'side-' + t.side;
+          const reasonCls = 'reason-' + t.exit_reason;
+          return (
+            '<tr>' +
+              '<td>' + fmtTime(t.exit_ts) + '</td>' +
+              '<td class="' + sideCls + '">' + t.side + '</td>' +
+              '<td>' + Number(t.entry_price).toFixed(2) + '</td>' +
+              '<td>' + Number(t.exit_price).toFixed(2) + '</td>' +
+              '<td>' + Number(t.qty).toFixed(6) + '</td>' +
+              '<td class="num ' + pnlCls + '">' + fmtUsd(t.pnl_usd) + '</td>' +
+              '<td class="num ' + pnlCls + '">' + Number(t.pnl_bps).toFixed(2) + '</td>' +
+              '<td class="' + reasonCls + '">' + t.exit_reason + '</td>' +
+            '</tr>'
+          );
+        }).join('');
+        elPaperTbody.innerHTML = html;
+      }
+
+      async function pollPaper() {
+        try {
+          const url = '/api/highfreq/paper_trades?symbol=' + encodeURIComponent(SYMBOL) + '&limit=50';
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          applyConfig(data.config);
+          applyPaperStats(data.stats, data.config);
+          renderTrades(data.trades);
+        } catch (err) {
+          // Soft-fail — leave whatever was last shown. Better UX than
+          // wiping to "—" on a transient blip.
+        }
+      }
+
+      pollPaper();
+      setInterval(pollPaper, PAPER_POLL_MS);
     })();
   </script>
 </body>
