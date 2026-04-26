@@ -100,7 +100,32 @@ class PaperTraderConfig:
     #: Per-trade notional in USD. $100 keeps round-trip fee at $0.15
     #: even at 7.5 bp/side — comfortably below micro-noise on a fast
     #: dev VPS where every cent of latency would otherwise eat the edge.
+    #:
+    #: This is the BASE notional. When ``vol_adjusted_sizing`` is enabled
+    #: (default, see below), the actual per-trade qty scales by
+    #: ``target_vol_bps / realized_vol_bps`` so position size shrinks
+    #: in volatile regimes and expands in calm ones — Sharpe-improving
+    #: on most strategies, including ours.
     max_qty_usd: float = 100.0
+
+    #: Enable inverse-volatility scaling of position size. When True,
+    #: ``compute_qty_for_notional`` uses the most recent
+    #: ``microprice_high_low_bps`` of the bar as the realized-vol proxy
+    #: and scales notional by ``target_vol_bps / realized_vol_bps``,
+    #: clipped to ``[vol_scale_min, vol_scale_max]``.
+    vol_adjusted_sizing: bool = True
+
+    #: Target intra-bar volatility (in bps of microprice). Trades sized
+    #: so that ``qty × realized_vol == target_vol_bps × max_qty_usd /
+    #: 1e4``. 5 bps ≈ $39 on BTC at $77k — a typical 1-minute high-low
+    #: range during normal market hours.
+    target_vol_bps: float = 5.0
+
+    #: Hard clip on the volatility-adjustment factor. Without this, a
+    #: dead-flat bar with realized_vol_bps → 0 would produce infinite
+    #: notional (and a runaway trade). 0.25× → 4× spans most regimes.
+    vol_scale_min: float = 0.25
+    vol_scale_max: float = 4.0
 
     #: Binance Spot maker fee per side in basis points. Standard tier
     #: with BNB discount is 7.5 bp; without BNB it's 10 bp. We assume
@@ -150,6 +175,38 @@ def compute_qty_for_notional(notional_usd: float, price: float) -> float:
     if price <= 0 or notional_usd <= 0:
         return 0.0
     return notional_usd / price
+
+
+def vol_adjusted_notional(
+    *,
+    base_notional_usd: float,
+    realized_vol_bps: float,
+    target_vol_bps: float,
+    scale_min: float,
+    scale_max: float,
+) -> float:
+    """Inverse-volatility scaling of notional.
+
+    Returns ``base_notional_usd * scale``, where
+    ``scale = clip(target_vol_bps / realized_vol_bps, [scale_min, scale_max])``.
+
+    Calm bar (realized < target) → scale > 1 → bigger notional.
+    Volatile bar (realized > target) → scale < 1 → smaller notional.
+    Clip prevents both blow-ups (realized ≈ 0 → infinite scale) and
+    over-shrinking (realized >> target → near-zero trades that get
+    eaten by fees).
+
+    Pure function — testable without a trader instance.
+    """
+    if base_notional_usd <= 0 or target_vol_bps <= 0:
+        return 0.0
+    if realized_vol_bps <= 0:
+        # Dead bar — fall back to base notional rather than divide-by-zero.
+        # Conservative choice: don't trade an unusual signal aggressively.
+        return float(base_notional_usd)
+    raw_scale = target_vol_bps / realized_vol_bps
+    scale = max(scale_min, min(scale_max, raw_scale))
+    return float(base_notional_usd) * scale
 
 
 def compute_pnl(
@@ -357,8 +414,15 @@ class PaperTrader:
         prob_up: float,
         calibrated: bool,
         model_version: str = "unknown",
+        realized_vol_bps: Optional[float] = None,
     ) -> Optional[PaperTrade]:
         """Process one minute-bar close.
+
+        ``realized_vol_bps`` (e.g. the bar's ``microprice_high_low_bps``
+        feature) drives inverse-volatility position sizing when
+        ``config.vol_adjusted_sizing`` is True. ``None`` (the default)
+        falls back to fixed-notional sizing — preserves the old
+        behaviour for callers that don't have the feature row handy.
 
         Returns a :class:`PaperTrade` row IF a position closed on this
         call (caller persists it). ``None`` otherwise — including when
@@ -424,6 +488,7 @@ class PaperTrader:
             entry_prob_up=prob_up,
             side=side,
             model_version=model_version,
+            realized_vol_bps=realized_vol_bps,
         )
         if closed is None:
             self.state.last_no_op = _NoOpReason.OK_OPENED
@@ -493,8 +558,22 @@ class PaperTrader:
         entry_prob_up: float,
         side: Literal["long", "short"],
         model_version: str,
+        realized_vol_bps: Optional[float] = None,
     ) -> None:
-        qty = compute_qty_for_notional(self.config.max_qty_usd, entry_price)
+        # Determine notional: vol-adjusted if enabled and we have a
+        # realized-vol input, else fixed.
+        if self.config.vol_adjusted_sizing and realized_vol_bps is not None:
+            notional_usd = vol_adjusted_notional(
+                base_notional_usd=self.config.max_qty_usd,
+                realized_vol_bps=float(realized_vol_bps),
+                target_vol_bps=self.config.target_vol_bps,
+                scale_min=self.config.vol_scale_min,
+                scale_max=self.config.vol_scale_max,
+            )
+        else:
+            notional_usd = self.config.max_qty_usd
+
+        qty = compute_qty_for_notional(notional_usd, entry_price)
         if qty <= 0:
             # Defensive — `microprice > 0` was checked but float rounding
             # could land here for crazy small prices.
@@ -512,8 +591,11 @@ class PaperTrader:
             model_version=model_version,
         )
         logger.info(
-            "PaperTrader[%s]: opened %s @ %s (qty=%.6f, prob_up=%.3f, fee=%.4f)",
-            self.symbol, side, entry_price, qty, entry_prob_up, fee_entry,
+            "PaperTrader[%s]: opened %s @ %s (qty=%.6f, notional=$%.2f, "
+            "vol_bps=%s, prob_up=%.3f, fee=%.4f)",
+            self.symbol, side, entry_price, qty, notional_usd,
+            f"{realized_vol_bps:.2f}" if realized_vol_bps is not None else "n/a",
+            entry_prob_up, fee_entry,
         )
 
     def _close_position(

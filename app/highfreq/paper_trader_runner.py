@@ -301,12 +301,24 @@ async def process_one_tick(
 
     model_version = str(p_status.model_age_seconds or 0)
 
+    # Realized intra-bar vol from the feature row drives vol-adjusted
+    # sizing inside the trader. Falls back to None (= fixed notional)
+    # if the feature isn't present.
+    realized_vol_bps: Optional[float] = None
+    try:
+        v = float(feat["microprice_high_low_bps"])
+        if v > 0 and v < 1e6:  # sanity bounds; bps can't be NaN/inf either
+            realized_vol_bps = v
+    except (KeyError, ValueError, TypeError):
+        pass
+
     trade = trader.on_bar_close(
         ts=bar_close_ts,
         microprice=microprice_close,
         prob_up=float(prob_up),
         calibrated=p_status.is_calibrated,
         model_version=model_version,
+        realized_vol_bps=realized_vol_bps,
     )
 
     logger.info(

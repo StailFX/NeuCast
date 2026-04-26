@@ -43,6 +43,7 @@ from app.highfreq.paper_trader import (
     compute_qty_for_notional,
     decide_entry_side,
     fee_per_side,
+    vol_adjusted_notional,
 )
 
 
@@ -668,3 +669,122 @@ def test_total_trades_lifetime_counter_does_not_reset_on_rollover():
 
     assert trader.state.total_trades == 2  # not reset
     assert len(trader.state.closed_today) == 1  # but daily IS reset to 1
+
+
+# ───────────────────────── vol-adjusted sizing ─────────────────────────
+
+
+def test_vol_adjusted_notional_at_target_returns_base():
+    """realized_vol == target_vol → scale=1 → notional unchanged."""
+    out = vol_adjusted_notional(
+        base_notional_usd=100.0,
+        realized_vol_bps=5.0, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    assert out == pytest.approx(100.0)
+
+
+def test_vol_adjusted_notional_calm_bar_scales_up():
+    """realized_vol < target → scale > 1 → bigger notional."""
+    out = vol_adjusted_notional(
+        base_notional_usd=100.0,
+        realized_vol_bps=2.5, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    # 5/2.5 = 2 → $200
+    assert out == pytest.approx(200.0)
+
+
+def test_vol_adjusted_notional_volatile_bar_scales_down():
+    """realized_vol > target → scale < 1 → smaller notional."""
+    out = vol_adjusted_notional(
+        base_notional_usd=100.0,
+        realized_vol_bps=20.0, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    # 5/20 = 0.25 → $25
+    assert out == pytest.approx(25.0)
+
+
+def test_vol_adjusted_notional_clips_to_max():
+    """Crazy-calm bar must not produce $1000 trade — clip at scale_max."""
+    out = vol_adjusted_notional(
+        base_notional_usd=100.0,
+        realized_vol_bps=0.001, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    assert out == pytest.approx(400.0)  # 100 * 4.0
+
+
+def test_vol_adjusted_notional_clips_to_min():
+    """Crazy-volatile bar (e.g. flash crash) → still trades, but tiny."""
+    out = vol_adjusted_notional(
+        base_notional_usd=100.0,
+        realized_vol_bps=10000.0, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    assert out == pytest.approx(25.0)  # 100 * 0.25
+
+
+def test_vol_adjusted_notional_zero_realized_falls_back_to_base():
+    """Dead-flat bar (vol=0): div-by-zero guard → return base, don't blow up."""
+    out = vol_adjusted_notional(
+        base_notional_usd=100.0,
+        realized_vol_bps=0.0, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    assert out == 100.0
+
+
+def test_vol_adjusted_notional_zero_base_returns_zero():
+    out = vol_adjusted_notional(
+        base_notional_usd=0.0,
+        realized_vol_bps=5.0, target_vol_bps=5.0,
+        scale_min=0.25, scale_max=4.0,
+    )
+    assert out == 0.0
+
+
+def test_trader_uses_vol_adjusted_qty_when_realized_vol_provided():
+    """End-to-end: passing realized_vol_bps to on_bar_close → trader's
+    qty reflects the scaling."""
+    cfg = PaperTraderConfig(
+        max_qty_usd=100.0,
+        vol_adjusted_sizing=True,
+        target_vol_bps=10.0,  # Target 10 bps
+        vol_scale_min=0.25, vol_scale_max=4.0,
+    )
+    trader = PaperTrader("BTCUSDT", config=cfg)
+
+    # Volatile bar: realized 20 bps → scale 0.5 → notional $50 → qty 0.5
+    trader.on_bar_close(
+        ts=_ts(minute=0), microprice=100.0, prob_up=0.7, calibrated=True,
+        realized_vol_bps=20.0,
+    )
+    assert trader.state.open_position is not None
+    assert trader.state.open_position.qty == pytest.approx(0.5)
+
+
+def test_trader_falls_back_to_fixed_when_realized_vol_missing():
+    """Old-style call (no realized_vol_bps) → fixed-notional behaviour
+    preserved for backward-compat."""
+    cfg = PaperTraderConfig(max_qty_usd=100.0, vol_adjusted_sizing=True)
+    trader = PaperTrader("BTCUSDT", config=cfg)
+    trader.on_bar_close(
+        ts=_ts(minute=0), microprice=100.0, prob_up=0.7, calibrated=True,
+    )
+    assert trader.state.open_position is not None
+    # qty = 100 / 100 = 1.0 (fixed)
+    assert trader.state.open_position.qty == pytest.approx(1.0)
+
+
+def test_trader_disabled_vol_sizing_ignores_realized_vol():
+    """When vol_adjusted_sizing=False, realized_vol_bps is ignored."""
+    cfg = PaperTraderConfig(max_qty_usd=100.0, vol_adjusted_sizing=False)
+    trader = PaperTrader("BTCUSDT", config=cfg)
+    trader.on_bar_close(
+        ts=_ts(minute=0), microprice=100.0, prob_up=0.7, calibrated=True,
+        realized_vol_bps=20.0,  # would scale to 0.5× if enabled
+    )
+    # qty = 100 / 100 = 1.0 (no scaling)
+    assert trader.state.open_position.qty == pytest.approx(1.0)
