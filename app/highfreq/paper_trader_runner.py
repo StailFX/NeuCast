@@ -80,7 +80,16 @@ from app.highfreq.paper_trader import (
     RiskCaps,
 )
 from app.highfreq.predictor import LivePredictor, weights_path_for_symbol
+from app.highfreq.signal_telegram import SignalFlipDetector
 from app.highfreq import metrics as M
+
+
+# Module-level singleton — each runner process is one symbol, so this
+# detector holds state for exactly one entry. Survives across
+# process_one_tick calls; reset to empty on process restart (which is
+# the right semantics: a runner restart shouldn't notify on the
+# "first" signal it sees, only on flips it observes within its lifetime).
+_SIGNAL_FLIP_DETECTOR = SignalFlipDetector()
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +357,49 @@ async def process_one_tick(
     else:
         signal = "neutral"
     M.predictions_total.labels(symbol=symbol, signal=signal).inc()
+
+    # Persist every prediction to predictions_log (idempotent on
+    # (ts, symbol)) — even when the trader skips. Drives the UI's
+    # signal tape, the Telegram bot replay, and future "model skill
+    # vs trader skill" cohorts. Fail-soft: a failed log doesn't
+    # affect the bar loop.
+    try:
+        from app.highfreq.predictions_log import log_prediction_async
+        await log_prediction_async(
+            pool,
+            ts=bar_close_ts,
+            symbol=symbol,
+            prob_up=float(prob_up),
+            signal=signal,
+            microprice=float(microprice_close),
+            model_version=model_version,
+        )
+    except Exception:
+        logger.warning("predictions_log write failed", exc_info=True)
+
+    # Telegram signal-flip alert (Level 3). Fires on direction change;
+    # cold start (first observation since restart) does not notify to
+    # avoid spam on systemd-driven restarts.
+    prev = _SIGNAL_FLIP_DETECTOR.check_flip(symbol, signal)
+    if prev is not None:
+        from app.highfreq.signal_telegram import (
+            SignalAlertConfig,
+            format_flip_message,
+            send_signal_alert_async,
+        )
+        cfg = SignalAlertConfig.from_env()
+        if cfg.enabled:
+            body = format_flip_message(
+                symbol=symbol, old_signal=prev, new_signal=signal,
+                prob_up=float(prob_up), microprice=float(microprice_close),
+                ts=bar_close_ts, model_version=model_version,
+            )
+            try:
+                await send_signal_alert_async(cfg, body_html=body)
+            except Exception:
+                logger.warning(
+                    "signal_telegram send failed", exc_info=True,
+                )
 
     trade = trader.on_bar_close(
         ts=bar_close_ts,

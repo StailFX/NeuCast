@@ -1341,6 +1341,58 @@ async def get_training_report(
     }))
 
 
+@router.get("/api/highfreq/predictions_history")
+async def get_predictions_history(
+    symbol: str = DEFAULT_SYMBOL,
+    since_minutes: int = 60,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Last N minutes of model predictions for the live signal tape.
+
+    Backed by ``predictions_log`` (migration 005). One row per minute
+    per symbol — captures EVERY forecast, not just the ones the
+    paper-trader acted on. UI uses this to render a tape of recent
+    signals with timestamps + price; future use cases include the
+    Telegram bot replay on user start, and "model skill vs trader
+    skill" cohort analysis (predictions that the trader skipped due
+    to halt or neutral signal still reflect model directional
+    output).
+
+    Read-only, never 503 — degrades to ``rows=[]`` on DB error.
+    """
+    from app.highfreq.predictions_log import fetch_history_sync
+
+    symbol = symbol.upper()
+    # Sane bounds: 1 min .. 24 h. Past 24h is not realistically useful
+    # for a "recent tape" widget; the query would also return 1500+
+    # rows and slow the page.
+    since_minutes = max(1, min(int(since_minutes), 24 * 60))
+
+    try:
+        rows = fetch_history_sync(db, symbol=symbol, since_minutes=since_minutes)
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning(
+            "predictions_history fetch failed (%s): %s", symbol, exc,
+        )
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "since_minutes": since_minutes,
+            "rows": [],
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "db_status": "ok",
+        "symbol": symbol,
+        "since_minutes": since_minutes,
+        "rows": rows,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 @router.get("/api/highfreq/training_history")
 async def get_training_history(
     symbol: str = DEFAULT_SYMBOL,
