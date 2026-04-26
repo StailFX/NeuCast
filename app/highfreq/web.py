@@ -945,6 +945,96 @@ async def get_microprice_history(
     })
 
 
+# ── Regime detection endpoint (Phase C.5e) ────────────────────────────
+
+
+def _fetch_minute_vol_history(
+    db: Session, symbol: str, hours: float,
+) -> Optional[list[dict[str, Any]]]:
+    """Per-minute aggregated vol (microprice high-low in bps) for the
+    last ``hours``. Drives the regime classifier — separate from the
+    per-second microprice history endpoint to keep that one cheap.
+
+    Computes vol on-the-fly via SQL: (max - min) / first × 10000 bps,
+    grouped by date_trunc('minute', ts). One row per minute.
+    """
+    try:
+        rows = db.execute(
+            text(
+                "WITH per_min AS ("
+                "  SELECT date_trunc('minute', ts) AS minute, "
+                "         min(microprice) AS lo, max(microprice) AS hi, "
+                "         (array_agg(microprice ORDER BY ts ASC))[1] AS first_mp "
+                "  FROM highfreq_ofi_1s "
+                "  WHERE symbol = :symbol "
+                # make_interval(hours=>int) is strict; multiply seconds
+                # to support fractional hours without explicit cast.
+                "    AND ts > now() - make_interval(secs => :secs) "
+                "  GROUP BY 1"
+                ") "
+                "SELECT minute AS ts, "
+                "       CASE WHEN first_mp > 0 "
+                "            THEN ((hi - lo) / first_mp) * 1e4 "
+                "            ELSE 0 END AS vol_bps "
+                "  FROM per_min "
+                " ORDER BY minute ASC"
+            ),
+            {"symbol": symbol, "secs": int(float(hours) * 3600)},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("minute vol history fetch failed (%s): %s", symbol, exc)
+        return None
+    return [
+        {
+            "ts": r["ts"].isoformat() if isinstance(r["ts"], datetime) else r["ts"],
+            "vol_bps": _to_float(r["vol_bps"]) or 0.0,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/api/highfreq/regimes")
+async def get_regimes(
+    symbol: str = DEFAULT_SYMBOL,
+    hours: float = 24.0,
+    keep_last_n: int = 60,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Vol-regime breakdown for the last ``hours``.
+
+    UI shows: current regime label (calm/normal/turbulent) coloured
+    pill, last ``keep_last_n`` bars as a tiny stripe chart, and the
+    percentile thresholds the classifier is using.
+
+    Returns 200 always; empty history (cold-start) is a valid state
+    surfaced via ``current=null``.
+    """
+    from app.highfreq.regimes import label_history
+
+    symbol = symbol.upper()
+    hours = max(1.0, min(168.0, float(hours)))   # 1h .. 7d
+    keep_last_n = max(10, min(500, int(keep_last_n)))
+
+    history = _fetch_minute_vol_history(db, symbol, hours)
+    if history is None:
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "regime": None,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    breakdown = label_history(history, keep_last_n=keep_last_n)
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "hours_lookback": hours,
+        "regime": breakdown.to_dict(),
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 # ── Feature importance endpoint (Phase C.5d) ──────────────────────────
 
 

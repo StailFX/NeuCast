@@ -422,6 +422,73 @@
       color: var(--red);
     }
 
+    /* ─── Vol-regime classifier (Phase C.5e) ─── */
+    .regime-card {
+      grid-column: 1 / -1;
+      padding: 12px 18px 12px;
+      margin-top: 14px;
+      margin-bottom: 4px;
+    }
+    .regime-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .regime-pill {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 999px;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .regime-pill.regime-calm {
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: var(--green);
+    }
+    .regime-pill.regime-normal {
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      color: var(--blue);
+    }
+    .regime-pill.regime-turbulent {
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: var(--red);
+    }
+    .regime-pill.regime-empty {
+      background: rgba(148, 163, 184, 0.10);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      color: var(--text-muted);
+    }
+    .regime-strip {
+      display: flex;
+      gap: 1px;
+      height: 12px;
+      border-radius: 3px;
+      overflow: hidden;
+      background: rgba(15, 23, 42, 0.5);
+    }
+    .regime-strip-cell {
+      flex: 1;
+      min-width: 1px;
+      transition: opacity 0.2s;
+    }
+    .regime-strip-cell.regime-calm { background: var(--green); opacity: 0.8; }
+    .regime-strip-cell.regime-normal { background: var(--blue); opacity: 0.8; }
+    .regime-strip-cell.regime-turbulent { background: var(--red); opacity: 0.85; }
+    .regime-strip-cell:hover { opacity: 1; }
+    .regime-meta {
+      margin-top: 6px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      opacity: 0.75;
+    }
+
     /* ─── Feature importance bars (Phase C.5d) ─── */
     .fi-card {
       grid-column: 1 / -1;
@@ -851,6 +918,16 @@
       Никаких живых ордеров не выставляется (см. ADR-005).
       Все P&amp;L цифры в backtest-репортах — paper trading с явной
       maker/taker fee-моделью (-1bps / +10bps на сторону).
+    </div>
+
+    <!-- ─── Phase C.5e: Regime detection ─── -->
+    <div class="card regime-card">
+      <div class="regime-header">
+        <div class="label">Vol regime · last 24h percentile-classified</div>
+        <div class="regime-pill" id="regime-pill">—</div>
+      </div>
+      <div class="regime-strip" id="regime-strip"></div>
+      <div class="regime-meta" id="regime-meta">ожидаем данные…</div>
     </div>
 
     <!-- ─── Phase C.5: Forecast widget ─── -->
@@ -1538,6 +1615,48 @@
           const d2 = await r2.json();
           applyTrainingReport(d2);
         } catch (_) { /* keep last shown */ }
+
+        try {
+          const r3 = await fetch('/api/highfreq/regimes?symbol=' + encodeURIComponent(currentSymbol()) +
+                                 '&hours=24&keep_last_n=60',
+                                 { cache: 'no-store' });
+          const d3 = await r3.json();
+          applyRegime(d3);
+        } catch (_) { /* keep last shown */ }
+      }
+
+      // ─── Vol-regime widget (Phase C.5e) ──────────────────────────────
+      const elRegimePill = $('regime-pill');
+      const elRegimeStrip = $('regime-strip');
+      const elRegimeMeta = $('regime-meta');
+
+      function applyRegime(d) {
+        if (!d || d.ok === false || !d.regime || !d.regime.current) {
+          elRegimePill.className = 'regime-pill regime-empty';
+          elRegimePill.textContent = '—';
+          elRegimeStrip.innerHTML = '';
+          elRegimeMeta.textContent = 'недостаточно данных для классификации';
+          return;
+        }
+        const r = d.regime;
+        elRegimePill.className = 'regime-pill regime-' + r.current;
+        elRegimePill.textContent = r.current.toUpperCase();
+        // Stripe chart: one cell per bar in r.history.
+        const cells = (r.history || []).map((b) =>
+          '<div class="regime-strip-cell regime-' + b.regime +
+          '" title="' + b.ts + ' · ' + b.vol_bps.toFixed(2) +
+          ' bps · ' + b.regime + '"></div>'
+        ).join('');
+        elRegimeStrip.innerHTML = cells;
+        const c = r.counts || {};
+        const total = (c.calm || 0) + (c.normal || 0) + (c.turbulent || 0);
+        const pct = (k) => total > 0 ? ((c[k] || 0) / total * 100).toFixed(0) : '0';
+        elRegimeMeta.textContent =
+          'thresholds: low<' + r.p_low.toFixed(2) +
+          ' bps · high<' + r.p_high.toFixed(2) +
+          ' bps  ·  24h split:  calm ' + pct('calm') +
+          '%  normal ' + pct('normal') +
+          '%  turbulent ' + pct('turbulent') + '%';
       }
 
       pollForecast();
