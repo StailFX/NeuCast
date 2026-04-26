@@ -1,0 +1,171 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: neucast-hf-critical
+    folder: NeuCast
+    interval: 1m
+    rules:
+      - uid: ingest-dead-rule
+        title: Ingest dead — no Binance frames for 5 min
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: rate(neucast_hf_ws_frames_total[2m])
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [0.01], type: lt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Tokyo ingest stopped receiving Binance WS frames"
+          description: "rate(neucast_hf_ws_frames_total[2m]) is near zero. Check `systemctl status neucast-highfreq.service`"
+        labels:
+          severity: critical
+
+      - uid: reconnect-storm-rule
+        title: WS reconnect storm
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: increase(neucast_hf_ws_reconnects_total[1h])
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [5], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: OK
+        execErrState: OK
+        for: 0m
+        annotations:
+          summary: "Binance WebSocket >5 reconnects in last hour"
+          description: "Possible network degradation or Binance throttling. Check journalctl -u neucast-highfreq.service"
+        labels:
+          severity: warning
+
+      - uid: disk-full-rule
+        title: Tokyo disk usage >85%
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: 1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [0.85], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: OK
+        execErrState: OK
+        for: 10m
+        annotations:
+          summary: "Tokyo VPS disk usage > 85%"
+          description: "df -h / on Tokyo. Likely L2 archival cron behind, or unexpected log growth."
+        labels:
+          severity: warning
+
+      - uid: paper-trader-halted-rule
+        title: Paper trader halted on risk caps
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: max(neucast_hf_paper_trader_halted{reason!="none"}) by (symbol, reason)
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [0.5], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: OK
+        execErrState: OK
+        for: 1m
+        annotations:
+          summary: "Paper trader halted (loss-streak or daily-loss cap)"
+          description: "Risk cap triggered for {{ $labels.symbol }}: {{ $labels.reason }}. Check /highfreq for context."
+        labels:
+          severity: warning
+
+      - uid: ofi-stalled-rule
+        title: OFI rows stopped writing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: rate(neucast_hf_ofi_rows_written_total[5m])
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [0.5], type: lt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: OK
+        execErrState: OK
+        for: 5m
+        annotations:
+          summary: "OFI 1-sec rows not flowing to Postgres"
+          description: "Aggregator stalled or Postgres unavailable. Check `docker logs neucast-postgres` and ingest health."
+        labels:
+          severity: critical
