@@ -796,6 +796,62 @@ def _config_to_dict(
     }
 
 
+@router.get("/api/highfreq/realized_accuracy")
+async def get_realized_accuracy(
+    symbol: str = DEFAULT_SYMBOL,
+    window: int = 100,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Rolling realized directional accuracy of the paper trader.
+
+    Complementary to ``training_report`` — that endpoint surfaces
+    walk-forward CV accuracy on **historical** data; this one shows
+    accuracy on **trades that actually closed in production**.
+    Defence-prep: if CV says 0.55 but realized is 0.49, a reviewer's
+    obvious next question ("does it work in production?") gets a
+    direct numeric answer instead of "trust the CV".
+
+    Returns 200 even on cold-start (no trades yet) — the JSON includes
+    a clear ``ok=true``/``n_eligible=0`` shape and the UI renders "—".
+    Returns 503 only when the DB is unreachable.
+    """
+    from app.highfreq.realized_accuracy import (
+        DEFAULT_WINDOW_SIZES,
+        fetch_rolling_accuracy_sync,
+    )
+
+    symbol = symbol.upper()
+    # Allow only sane window sizes — accept the documented defaults
+    # (50 / 100) plus anything between 10 and the same hard cap we use
+    # for the trades endpoint. Prevents ?window=99999 from scanning
+    # the full table.
+    if window <= 0:
+        window = max(DEFAULT_WINDOW_SIZES)
+    window = max(10, min(int(window), MAX_PAPER_TRADES_LIMIT))
+
+    try:
+        snap = fetch_rolling_accuracy_sync(db, symbol=symbol, window=window)
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("realized_accuracy fetch failed (%s): %s", symbol, exc)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "db_status": "unavailable",
+                "symbol": symbol,
+                "window": window,
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    return JSONResponse(content={
+        "ok": True,
+        "db_status": "ok",
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        **snap.to_dict(),
+    })
+
+
 # ── Training report endpoint (Phase C.5 calibration progress widget) ──────
 
 

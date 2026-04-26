@@ -1,6 +1,6 @@
 # NeuCast
 
-![tests](https://img.shields.io/badge/tests-341%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-392%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 ![status](https://img.shields.io/badge/status-Phase%20D%20%C2%B7%20sim--only-orange)
@@ -25,7 +25,7 @@ AI-платформа для прогнозирования финансовых
 | Status | Production at [neucast.ru](https://neucast.ru) | **Phase D sim-only · 3 symbols live · [docs/highfreq/](docs/highfreq/README.md)** |
 | Symbols | 200+ tickers (yfinance) | BTCUSDT · ETHUSDT · BNBUSDT |
 | Update cadence | Daily / hourly | 1 row/sec into Postgres, prediction every minute |
-| Test suite | inherits root | **341 tests · 100% passing** |
+| Test suite | inherits root | **392 tests · 100% passing** |
 | Observability | systemd + nginx logs | Prometheus + Grafana + Telegram alerts (5 rules) |
 | Cold storage | none | Yandex S3 (Parquet+snappy, hot-cold pattern, 7-day hot retention) |
 
@@ -80,7 +80,7 @@ than buried.
 
 * **Latency:** TCP RTT Tokyo ↔ Binance ≈ **19 ms** (median; vs ~250 ms from Finland)
 * **Architecture decisions:** 11 ADRs in [`docs/highfreq/architecture.md`](docs/highfreq/architecture.md)
-* **Test coverage:** 341 tests, every state-machine branch + endpoint pinned
+* **Test coverage:** 392 tests, every state-machine branch + endpoint pinned
 * **Live UIs:**
     * [`/highfreq`](https://neucast.ru/highfreq) — business dashboard: symbol dropdown, live microprice, **orderbook density heatmap**, predictor status, paper-trader log, **feature importance**, walk-forward **calibration plot**
     * [`/grafana`](https://neucast.ru/grafana) — operations dashboard: ingest health, predictor latency, system metrics, paper P&L trends

@@ -1,0 +1,29 @@
+[Unit]
+# NeuCast HF — frozen-holdout evaluator (per-symbol via systemd template).
+# Runs `tools.eval_frozen_holdout` against the deployed .cbm. Writes a
+# JSON report to weights/highfreq/<sym>_1m_holdout.json that the web
+# UI surfaces alongside the walk-forward training report.
+#
+# Invoke as `systemctl start neucast-highfreq-holdout-eval@btcusdt.service`
+# (lowercase symbol to match the .cbm filename convention).
+Description=NeuCast HF Frozen-Holdout Evaluator (%I)
+Documentation=file:///opt/neucast/tools/eval_frozen_holdout.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neucast
+Group=neucast
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/default/neucast-highfreq-trainer
+# `%I` is the lowercase symbol (e.g. "btcusdt") — eval_frozen_holdout
+# uppercases internally before hitting the DB. Same %I conventions as
+# the trainer template service so an operator only needs to remember
+# one rule.
+ExecStart=/opt/neucast/venv/bin/python -m tools.eval_frozen_holdout --symbol %I
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

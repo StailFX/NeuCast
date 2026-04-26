@@ -1,0 +1,16 @@
+[Unit]
+Description=NeuCast HF Holdout-Eval schedule for %I — weekly Monday 04:30 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# Weekly eval: every Monday at 04:30 UTC = 30 minutes AFTER the daily
+# trainer fires (04:00 UTC). The 30-minute gap gives the trainer time
+# to finish on the slowest symbol — typical run is <30s but paranoid
+# spacing protects against a long re-fit picking up a giant batch of
+# new data.
+OnCalendar=Mon *-*-* 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=180
+
+[Install]
+WantedBy=timers.target

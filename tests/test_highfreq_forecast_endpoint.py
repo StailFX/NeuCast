@@ -55,6 +55,7 @@ def _stub_status(
     is_calibrated: bool = True,
     dir_acc_ci_low: float | None = 0.55,
     dir_acc_mean: float | None = 0.57,
+    dir_acc_p_value: float | None = 0.01,
 ) -> PredictorStatus:
     return PredictorStatus(
         has_model=has_model,
@@ -63,6 +64,7 @@ def _stub_status(
         is_calibrated=is_calibrated,
         dir_acc_mean=dir_acc_mean,
         dir_acc_ci_low=dir_acc_ci_low,
+        dir_acc_p_value=dir_acc_p_value,
         metrics_age_seconds=120.0 if has_model else None,
         n_features_expected=len(FEATURE_COLUMNS),
     )

@@ -133,6 +133,26 @@ paper_consecutive_losses = Gauge(
     ["symbol"],
 )
 
+paper_realized_accuracy_rolling = Gauge(
+    "neucast_hf_paper_realized_accuracy_rolling",
+    "Rolling realized directional accuracy of the paper trader, per "
+    "(symbol, window_size). 'window_size' counts trades not minutes — "
+    "labels are the rolling N (e.g. '50','100'). Updated whenever a "
+    "trade closes via :mod:`app.highfreq.realized_accuracy`. Compares "
+    "side ('long' vs 'short') against the realized exit-vs-entry "
+    "direction; halt_close exits are excluded from the sample because "
+    "they're forced by risk caps and don't reflect model skill.",
+    ["symbol", "window"],
+)
+
+paper_realized_trades_in_window = Gauge(
+    "neucast_hf_paper_realized_trades_in_window",
+    "Number of trades currently inside the rolling-accuracy window "
+    "(may be less than the requested N until the trader has run "
+    "long enough to fill the window). Labelled by (symbol, window).",
+    ["symbol", "window"],
+)
+
 # ────────────────────────────────────────────────────────────────────────
 # Trainer (app.highfreq.trainer — fired by systemd timer)
 # ────────────────────────────────────────────────────────────────────────
@@ -161,6 +181,7 @@ def reset_for_tests() -> None:
         predictions_total, prediction_latency_seconds,
         paper_trades_opened_total, paper_trades_closed_total,
         paper_pnl_usd_total, paper_loss_usd_total,
+        paper_realized_accuracy_rolling, paper_realized_trades_in_window,
         trainer_runs_total, trainer_elapsed_seconds,
     ):
         # prometheus_client doesn't expose a clean reset API; use the

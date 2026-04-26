@@ -409,6 +409,33 @@ async def process_one_tick(
             logger.exception("write_paper_trade failed for trade=%s", trade)
             raise
 
+        # Refresh the rolling realized-accuracy gauge for both windows.
+        # Tiny query (LIMIT 100, indexed (symbol, exit_ts DESC)) — runs
+        # every time a trade closes, well under 1 ms. Failures are
+        # NEVER fatal for the trader: this is observability, not state.
+        from app.highfreq.realized_accuracy import (
+            DEFAULT_WINDOW_SIZES,
+            fetch_rolling_accuracy,
+        )
+        for window in DEFAULT_WINDOW_SIZES:
+            try:
+                snap = await fetch_rolling_accuracy(
+                    pool, symbol=symbol, window=window,
+                )
+                if snap.accuracy is not None:
+                    M.paper_realized_accuracy_rolling.labels(
+                        symbol=symbol, window=str(window),
+                    ).set(snap.accuracy)
+                M.paper_realized_trades_in_window.labels(
+                    symbol=symbol, window=str(window),
+                ).set(snap.n_eligible)
+            except Exception:
+                logger.warning(
+                    "realized_accuracy update failed (symbol=%s window=%d) — "
+                    "metric stays at last value", symbol, window,
+                    exc_info=True,
+                )
+
     return trade
 
 

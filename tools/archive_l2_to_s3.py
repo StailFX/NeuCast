@@ -405,7 +405,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         stats.days_deleted, stats.rows_deleted,
         stats.days_failed,
     )
-    return 1 if stats.days_failed > 0 else 0
+
+    if stats.days_failed > 0:
+        # Don't write the heartbeat on partial failure — the alert SHOULD
+        # fire so an operator looks at logs. Successful days that did
+        # archive don't get rolled back, but the next run will retry the
+        # failed ones idempotently.
+        return 1
+
+    # Heartbeat for the "L2 archive stale" Grafana alert. Idempotent —
+    # rewrites the same metric file on every clean run.
+    from app.highfreq.cron_metrics import write_cron_success
+    write_cron_success(
+        "neucast_hf_l2_archive_last_success_timestamp_seconds",
+        file_stem="neucast_hf_l2_archive",
+    )
+    return 0
 
 
 if __name__ == "__main__":

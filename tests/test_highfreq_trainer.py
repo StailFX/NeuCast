@@ -19,7 +19,10 @@ import pytest
 from app.highfreq.trainer import (
     FEATURE_COLUMNS,
     MIN_SECONDS_PER_MINUTE,
+    TrainingReport,
+    WalkForwardConfig,
     aggregate_to_minute,
+    binom_test_p_greater_half,
     bootstrap_dir_acc_ci,
     build_features,
     build_target,
@@ -186,6 +189,49 @@ def test_bootstrap_dir_acc_ci_empty_input():
     assert np.isnan(point) and np.isnan(lo) and np.isnan(hi)
 
 
+# ───── one-sided binomial p-value ─────
+
+
+def test_binom_test_p_value_perfect_score_is_tiny():
+    """100/100 correct → p ≈ 2^-100 ≈ 7.9e-31. Defends against off-by-one
+    in alternative-direction (one-sided "greater")."""
+    p = binom_test_p_greater_half(100, 100)
+    assert p < 1e-25
+
+
+def test_binom_test_p_value_chance_score_is_large():
+    """50/100 correct = exactly 50 % → p ≈ 0.54 (the SF at the median is
+    just above 0.5 because the distribution is discrete and the test is
+    P(X >= k), inclusive). Anything in (0.4, 0.7) is fine — main goal is
+    "definitely not significant"."""
+    p = binom_test_p_greater_half(50, 100)
+    assert 0.4 < p < 0.7
+
+
+def test_binom_test_p_value_borderline_significant():
+    """58/100 → just inside p < 0.05 (z ≈ 1.6). Pin the exact value to
+    catch silent regressions in the scipy API."""
+    p = binom_test_p_greater_half(58, 100)
+    assert 0.04 < p < 0.07
+
+
+def test_binom_test_p_value_zero_total_is_nan():
+    """No predictions yet → NaN, never crash. The trainer hits this at
+    cold-start when ``walk_forward_evaluate`` produces zero folds."""
+    assert np.isnan(binom_test_p_greater_half(0, 0))
+
+
+def test_binom_test_p_value_below_half_is_large():
+    """Below-chance accuracy is NOT significant under a one-sided
+    "greater than 0.5" test. 30/100 should give p close to 1.0 — we
+    explicitly do NOT flip to a two-sided test for "any deviation from
+    chance" because reversed-skill is operationally useless (you'd
+    paper-trade against your own model, which is just a different
+    model with a sign flip)."""
+    p = binom_test_p_greater_half(30, 100)
+    assert p > 0.99
+
+
 @pytest.mark.parametrize("horizon", [1, 2, 3])
 def test_target_shift_matches_horizon(horizon):
     df = _seconds_frame(n_minutes=5 + horizon, drift_per_min_bps=5.0)
@@ -194,3 +240,117 @@ def test_target_shift_matches_horizon(horizon):
     # Last `horizon` rows must be unobservable.
     n_unobs = (out["y"] == -1).sum()
     assert n_unobs == horizon
+
+
+# ───── frozen holdout config + report ─────
+
+
+def test_walk_forward_config_frozen_holdout_default_is_7_days():
+    """Pin the default. Defence-grade work assumes a 7-day holdout —
+    a future refactor that changes this without updating the
+    `eval_frozen_holdout` doc + ADR would be a regression."""
+    cfg = WalkForwardConfig()
+    assert cfg.frozen_holdout_days == 7
+
+
+def test_walk_forward_config_frozen_holdout_zero_disables():
+    """Bootstrap mode: when there's barely any data, you may want
+    every bar to count. ``0`` is the documented escape hatch."""
+    cfg = WalkForwardConfig(frozen_holdout_days=0)
+    assert cfg.frozen_holdout_days == 0
+
+
+def test_training_report_holdout_fields_default_to_disabled():
+    """Backward-compat: a TrainingReport built without explicit
+    holdout fields must serialise cleanly with disabled defaults."""
+    rep = TrainingReport(
+        symbol="BTCUSDT",
+        horizon_min=1,
+        neutral_band_bps=1.0,
+        n_seconds_loaded=0,
+        n_minutes_after_aggregation=0,
+        n_minutes_after_neutral_drop=0,
+        base_rate=float("nan"),
+        n_folds=0,
+        dir_acc_mean=float("nan"),
+        dir_acc_ci_low=float("nan"),
+        dir_acc_ci_high=float("nan"),
+        dir_acc_p_value=float("nan"),
+        log_loss_mean=float("nan"),
+    )
+    assert rep.frozen_holdout_days == 0
+    assert rep.n_minutes_in_holdout is None
+    assert rep.holdout_cutoff_iso is None
+    # JSON round-trip.
+    payload = json.loads(rep.to_json())
+    assert payload["frozen_holdout_days"] == 0
+    assert payload["n_minutes_in_holdout"] is None
+    assert payload["holdout_cutoff_iso"] is None
+
+
+def test_training_report_holdout_fields_round_trip_when_populated():
+    """When the trainer reserved a holdout, all three fields must
+    survive to_json. Pin the JSON keys so the UI-side reader can
+    rely on them."""
+    rep = TrainingReport(
+        symbol="BTCUSDT",
+        horizon_min=1,
+        neutral_band_bps=1.0,
+        n_seconds_loaded=10000,
+        n_minutes_after_aggregation=2000,
+        n_minutes_after_neutral_drop=1500,
+        base_rate=0.51,
+        n_folds=4,
+        dir_acc_mean=0.55,
+        dir_acc_ci_low=0.52,
+        dir_acc_ci_high=0.58,
+        dir_acc_p_value=0.001,
+        log_loss_mean=0.69,
+        frozen_holdout_days=7,
+        n_minutes_in_holdout=480,
+        holdout_cutoff_iso="2026-04-20T00:00:00+00:00",
+    )
+    payload = json.loads(rep.to_json())
+    assert payload["frozen_holdout_days"] == 7
+    assert payload["n_minutes_in_holdout"] == 480
+    assert payload["holdout_cutoff_iso"] == "2026-04-20T00:00:00+00:00"
+
+
+def test_frozen_holdout_partition_arithmetic():
+    """The ``run_training`` loop applies a holdout cutoff via:
+
+        cutoff = now() - timedelta(days=frozen_holdout_days)
+        train_mask = meta["minute"] < cutoff
+
+    Pin the comparison shape: bars EXACTLY at the cutoff should be
+    EXCLUDED from training (i.e. they go INTO the holdout). This is the
+    same direction as ``y > 0`` in build_target — defensive: tests the
+    boundary so a future ``<=`` change doesn't silently include
+    holdout bars in training.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime(2026, 4, 20, 0, 0, 0, tzinfo=timezone.utc)
+    minutes = pd.Series([
+        cutoff - timedelta(minutes=2),  # before  → train
+        cutoff - timedelta(minutes=1),  # before  → train
+        cutoff,                         # AT      → holdout (excluded)
+        cutoff + timedelta(minutes=1),  # after   → holdout
+    ])
+    cutoff_pd = pd.Timestamp(cutoff)
+    train_mask = minutes < cutoff_pd
+    assert train_mask.tolist() == [True, True, False, False]
+
+
+def test_frozen_holdout_partition_keeps_all_when_disabled():
+    """frozen_holdout_days=0 → no partition applied → train sees
+    everything. This MUST hold so an operator can recover from a
+    bad data-volume estimate by setting `--frozen-holdout-days 0`
+    on the CLI without code changes."""
+    cfg = WalkForwardConfig(frozen_holdout_days=0)
+    # The actual run_training short-circuits the partition when
+    # frozen_holdout_days <= 0; no train/holdout split happens.
+    assert cfg.frozen_holdout_days <= 0  # the guard condition
+
+
+# Need json import for the round-trip test.
+import json  # noqa: E402

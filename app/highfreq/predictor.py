@@ -119,6 +119,12 @@ class PredictorStatus:
     is_calibrated: bool               # dir_acc_ci_low > threshold
     dir_acc_mean: float | None        # last training run's bootstrap point
     dir_acc_ci_low: float | None      # bootstrap 95% lower bound
+    #: One-sided binomial p-value testing H₀ "no skill" vs H_a "p > 0.5".
+    #: Complementary to ``dir_acc_ci_low``: even when the CI lower bound
+    #: brushes 0.5, a small p-value (< 0.05) is the canonical academic
+    #: way to claim significance. ``None`` until the trainer produces
+    #: at least one fold's worth of pooled predictions.
+    dir_acc_p_value: float | None
     metrics_age_seconds: float | None # since metrics-file mtime
     n_features_expected: int          # len(FEATURE_COLUMNS) for sanity
 
@@ -277,9 +283,14 @@ class LivePredictor:
 
         dir_acc_mean: float | None = None
         dir_acc_ci_low: float | None = None
+        dir_acc_p_value: float | None = None
         if self._metrics is not None:
             dir_acc_mean = _maybe_float(self._metrics.get("dir_acc_mean"))
             dir_acc_ci_low = _maybe_float(self._metrics.get("dir_acc_ci_low"))
+            # ``.get`` so older metrics.json files written before
+            # the p-value field was added still load cleanly (returns
+            # None → UI shows "—").
+            dir_acc_p_value = _maybe_float(self._metrics.get("dir_acc_p_value"))
 
         return PredictorStatus(
             has_model=self._model is not None,
@@ -288,6 +299,7 @@ class LivePredictor:
             is_calibrated=self.is_calibrated(),
             dir_acc_mean=dir_acc_mean,
             dir_acc_ci_low=dir_acc_ci_low,
+            dir_acc_p_value=dir_acc_p_value,
             metrics_age_seconds=metrics_age,
             n_features_expected=len(FEATURE_COLUMNS),
         )

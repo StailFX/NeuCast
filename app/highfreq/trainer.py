@@ -109,6 +109,25 @@ class WalkForwardConfig:
     catboost_learning_rate: float = 0.05
     catboost_thread_count: int = 2           # ADR-006
     random_seed: int = 42
+    #: Days of the most-recent data the trainer is FORBIDDEN from
+    #: looking at — neither walk-forward CV folds nor the final-model
+    #: fit see these bars. Reserved for ``tools/eval_frozen_holdout.py``
+    #: to evaluate the deployed model on data it has truly never seen.
+    #:
+    #: Why this is different from walk-forward CV: walk-forward IS
+    #: out-of-sample for individual folds, but hyperparameters
+    #: (CatBoost depth, learning rate, neutral-band threshold) were
+    #: tuned by inspecting CV outputs, so there's a mild leak. A
+    #: frozen holdout is the canonical way to claim "I have no leak"
+    #: under academic scrutiny — the trainer literally cannot tune
+    #: against data it never loads.
+    #:
+    #: 0 disables the holdout (use during early bootstrapping when
+    #: every bar of data matters); 7 is the default once the system
+    #: is warm — gives ``eval_frozen_holdout.py`` a sample of
+    #: ~7 × 24 × 60 ≈ 10k bars after neutral-band drop, plenty for
+    #: a tight Wilson CI.
+    frozen_holdout_days: int = 7
 
 
 @dataclass
@@ -261,6 +280,36 @@ def bootstrap_dir_acc_ci(
     return point, lo, hi
 
 
+def binom_test_p_greater_half(n_correct: int, n_total: int) -> float:
+    """One-sided exact binomial test for "model is better than random".
+
+    Returns ``P(X >= n_correct | X ~ Binomial(n_total, 0.5))`` — the
+    probability of seeing at least this many correct calls if the model
+    had no directional skill.
+
+    Why a separate metric from the bootstrap CI
+    -------------------------------------------
+
+    Bootstrap CI answers "what's the plausible range of the accuracy?"
+    The p-value answers "could this number have come from random
+    guessing?" The two are complementary: a CI of ``[0.49, 0.55]``
+    around 0.52 means we **don't know** whether we have skill, and a
+    well-defined p-value (e.g. ``0.18``) puts a precise number on that
+    uncertainty. Defence-grade reviewers ask for both.
+
+    Implementation: scipy is already a transitive dependency through
+    scikit-learn (used by the trainer for ``GroupKFold`` etc.), so
+    importing it here doesn't grow the deployment footprint.
+
+    NaN return is the safe default when the run produced no folds yet
+    — the UI can render "—" instead of a misleading "p < ..." string.
+    """
+    if n_total <= 0:
+        return float("nan")
+    from scipy.stats import binomtest  # transitive dep via sklearn
+    return float(binomtest(k=n_correct, n=n_total, p=0.5, alternative="greater").pvalue)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Final-model fit + persistence
 # ────────────────────────────────────────────────────────────────────────────
@@ -337,11 +386,27 @@ class TrainingReport:
     dir_acc_mean: float
     dir_acc_ci_low: float
     dir_acc_ci_high: float
+    #: One-sided binomial p-value testing H₀ "no directional skill"
+    #: (proportion correct = 0.5) against H_a "model is better than
+    #: random". Computed on the pooled walk-forward predictions
+    #: (not per-fold) so it reflects sample size honestly. ``NaN``
+    #: when no folds were produced.
+    dir_acc_p_value: float
     log_loss_mean: float
     folds: list[dict[str, Any]] = field(default_factory=list)
     low_directional_skill: bool = True
     weights_path: str | None = None
     elapsed_seconds: float = 0.0
+    #: Days of recent data the trainer was forbidden to look at — kept
+    #: as a separate frozen holdout for ``tools/eval_frozen_holdout.py``.
+    #: 0 means the holdout was disabled (early bootstrap mode).
+    frozen_holdout_days: int = 0
+    #: Bars excluded from training/CV by the frozen holdout. ``None``
+    #: when the holdout is disabled.
+    n_minutes_in_holdout: int | None = None
+    #: Cutoff time: bars with ``minute >= holdout_cutoff_iso`` were
+    #: held out. ``None`` when disabled or no data was available.
+    holdout_cutoff_iso: str | None = None
 
     def to_json(self) -> str:
         """JSON-serialise the report. NaN/Inf are emitted as ``null`` so
@@ -383,6 +448,31 @@ def run_training(
         "after target+neutral-band drop: %d bars (%.1f%% kept)",
         n_min_kept, 100.0 * n_min_kept / max(1, n_min),
     )
+
+    # Frozen holdout split. Bars with ``minute >= cutoff`` are
+    # reserved for ``tools/eval_frozen_holdout.py`` — neither
+    # walk-forward CV nor the final-model fit see them. This is the
+    # academic-grade "I have no leak" answer.
+    n_in_holdout: int | None = None
+    holdout_cutoff_iso: str | None = None
+    if cfg.frozen_holdout_days > 0 and not meta.empty:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = _dt.now(tz=_tz.utc) - _td(days=int(cfg.frozen_holdout_days))
+        # Compare timezone-aware (meta["minute"] is tz-UTC by upstream contract).
+        cutoff_pd = pd.Timestamp(cutoff)
+        train_mask = meta["minute"] < cutoff_pd
+        n_in_holdout = int((~train_mask).sum())
+        holdout_cutoff_iso = cutoff_pd.isoformat()
+        if n_in_holdout > 0:
+            logger.info(
+                "frozen-holdout: excluding %d bars at minute >= %s "
+                "(holdout_days=%d)",
+                n_in_holdout, holdout_cutoff_iso, cfg.frozen_holdout_days,
+            )
+            X = X.loc[train_mask].reset_index(drop=True)
+            y = y.loc[train_mask].reset_index(drop=True)
+            meta = meta.loc[train_mask].reset_index(drop=True)
+
     base_rate = float(max(y.mean(), 1.0 - y.mean())) if len(y) else float("nan")
 
     folds, preds = walk_forward_evaluate(X, y, meta, config=cfg)
@@ -397,8 +487,18 @@ def run_training(
         )
         dir_acc_mean = float(dir_acc_arr.mean())
         ll_mean = float(ll_arr.mean())
+        # One-sided p-value on the pooled predictions (same sample as
+        # the CI). Conservative: tests p > 0.5 strictly, so a model
+        # that happens to be biased toward the majority class doesn't
+        # get a free "significant" badge — it has to actually beat
+        # random by enough to overcome ``n_total`` worth of variance.
+        n_correct_total = int(
+            (preds["y_pred"].to_numpy() == preds["y_true"].to_numpy()).sum()
+        )
+        n_total = int(len(preds))
+        dir_acc_p_value = binom_test_p_greater_half(n_correct_total, n_total)
     else:
-        dir_acc_mean = ll_mean = ci_lo = ci_hi = float("nan")
+        dir_acc_mean = ll_mean = ci_lo = ci_hi = dir_acc_p_value = float("nan")
 
     weights_path: str | None = None
     if out_path is not None and len(X) >= cfg.min_train_samples:
@@ -420,7 +520,11 @@ def run_training(
         dir_acc_mean=dir_acc_mean,
         dir_acc_ci_low=ci_lo,
         dir_acc_ci_high=ci_hi,
+        dir_acc_p_value=dir_acc_p_value,
         log_loss_mean=ll_mean,
+        frozen_holdout_days=int(cfg.frozen_holdout_days),
+        n_minutes_in_holdout=n_in_holdout,
+        holdout_cutoff_iso=holdout_cutoff_iso,
         folds=[asdict(f) for f in folds],
         # Cautious default: claim "we have skill" only when the 95 % CI
         # lower bound is strictly above chance. NaN (no data) keeps the
@@ -460,6 +564,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="initial train window for walk-forward (default: 1440 = 1 day)",
     )
     p.add_argument(
+        "--frozen-holdout-days", type=int, default=7,
+        help="reserve last N days from training/CV — used by "
+             "eval_frozen_holdout.py for true OOS evaluation. "
+             "Set 0 during early bootstrap when every bar matters.",
+    )
+    p.add_argument(
         "--log-level", default=os.getenv("LOG_LEVEL", "INFO"),
     )
     return p.parse_args(argv)
@@ -477,7 +587,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("DATABASE_URL is required")
         return 2
 
-    cfg = WalkForwardConfig(initial_train_minutes=args.initial_train_minutes)
+    cfg = WalkForwardConfig(
+        initial_train_minutes=args.initial_train_minutes,
+        frozen_holdout_days=args.frozen_holdout_days,
+    )
     out = Path(args.out) if args.out else None
 
     # Normalise symbol to uppercase here (templated systemd units pass
@@ -491,10 +604,11 @@ def main(argv: list[str] | None = None) -> int:
     # Console-friendly summary.
     logger.info(
         "TRAINING DONE | symbol=%s | bars=%d | folds=%d | "
-        "dir_acc=%.4f [%.4f, %.4f] | logloss=%.4f | base_rate=%.4f | "
+        "dir_acc=%.4f [%.4f, %.4f] | p=%.4f | logloss=%.4f | base_rate=%.4f | "
         "low_skill=%s | elapsed=%.1fs",
         report.symbol, report.n_minutes_after_neutral_drop, report.n_folds,
         report.dir_acc_mean, report.dir_acc_ci_low, report.dir_acc_ci_high,
+        report.dir_acc_p_value,
         report.log_loss_mean, report.base_rate,
         report.low_directional_skill, report.elapsed_seconds,
     )
@@ -506,6 +620,21 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("metrics report written to %s", rp)
     else:
         print(report.to_json())  # noqa: T201
+
+    # Heartbeat: per-symbol "trainer last success" gauge for the
+    # textfile_collector. We emit on data-loaded runs even when
+    # ``n_folds == 0`` (cold-start, ETH/BNB still accumulating
+    # bars) — the alert we care about is "trainer didn't run AT
+    # ALL for >25h", not "trainer ran but didn't yet have enough
+    # data for a fold". The fold-count signal already lives in
+    # the report payload and the UI surfaces it as 0/1500 progress.
+    from app.highfreq.cron_metrics import write_cron_success
+    sym = report.symbol  # already uppercased
+    write_cron_success(
+        "neucast_hf_trainer_last_success_timestamp_seconds",
+        file_stem=f"neucast_hf_trainer_{sym.lower()}",
+        labels={"symbol": sym},
+    )
 
     return 0 if report.n_folds > 0 else 1
 

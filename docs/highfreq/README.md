@@ -95,7 +95,7 @@ Binance Spot WS  →  L2 features  →  CatBoost predictor  →  Paper trader
 | | `app/highfreq/metrics.py` | Centralised Prometheus metric registry |
 | | `tools/archive_l2_to_s3.py` | Daily atomic archival of L2 snapshots → Yandex S3 |
 | | `tools/backup_prometheus_to_s3.py` | Daily Prometheus TSDB snapshot → Yandex S3 |
-| **Tests** | `tests/test_highfreq_*.py` | **341 tests, all passing**, no live DB / WS / FastAPI client |
+| **Tests** | `tests/test_highfreq_*.py` | **392 tests, all passing**, no live DB / WS / FastAPI client |
 
 ---
 
@@ -148,7 +148,8 @@ systemctl list-timers 'neucast-*'
 | `neucast-highfreq.service` | always-on | L2 WebSocket ingest |
 | `neucast-highfreq-web.service` | always-on | slim FastAPI for /highfreq + /metrics |
 | `neucast-paper-trader@{btc,eth,bnb}usdt.service` | always-on | 3 paper-trader runners |
-| `neucast-highfreq-trainer@{...}.timer` | 04:00 UTC daily × 3 | CatBoost retraining per symbol |
+| `neucast-highfreq-trainer@{...}.timer` | 04:00 UTC daily × 3 | CatBoost retraining per symbol (last 7 days held out) |
+| `neucast-highfreq-holdout-eval@{...}.timer` | Mon 04:30 UTC × 3 | Frozen-holdout OOS eval — true-OOS dir_acc + p-value |
 | `neucast-l2-archive.timer` | 02:00 UTC daily | L2 snapshots > 7 days → Yandex S3, atomic verify-before-delete |
 | `neucast-prom-backup.timer` | 03:30 UTC daily | Prometheus TSDB snapshot → Yandex S3 |
 | `prometheus.service` | always-on | TSDB + scraper (port 9099, 30 d retention) |
@@ -167,10 +168,10 @@ curl -s -u neucast:<basic_pass> https://neucast.ru/api/highfreq/health
 
 ```bash
 python3 -m pytest tests/ -q
-# 341 passed in ~5 s
+# 392 passed in ~5 s
 ```
 
-All 341 tests are pure-function — no Postgres, no FastAPI client, no live
+All 392 tests are pure-function — no Postgres, no FastAPI client, no live
 WebSocket. The test pyramid:
 
 | Test file | Tests | Covers |

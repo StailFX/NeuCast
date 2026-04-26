@@ -108,6 +108,17 @@ def main() -> int:
     shutil.rmtree(snap_dir, ignore_errors=True)
     logger.info("local snapshot dir removed: %s", snap_dir)
 
+    # Heartbeat: write success timestamp to node_exporter
+    # textfile_collector so a stuck cron triggers the
+    # "Prom backup stale" alert (see alerts.yaml). Fail-soft —
+    # if the textfile dir is missing on a fresh deploy, the cron
+    # still counts as having succeeded.
+    from app.highfreq.cron_metrics import write_cron_success
+    write_cron_success(
+        "neucast_hf_prom_backup_last_success_timestamp_seconds",
+        file_stem="neucast_hf_prom_backup",
+    )
+
     return 0
 
 

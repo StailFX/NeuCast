@@ -169,3 +169,132 @@ groups:
           description: "Aggregator stalled or Postgres unavailable. Check `docker logs neucast-postgres` and ingest health."
         labels:
           severity: critical
+
+      # ──────── Cron heartbeat alerts (textfile_collector) ────────
+      #
+      # All three crons run daily; we allow a 25-hour grace window before
+      # paging so a single missed firing window doesn't false-positive
+      # (e.g. clock drift, deploy-time pause). The `noDataState: Alerting`
+      # is deliberate: if the textfile NEVER appeared (fresh deploy that
+      # hasn't run the cron yet, or path mis-configured) we want to know
+      # — silent monitoring is worse than no monitoring.
+
+      - uid: l2-archive-stale-rule
+        title: L2 archive cron hasn't succeeded in >25h
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: time() - max(neucast_hf_l2_archive_last_success_timestamp_seconds)
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [90000], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "Daily L2 → S3 archive cron is stale"
+          description: |
+            `tools/archive_l2_to_s3.py` hasn't recorded a success in over 25 hours.
+            Either (a) the systemd timer didn't fire, (b) it crashed mid-run, or
+            (c) every run has reported `days_failed > 0`. Check `journalctl -u
+            neucast-l2-archive.service` and `systemctl status neucast-l2-archive.timer`.
+            **If unmonitored, hot Postgres will keep accumulating and disk-full
+            alert (>85%) will fire next.**
+        labels:
+          severity: warning
+
+      - uid: prom-backup-stale-rule
+        title: Prometheus backup cron hasn't succeeded in >25h
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: time() - max(neucast_hf_prom_backup_last_success_timestamp_seconds)
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [90000], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "Daily Prometheus TSDB → S3 backup cron is stale"
+          description: |
+            `tools/backup_prometheus_to_s3.py` hasn't recorded a success in over 25 hours.
+            Yesterday's TSDB snapshot is missing in S3 — DR drill would not be able to
+            recover the last 24h of metrics if Tokyo died right now. Check
+            `journalctl -u neucast-prom-backup.service` and the Prometheus admin API
+            (`curl -s http://127.0.0.1:9099/api/v1/admin/tsdb/snapshot -X POST`).
+        labels:
+          severity: warning
+
+      - uid: trainer-stale-rule
+        title: HF trainer hasn't succeeded for some symbol in >25h
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              # `by(symbol)` so each missed symbol fires its own instance
+              # — Telegram message templates show the symbol label for
+              # quick triage.
+              expr: time() - max by (symbol) (neucast_hf_trainer_last_success_timestamp_seconds)
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [90000], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "Daily trainer for {{ $labels.symbol }} hasn't succeeded in >25h"
+          description: |
+            `neucast-highfreq-trainer@{{ $labels.symbol }}.timer` hasn't recorded a
+            success in over 25 hours. Without retrains, the live model serves on a
+            stale fit; if data distributions drift, walk-forward calibration cannot
+            update. Check `journalctl -u neucast-highfreq-trainer@{{ $labels.symbol }}.service`
+            (lowercase symbol). This rule was specifically added after the
+            `%I = lowercase` systemd-template bug silently broke trainings — a similar
+            class of bug should now page within 25h instead of being noticed by-eye.
+        labels:
+          severity: warning
