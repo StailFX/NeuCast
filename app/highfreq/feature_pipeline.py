@@ -275,6 +275,18 @@ def make_supervised(
     targeted = build_target(
         minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps
     )
+
+    # Defensive empty-input path: caller queried a symbol that produced
+    # no rows (e.g. case mismatch, brand-new symbol with no history yet,
+    # DB outage). Return well-typed empty (X, y, meta) so downstream
+    # walk_forward_evaluate / pd.concat can no-op cleanly instead of
+    # raising KeyError on missing columns.
+    if targeted.empty:
+        empty_X = pd.DataFrame(columns=FEATURE_COLUMNS)
+        empty_y = pd.Series(dtype=np.int8, name="y")
+        empty_meta = pd.DataFrame(columns=["symbol", "minute", "microprice_close", "return_bps"])
+        return empty_X, empty_y, empty_meta
+
     # Drop unobservable / noise bars.
     keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
     targeted = targeted.loc[keep].reset_index(drop=True)

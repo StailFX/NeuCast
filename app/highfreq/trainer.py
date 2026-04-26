@@ -480,8 +480,11 @@ def main(argv: list[str] | None = None) -> int:
     cfg = WalkForwardConfig(initial_train_minutes=args.initial_train_minutes)
     out = Path(args.out) if args.out else None
 
+    # Normalise symbol to uppercase here (templated systemd units pass
+    # lowercase via %I; DB stores uppercase). Single canonical form
+    # keeps DB queries hitting the right rows.
     report = run_training(
-        dsn, symbol=args.symbol, since_hours=args.since_hours,
+        dsn, symbol=args.symbol.upper(), since_hours=args.since_hours,
         out_path=out, config=cfg,
     )
 

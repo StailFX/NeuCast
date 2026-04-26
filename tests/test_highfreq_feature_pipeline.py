@@ -24,6 +24,7 @@ from app.highfreq.feature_pipeline import (
     FEATURE_COLUMNS,
     build_latest_feature_row,
     build_latest_inference_bar,
+    make_supervised,
 )
 
 
@@ -243,3 +244,30 @@ def test_build_latest_inference_bar_close_matches_last_seconds_microprice():
     assert out is not None
     _, close_mp = out
     assert close_mp == expected_close
+
+
+# ───────── make_supervised: defensive empty-input path ─────────
+
+
+def test_make_supervised_empty_input_returns_well_typed_empty():
+    """A caller that queries with a wrong-case symbol or during an
+    outage gets a 0-row DataFrame back. ``make_supervised`` must
+    produce empty-but-correctly-shaped (X, y, meta) — never crash on
+    a missing-column KeyError. Regression test for the systemd-template
+    `%I = lowercase symbol` bug that returned 0 DB rows.
+    """
+    empty_seconds = pd.DataFrame(columns=[
+        "ts", "symbol", "ofi", "microprice", "depth_imb",
+        "spread_bps", "trade_imb", "n_updates",
+    ])
+
+    X, y, meta = make_supervised(empty_seconds)
+
+    assert X.empty
+    assert list(X.columns) == FEATURE_COLUMNS
+    assert y.empty
+    assert y.dtype == np.int8
+    assert meta.empty
+    assert list(meta.columns) == [
+        "symbol", "minute", "microprice_close", "return_bps",
+    ]
