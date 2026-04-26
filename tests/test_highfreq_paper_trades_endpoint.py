@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -424,3 +425,96 @@ def test_endpoint_default_limit_is_50():
     assert r.status_code == 200
     assert captured["limit_param"] == DEFAULT_PAPER_TRADES_LIMIT
     app.dependency_overrides.clear()
+
+
+# ───────────────────────── /api/highfreq/training_report ─────────────────────────
+
+
+def test_training_report_returns_no_report_yet_when_metrics_missing(tmp_path, monkeypatch):
+    """Cold-start: trainer never ran → 200 with reason='no_report_yet'."""
+    import app.highfreq.web as web_mod
+    monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", tmp_path / "absent.json")
+
+    app = _make_app()
+    client = TestClient(app)
+    r = client.get("/api/highfreq/training_report")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert j["reason"] == "no_report_yet"
+    assert j["min_bars_for_first_fold"] == 1500
+
+
+def test_training_report_returns_report_with_fold_progress(tmp_path, monkeypatch):
+    """Trainer ran, wrote metrics → endpoint returns it + computed
+    fold_ready_pct."""
+    import json as _json
+    import app.highfreq.web as web_mod
+
+    metrics = tmp_path / "btc_metrics.json"
+    metrics.write_text(_json.dumps({
+        "symbol": "BTCUSDT",
+        "n_seconds_loaded": 94979,
+        "n_minutes_after_aggregation": 1583,
+        "n_minutes_after_neutral_drop": 726,
+        "base_rate": 0.514,
+        "n_folds": 0,
+        "dir_acc_mean": None,
+        "dir_acc_ci_low": None,
+        "dir_acc_ci_high": None,
+        "low_directional_skill": True,
+    }))
+    monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
+
+    app = _make_app()
+    client = TestClient(app)
+    r = client.get("/api/highfreq/training_report")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is True
+    # 726 / 1500 = 48.4%
+    assert j["fold_ready_pct"] == pytest.approx(48.4, abs=0.1)
+    assert j["report"]["n_folds"] == 0
+    assert j["report"]["n_minutes_after_neutral_drop"] == 726
+    assert j["report_age_seconds"] is not None
+    assert j["report_age_seconds"] >= 0
+
+
+def test_training_report_unreadable_file(tmp_path, monkeypatch):
+    """Corrupt metrics.json mid-write → 200 with reason='report_unreadable',
+    UI keeps rendering."""
+    import app.highfreq.web as web_mod
+
+    metrics = tmp_path / "corrupt.json"
+    metrics.write_text("{this is not json")
+    monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
+
+    app = _make_app()
+    client = TestClient(app)
+    r = client.get("/api/highfreq/training_report")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert j["reason"] == "report_unreadable"
+
+
+def test_training_report_fold_pct_caps_at_100(tmp_path, monkeypatch):
+    """If we have MORE than min_bars_for_first_fold (folds completed),
+    pct caps at 100% (no overshoot)."""
+    import json as _json
+    import app.highfreq.web as web_mod
+
+    metrics = tmp_path / "abundant.json"
+    metrics.write_text(_json.dumps({
+        "n_minutes_after_neutral_drop": 5000,
+        "n_folds": 3,
+        "dir_acc_mean": 0.547,
+        "dir_acc_ci_low": 0.521,
+        "dir_acc_ci_high": 0.572,
+    }))
+    monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
+
+    app = _make_app()
+    client = TestClient(app)
+    j = client.get("/api/highfreq/training_report").json()
+    assert j["fold_ready_pct"] == 100.0  # not 333.3

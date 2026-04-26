@@ -23,11 +23,13 @@ Phase A scope is sim-only — the page must visibly reflect ADR-005:
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -773,3 +775,75 @@ def _config_to_dict(
         "max_consecutive_losses": risk_caps.max_consecutive_losses,
         "max_daily_loss_usd": risk_caps.max_daily_loss_usd,
     }
+
+
+# ── Training report endpoint (Phase C.5 calibration progress widget) ──────
+
+
+# Minimum minutes (post-neutral-band drop) for one walk-forward fold.
+# Mirrors the trainer's check; surfaced to the UI so users can see
+# "X / Y bars accumulated" without inspecting metrics.json by hand.
+MIN_BARS_FOR_FIRST_FOLD: int = 1500
+
+# Path to the metrics JSON the trainer writes alongside the .cbm.
+# Overridable via env so the same web app can serve dev / prod.
+DEFAULT_METRICS_PATH = Path(
+    os.getenv("HIGHFREQ_METRICS_PATH", "weights/highfreq/btcusdt_1m_metrics.json")
+)
+
+
+@router.get("/api/highfreq/training_report")
+async def get_training_report() -> JSONResponse:
+    """Return the trainer's last metrics report + computed fold-readiness.
+
+    Used by the UI to render two things: (a) the calibration status
+    badge ("dir_acc 0.547 [0.521, 0.572]" or "low directional skill"),
+    (b) the "X / Y bars for next fold" progress widget — so the user
+    sees ramp-up progress visually rather than digging into journals.
+
+    Returns 200 with ``ok=False, reason="no_report_yet"`` if the
+    trainer hasn't written its first ``metrics.json`` yet (cold-start).
+    Never 503 — the page must keep rendering through trainer outages.
+    """
+    path = DEFAULT_METRICS_PATH
+    if not path.exists():
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_report_yet",
+            "metrics_path": str(path),
+            "min_bars_for_first_fold": MIN_BARS_FOR_FIRST_FOLD,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    try:
+        report = json.loads(path.read_text())
+    except Exception as exc:
+        logger.warning("training_report read failed: %s", exc)
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "report_unreadable",
+            "metrics_path": str(path),
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    # Computed fold readiness (UI can show "726 / 1500 bars (48%)").
+    bars_after_drop = int(report.get("n_minutes_after_neutral_drop") or 0)
+    fold_ready_pct = min(100.0, 100.0 * bars_after_drop / MIN_BARS_FOR_FIRST_FOLD)
+
+    # Age of the report — UI shows "trained 4 hours ago" so users can
+    # tell stale weights from fresh ones.
+    try:
+        report_age_seconds = max(
+            0.0, datetime.now(tz=timezone.utc).timestamp() - path.stat().st_mtime,
+        )
+    except OSError:
+        report_age_seconds = None
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "report": report,
+        "report_age_seconds": report_age_seconds,
+        "min_bars_for_first_fold": MIN_BARS_FOR_FIRST_FOLD,
+        "fold_ready_pct": round(fold_ready_pct, 1),
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))

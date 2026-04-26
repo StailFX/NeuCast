@@ -314,6 +314,96 @@
       opacity: 0.7;
     }
 
+    /* ─── Forecast widget (Phase C.5) ─── */
+    .forecast-card .value { font-size: 24px; }
+    .forecast-card .value.green { color: var(--green); }
+    .forecast-card .value.red { color: var(--red); }
+    .forecast-card .value.amber { color: #fbbf24; }
+    .forecast-card .value.signal-arrow {
+      font-size: 28px;
+      letter-spacing: -0.05em;
+    }
+
+    .cal-badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      vertical-align: middle;
+      margin-left: 6px;
+    }
+    .cal-badge.cal-pending {
+      background: rgba(245, 158, 11, 0.10);
+      border: 1px solid rgba(245, 158, 11, 0.32);
+      color: #fbbf24;
+    }
+    .cal-badge.cal-ok {
+      background: rgba(16, 185, 129, 0.10);
+      border: 1px solid rgba(16, 185, 129, 0.32);
+      color: var(--green);
+    }
+    .cal-badge.cal-fail {
+      background: rgba(239, 68, 68, 0.10);
+      border: 1px solid rgba(239, 68, 68, 0.32);
+      color: var(--red);
+    }
+
+    /* ─── Cumulative P&L sparkline (Phase C.5) ─── */
+    .paper-spark-card {
+      grid-column: 1 / -1;
+      padding: 16px 20px 18px;
+      margin-top: 4px;
+      margin-bottom: 18px;
+      position: relative;
+    }
+    .spark-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 10px;
+    }
+    .spark-stats {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+    .spark {
+      width: 100%;
+      height: 120px;
+      display: block;
+    }
+    .spark-zero {
+      stroke: rgba(148, 163, 184, 0.18);
+      stroke-width: 1;
+      stroke-dasharray: 3 3;
+    }
+    .spark-line {
+      stroke: var(--blue);
+      stroke-width: 1.6;
+      fill: none;
+      vector-effect: non-scaling-stroke;
+    }
+    .spark-area {
+      fill: rgba(59, 130, 246, 0.08);
+      stroke: none;
+    }
+    .spark-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      opacity: 0.55;
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .spark-empty.hidden { display: none; }
+
     /* ─── Paper trading section (Phase C) ─── */
     .section-h {
       margin-top: 36px;
@@ -501,6 +591,44 @@
       maker/taker fee-моделью (-1bps / +10bps на сторону).
     </div>
 
+    <!-- ─── Phase C.5: Forecast widget ─── -->
+    <h2 class="section-h">Forecast (1-minute horizon)</h2>
+    <p class="section-sub">
+      Прогноз на следующую минуту от CatBoost-модели.
+      <span id="fc-cal-badge" class="cal-badge cal-pending">awaiting data</span>
+    </p>
+
+    <div class="grid">
+      <div class="card forecast-card">
+        <div class="label">P(up)</div>
+        <div class="value muted" id="fc-prob">—</div>
+      </div>
+      <div class="card forecast-card">
+        <div class="label">Signal</div>
+        <div class="value muted" id="fc-signal">—</div>
+      </div>
+      <div class="card forecast-card">
+        <div class="label">dir_acc 95% CI</div>
+        <div class="value muted" id="fc-ci">—</div>
+      </div>
+      <div class="card forecast-card">
+        <div class="label">Model age</div>
+        <div class="value muted" id="fc-age">—</div>
+      </div>
+      <div class="card forecast-card progress-card">
+        <div class="progress-row">
+          <div class="progress-label">Готовность к первому walk-forward fold</div>
+          <div class="progress-pct" id="fc-fold-pct">0.0%</div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="fc-fold-fill"></div>
+        </div>
+        <div class="progress-meta" id="fc-fold-meta">
+          ожидаем metrics.json от тренера
+        </div>
+      </div>
+    </div>
+
     <!-- ─── Phase C: Paper trading live block ─── -->
     <h2 class="section-h">Paper trading</h2>
     <p class="section-sub">
@@ -536,6 +664,22 @@
       <div class="card paper-card">
         <div class="label">Last trade</div>
         <div class="value muted" id="paper-last-ts">—</div>
+      </div>
+    </div>
+
+    <div class="card paper-spark-card">
+      <div class="spark-header">
+        <div class="label">Cumulative P&amp;L (USD)</div>
+        <div class="spark-stats" id="spark-stats">—</div>
+      </div>
+      <svg class="spark" id="paper-spark" viewBox="0 0 800 120" preserveAspectRatio="none">
+        <!-- Y=0 baseline -->
+        <line class="spark-zero" x1="0" y1="60" x2="800" y2="60"></line>
+        <path class="spark-area" id="spark-area" d=""></path>
+        <path class="spark-line" id="spark-line" d=""></path>
+      </svg>
+      <div class="spark-empty" id="spark-empty">
+        график появится после первой закрытой сделки
       </div>
     </div>
 
@@ -812,13 +956,14 @@
 
       async function pollPaper() {
         try {
-          const url = '/api/highfreq/paper_trades?symbol=' + encodeURIComponent(SYMBOL) + '&limit=50';
+          const url = '/api/highfreq/paper_trades?symbol=' + encodeURIComponent(SYMBOL) + '&limit=200';
           const resp = await fetch(url, { cache: 'no-store' });
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
           const data = await resp.json();
           applyConfig(data.config);
           applyPaperStats(data.stats, data.config);
           renderTrades(data.trades);
+          renderSparkline(data.stats && data.stats.cumulative_pnl_series);
         } catch (err) {
           // Soft-fail — leave whatever was last shown. Better UX than
           // wiping to "—" on a transient blip.
@@ -827,6 +972,171 @@
 
       pollPaper();
       setInterval(pollPaper, PAPER_POLL_MS);
+
+      // ─── Forecast widget polling (Phase C.5) ─────────────────────────
+      const FORECAST_POLL_MS = 5000;
+      const elFcProb = $('fc-prob');
+      const elFcSignal = $('fc-signal');
+      const elFcCi = $('fc-ci');
+      const elFcAge = $('fc-age');
+      const elFcCalBadge = $('fc-cal-badge');
+      const elFcFoldPct = $('fc-fold-pct');
+      const elFcFoldFill = $('fc-fold-fill');
+      const elFcFoldMeta = $('fc-fold-meta');
+
+      function applyForecast(d) {
+        if (!d || d.ok === false) {
+          // 503: no model yet → show placeholders.
+          setText(elFcProb, '—');
+          setText(elFcSignal, '—');
+          setText(elFcCi, '—');
+          setText(elFcAge, '—');
+          elFcCalBadge.className = 'cal-badge cal-pending';
+          elFcCalBadge.textContent = d && d.reason === 'no_model_yet'
+            ? 'no model yet'
+            : 'awaiting data';
+          return;
+        }
+
+        // Probability — 4 decimals, coloured by direction tilt.
+        const p = d.prob_up;
+        let probCls = null;
+        if (p >= 0.55)      probCls = 'green';
+        else if (p <= 0.45) probCls = 'red';
+        setText(elFcProb, p.toFixed(4), probCls);
+
+        // Signal arrow + label.
+        let sigText = '—', sigCls = null;
+        if (d.signal === 'up')        { sigText = '↑ up';     sigCls = 'green'; }
+        else if (d.signal === 'down') { sigText = '↓ down';   sigCls = 'red'; }
+        else                          { sigText = '— neutral'; sigCls = 'amber'; }
+        setText(elFcSignal, sigText, sigCls);
+        elFcSignal.classList.add('signal-arrow');
+
+        // Calibration CI (or "insufficient data").
+        const m = d.model || {};
+        if (m.dir_acc_ci_low !== null && m.dir_acc_ci_high !== null) {
+          setText(
+            elFcCi,
+            m.dir_acc_mean.toFixed(3) + ' [' +
+            m.dir_acc_ci_low.toFixed(3) + ', ' +
+            m.dir_acc_ci_high.toFixed(3) + ']',
+          );
+        } else {
+          setText(elFcCi, '—');
+        }
+
+        // Calibration badge.
+        if (d.calibrated) {
+          elFcCalBadge.className = 'cal-badge cal-ok';
+          elFcCalBadge.textContent = 'calibrated';
+        } else if (m.has_model) {
+          elFcCalBadge.className = 'cal-badge cal-pending';
+          elFcCalBadge.textContent = 'low directional skill';
+        } else {
+          elFcCalBadge.className = 'cal-badge cal-pending';
+          elFcCalBadge.textContent = 'no model yet';
+        }
+
+        // Model age.
+        setText(elFcAge, m.model_age_seconds !== null
+          ? fmtAge(m.model_age_seconds) : '—');
+      }
+
+      function applyTrainingReport(d) {
+        if (!d || d.ok === false) {
+          elFcFoldPct.textContent = '0.0%';
+          elFcFoldFill.style.width = '0%';
+          elFcFoldMeta.textContent = (d && d.reason === 'no_report_yet')
+            ? 'тренер ещё не запускался'
+            : 'отчёт недоступен';
+          return;
+        }
+        const r = d.report || {};
+        const bars = r.n_minutes_after_neutral_drop || 0;
+        const need = d.min_bars_for_first_fold;
+        const pct = Math.max(0, Math.min(100, d.fold_ready_pct || 0));
+        elFcFoldPct.textContent = pct.toFixed(1) + '%';
+        elFcFoldFill.style.width = pct + '%';
+
+        const folds = r.n_folds || 0;
+        if (folds > 0) {
+          elFcFoldMeta.textContent =
+            'fold #' + folds + ' завершён · ' + bars + ' bars (post-neutral-drop)';
+        } else {
+          elFcFoldMeta.textContent =
+            bars + ' / ' + need + ' bars · нужно ещё ' + (need - bars) +
+            ' (~' + Math.ceil((need - bars) / 60) + ' ч сбора)';
+        }
+      }
+
+      async function pollForecast() {
+        try {
+          const r1 = await fetch('/api/highfreq/forecast?symbol=' + encodeURIComponent(SYMBOL),
+                                 { cache: 'no-store' });
+          const d1 = await r1.json();
+          applyForecast(d1);
+        } catch (_) { /* keep last shown */ }
+
+        try {
+          const r2 = await fetch('/api/highfreq/training_report', { cache: 'no-store' });
+          const d2 = await r2.json();
+          applyTrainingReport(d2);
+        } catch (_) { /* keep last shown */ }
+      }
+
+      pollForecast();
+      setInterval(pollForecast, FORECAST_POLL_MS);
+
+      // ─── Cumulative P&L sparkline (Phase C.5) ────────────────────────
+      const elSparkLine = $('spark-line');
+      const elSparkArea = $('spark-area');
+      const elSparkStats = $('spark-stats');
+      const elSparkEmpty = $('spark-empty');
+      const SPARK_W = 800;
+      const SPARK_H = 120;
+
+      function renderSparkline(series) {
+        if (!series || series.length < 2) {
+          elSparkLine.setAttribute('d', '');
+          elSparkArea.setAttribute('d', '');
+          elSparkEmpty.classList.remove('hidden');
+          elSparkStats.textContent = '—';
+          return;
+        }
+        elSparkEmpty.classList.add('hidden');
+
+        const ys = series.map((p) => p.cum_pnl_usd);
+        const minY = Math.min(0, ...ys);
+        const maxY = Math.max(0, ...ys);
+        const rangeY = (maxY - minY) || 1;
+        // Y=0 line in the middle if data straddles zero, else baseline 60.
+        const xStep = SPARK_W / (series.length - 1);
+
+        const toY = (v) => {
+          // Normalise so 0 is at the dashed midline (y=60), positive ↑.
+          // Scale so the larger of |minY|/|maxY| fits in 50px above/below.
+          const halfH = 50;
+          const scale = halfH / Math.max(Math.abs(minY), Math.abs(maxY), 1e-9);
+          return 60 - v * scale;
+        };
+
+        const points = ys.map((v, i) => `${i * xStep},${toY(v)}`);
+        const linePath = 'M' + points.join(' L');
+        // Area = line + close to baseline.
+        const areaPath = linePath + ` L${SPARK_W},60 L0,60 Z`;
+        elSparkLine.setAttribute('d', linePath);
+        elSparkArea.setAttribute('d', areaPath);
+
+        const last = ys[ys.length - 1];
+        const sign = last >= 0 ? '+' : '−';
+        elSparkStats.textContent =
+          sign + '$' + Math.abs(last).toFixed(4) +
+          '  ·  ' + ys.length + ' trades';
+      }
+
+      // sparkline render lives inside pollPaper above (driven by the
+      // same /api/highfreq/paper_trades response).
     })();
   </script>
 </body>
