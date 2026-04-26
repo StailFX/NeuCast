@@ -1,0 +1,39 @@
+[Unit]
+Description=NeuCast HFT L2 archival to Yandex S3 (oneshot, fired by .timer)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+# Postgres must be up — we read + delete from it. Soft dep on the
+# ingest service (the runner is what creates the rows we archive); a
+# brief ingest restart doesn't change anything for us, just means
+# fewer rows on the next run.
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+
+# Default: archive days older than 7 days, max 30 per run (catch up
+# safely after multi-week downtime without slamming the API).
+ExecStart=/opt/neucast/venv/bin/python -m tools.archive_l2_to_s3 \
+    --retention-days 7 \
+    --max-days 30
+
+# Exit codes:
+#   0 = success (or nothing to do)
+#   1 = some (symbol, day) failed — we logged + will retry next run.
+#       Treat as success at the systemd level so the timer doesn't go
+#       into a failed state on a transient S3 hiccup.
+SuccessExitStatus=0 1
+
+MemoryMax=400M
+MemoryHigh=300M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=1800
+
+[Install]
+# Activated by the .timer unit, not socket / multi-user.

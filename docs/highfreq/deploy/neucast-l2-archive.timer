@@ -1,0 +1,20 @@
+[Unit]
+Description=NeuCast L2 archival schedule — daily 02:00 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 02:00 UTC = 05:00 MSK. Fires BEFORE the trainer at 04:00 UTC so the
+# trainer doesn't see partially-archived data. Both run on the same
+# Postgres but different tables — no contention.
+OnCalendar=*-*-* 02:00:00 UTC
+
+# Catch up if the box was off when the timer should have fired.
+Persistent=true
+
+# 5-min jitter so consecutive failures don't perfectly align.
+RandomizedDelaySec=300
+
+# Implicit Unit=neucast-l2-archive.service.
+
+[Install]
+WantedBy=timers.target
