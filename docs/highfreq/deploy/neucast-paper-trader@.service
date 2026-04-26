@@ -1,0 +1,32 @@
+[Unit]
+Description=NeuCast Paper Trader for %I (Phase C runner — sim-only by ADR-005)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service neucast-highfreq.service
+Wants=neucast-highfreq.service
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+# %I = unescaped instance name (e.g. "btcusdt" from
+# `systemctl start neucast-paper-trader@btcusdt.service`).
+# The runner uppercases internally; predictor + trader normalise too.
+Environment=HIGHFREQ_PAPER_SYMBOL=%I
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.paper_trader_runner
+Restart=always
+RestartSec=10
+MemoryMax=300M
+MemoryHigh=200M
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+
+# Graceful shutdown: SIGTERM lets the loop run its force_close path
+# (flatten any open position, persist the closing trade) before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

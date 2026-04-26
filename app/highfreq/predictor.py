@@ -70,11 +70,28 @@ CALIBRATED_DIR_ACC_THRESHOLD: float = 0.50
 
 
 def _default_weights_path() -> Path:
-    """Resolve the default ``.cbm`` path (env-overridable)."""
+    """Resolve the default ``.cbm`` path (env-overridable).
+
+    Used by the legacy single-predictor ``get_predictor()`` call. New
+    multi-symbol callers should use :func:`weights_path_for_symbol`
+    which derives the path purely from the symbol (no env lookup) so
+    different symbols don't collide on the same env override.
+    """
     return Path(os.getenv(
         "HIGHFREQ_WEIGHTS_PATH",
         "weights/highfreq/btcusdt_1m.cbm",
     ))
+
+
+def weights_path_for_symbol(symbol: str) -> Path:
+    """Trainer-convention weights path for ``symbol``.
+
+    e.g. ``"BTCUSDT"`` → ``weights/highfreq/btcusdt_1m.cbm``.
+    The base directory is overridable via ``HIGHFREQ_WEIGHTS_DIR`` env
+    (default ``weights/highfreq``) so dev / prod / test can split.
+    """
+    base = Path(os.getenv("HIGHFREQ_WEIGHTS_DIR", "weights/highfreq"))
+    return base / f"{symbol.lower()}_1m.cbm"
 
 
 def _metrics_path_for(weights_path: Path) -> Path:
@@ -369,29 +386,51 @@ def _maybe_float(x: Any) -> float | None:
 # ────────────────────────────────────────────────────────────────────────────
 
 _predictor: LivePredictor | None = None
+_predictors_by_symbol: dict[str, LivePredictor] = {}
 _predictor_lock = threading.Lock()
 
 
-def get_predictor() -> LivePredictor:
-    """Return the process-wide :class:`LivePredictor` singleton.
+def get_predictor(symbol: str | None = None) -> LivePredictor:
+    """Return a :class:`LivePredictor` instance.
 
-    FastAPI spawns one worker process per uvicorn worker; we want at
-    most one model copy in RAM per process. The singleton initialises
-    lazily on first request — no I/O at import time, so test contexts
-    importing :mod:`app.highfreq.predictor` don't accidentally hit the
-    weights path.
+    * ``symbol=None`` (legacy / default) → process-wide singleton tied
+      to the env-overridable ``HIGHFREQ_WEIGHTS_PATH``. Kept for
+      backward compatibility with the single-symbol code path.
+    * ``symbol="BTCUSDT"`` (multi-symbol mode) → per-symbol cached
+      instance whose weights/metrics paths are derived purely from the
+      symbol via :func:`weights_path_for_symbol`. Each FastAPI worker
+      process holds at most one predictor per symbol.
+
+    The two caches are independent — calling ``get_predictor()`` then
+    ``get_predictor("BTCUSDT")`` yields two different instances (they
+    happen to share the same weights file in default config, but the
+    objects are distinct).
     """
     global _predictor
-    if _predictor is not None:
+    if symbol is None:
+        if _predictor is not None:
+            return _predictor
+        with _predictor_lock:
+            if _predictor is None:
+                _predictor = LivePredictor()
         return _predictor
+
+    sym = symbol.upper()
+    cached = _predictors_by_symbol.get(sym)
+    if cached is not None:
+        return cached
     with _predictor_lock:
-        if _predictor is None:
-            _predictor = LivePredictor()
-    return _predictor
+        cached = _predictors_by_symbol.get(sym)
+        if cached is None:
+            wp = weights_path_for_symbol(sym)
+            cached = LivePredictor(weights_path=wp)
+            _predictors_by_symbol[sym] = cached
+    return cached
 
 
 def reset_predictor() -> None:
-    """Drop the singleton — used by tests to force a clean state."""
+    """Drop ALL cached predictors — used by tests to force a clean state."""
     global _predictor
     with _predictor_lock:
         _predictor = None
+        _predictors_by_symbol.clear()

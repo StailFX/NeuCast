@@ -1,0 +1,37 @@
+[Unit]
+Description=NeuCast HF CatBoost Trainer for %I (oneshot, fired by .timer)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=OMP_NUM_THREADS=2
+
+# %I = unescaped instance name (e.g. "btcusdt"). Trainer uppercases
+# --symbol internally; weights/report files are written lowercase to
+# match predictor.weights_path_for_symbol convention.
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.trainer \
+    --symbol %I \
+    --since-hours 72 \
+    --out /opt/neucast/weights/highfreq/%i_1m.cbm \
+    --report /opt/neucast/weights/highfreq/%i_1m_metrics.json
+
+# Trainer exit codes (see neucast-highfreq-trainer.service for full
+# discussion): 0 = at least one fold; 1 = "no folds yet" — both treated
+# as success so the timer doesn't accumulate failed-state during ramp-up.
+SuccessExitStatus=0 1
+
+MemoryMax=2500M
+MemoryHigh=2000M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=1800
+
+[Install]
+# Activated by the .timer template, not socket / multi-user.

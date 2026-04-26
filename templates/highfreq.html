@@ -172,6 +172,27 @@
       flex-wrap: wrap;
     }
 
+    /* Symbol selector — small native <select> styled to match cards. */
+    .symbol-select {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: #f1f5f9;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 28px 6px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M0 0l5 6 5-6z' fill='%2364748b'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      transition: border-color 0.2s;
+    }
+    .symbol-select:hover { border-color: rgba(59, 130, 246, 0.4); }
+    .symbol-select:focus { outline: none; border-color: var(--blue); }
+
     h1 {
       font-size: 32px;
       font-weight: 700;
@@ -532,13 +553,20 @@
   <div class="container">
     <div class="header-row">
       <h1>High-Frequency Forecast</h1>
-      <span class="phase-badge">
-        <span class="live-dot" id="live-dot"></span>
-        Phase A · Sim only
-      </span>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <select class="symbol-select" id="symbol-select" aria-label="Symbol">
+          {% for s in available_symbols %}
+          <option value="{{ s }}"{% if s == symbol %} selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+        <span class="phase-badge">
+          <span class="live-dot" id="live-dot"></span>
+          Phase A · Sim only
+        </span>
+      </div>
     </div>
     <p class="subtitle">
-      Поток L2-стакана и трейдов <code class="symbol">{{ symbol }}</code>
+      Поток L2-стакана и трейдов <code class="symbol" id="subtitle-symbol">{{ symbol }}</code>
       с Binance Spot WebSocket — OFI, microprice, depth-imbalance на 1-секундной решётке.
       Walk-forward CatBoost стартует после накопления
       <strong style="color:#f1f5f9;">{{ minutes_required }}</strong> минут.
@@ -709,7 +737,11 @@
 
   <script>
     (function () {
-      const SYMBOL = {{ symbol|tojson }};
+      // Symbol is mutable (UI dropdown changes it). All polling URLs
+      // close over `currentSymbol()` so the next poll picks up the new
+      // value without page reload.
+      let SYMBOL = {{ symbol|tojson }};
+      function currentSymbol() { return SYMBOL; }
       const POLL_MS = 2000;
 
       const $ = (id) => document.getElementById(id);
@@ -816,7 +848,7 @@
 
       async function poll() {
         try {
-          const url = '/api/highfreq/status?symbol=' + encodeURIComponent(SYMBOL);
+          const url = '/api/highfreq/status?symbol=' + encodeURIComponent(currentSymbol());
           const resp = await fetch(url, { cache: 'no-store' });
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
           const data = await resp.json();
@@ -956,7 +988,7 @@
 
       async function pollPaper() {
         try {
-          const url = '/api/highfreq/paper_trades?symbol=' + encodeURIComponent(SYMBOL) + '&limit=200';
+          const url = '/api/highfreq/paper_trades?symbol=' + encodeURIComponent(currentSymbol()) + '&limit=200';
           const resp = await fetch(url, { cache: 'no-store' });
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
           const data = await resp.json();
@@ -1072,14 +1104,15 @@
 
       async function pollForecast() {
         try {
-          const r1 = await fetch('/api/highfreq/forecast?symbol=' + encodeURIComponent(SYMBOL),
+          const r1 = await fetch('/api/highfreq/forecast?symbol=' + encodeURIComponent(currentSymbol()),
                                  { cache: 'no-store' });
           const d1 = await r1.json();
           applyForecast(d1);
         } catch (_) { /* keep last shown */ }
 
         try {
-          const r2 = await fetch('/api/highfreq/training_report', { cache: 'no-store' });
+          const r2 = await fetch('/api/highfreq/training_report?symbol=' + encodeURIComponent(currentSymbol()),
+                                 { cache: 'no-store' });
           const d2 = await r2.json();
           applyTrainingReport(d2);
         } catch (_) { /* keep last shown */ }
@@ -1137,6 +1170,34 @@
 
       // sparkline render lives inside pollPaper above (driven by the
       // same /api/highfreq/paper_trades response).
+
+      // ─── Symbol selector handler ────────────────────────────────────
+      const elSymbolSelect = $('symbol-select');
+      const elSubtitleSym = $('subtitle-symbol');
+      if (elSymbolSelect) {
+        elSymbolSelect.addEventListener('change', (e) => {
+          SYMBOL = e.target.value;
+          if (elSubtitleSym) elSubtitleSym.textContent = SYMBOL;
+          // Reset transient client state so the previous symbol's
+          // values don't bleed into the new one before next poll.
+          lastMicroprice = null;
+          [elMicroprice, elOfi, elDepthImb, elSpread, elAge,
+           elFcProb, elFcSignal, elFcCi, elFcAge,
+           elPaperStatus, elPaperPnlToday, elPaperTradesToday,
+           elPaperStreak, elPaperTotal, elPaperLastTs].forEach((el) => {
+            if (el) {
+              el.textContent = '—';
+              el.classList.add('muted');
+              el.classList.remove('flash-up', 'flash-down', 'green', 'red', 'amber');
+            }
+          });
+          elFcSignal.classList.remove('signal-arrow');
+          // Trigger immediate refresh for snappier UX.
+          poll();
+          pollPaper();
+          pollForecast();
+        });
+      }
     })();
   </script>
 </body>

@@ -456,6 +456,57 @@ def test_reset_predictor_drops_singleton():
     reset_predictor()
 
 
+# ───────────────────────── multi-symbol cache ─────────────────────────
+
+
+def test_get_predictor_per_symbol_returns_distinct_instances():
+    """Multi-symbol mode: each symbol has its own LivePredictor instance
+    (different weights file, independent hot-reload mtime, independent
+    cached model object)."""
+    from app.highfreq.predictor import weights_path_for_symbol
+
+    reset_predictor()
+    p_btc = get_predictor("BTCUSDT")
+    p_eth = get_predictor("ETHUSDT")
+    assert p_btc is not p_eth
+    # Weights path derived from symbol — case-insensitive in input.
+    assert p_btc.weights_path == weights_path_for_symbol("BTCUSDT")
+    assert p_eth.weights_path == weights_path_for_symbol("ETHUSDT")
+    reset_predictor()
+
+
+def test_get_predictor_per_symbol_caches():
+    """Repeat call for the same symbol returns the cached instance."""
+    reset_predictor()
+    a = get_predictor("BTCUSDT")
+    b = get_predictor("btcusdt")  # case normalisation
+    c = get_predictor("BTCUSDT")
+    assert a is b is c
+    reset_predictor()
+
+
+def test_reset_predictor_clears_multi_symbol_cache():
+    """reset_predictor must drop BOTH the legacy singleton AND the
+    per-symbol cache."""
+    reset_predictor()
+    p1 = get_predictor("ETHUSDT")
+    reset_predictor()
+    p2 = get_predictor("ETHUSDT")
+    assert p1 is not p2
+    reset_predictor()
+
+
+def test_legacy_get_predictor_independent_from_per_symbol():
+    """get_predictor() (no arg) and get_predictor('BTCUSDT') return
+    DIFFERENT instances — they happen to read the same weights in
+    default config but the objects are distinct caches."""
+    reset_predictor()
+    legacy = get_predictor()
+    typed = get_predictor("BTCUSDT")
+    assert legacy is not typed
+    reset_predictor()
+
+
 # ───────────────────────── _maybe_float helper ─────────────────────────
 
 

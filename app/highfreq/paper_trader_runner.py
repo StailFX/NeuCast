@@ -79,7 +79,7 @@ from app.highfreq.paper_trader import (
     PaperTraderConfig,
     RiskCaps,
 )
-from app.highfreq.predictor import LivePredictor
+from app.highfreq.predictor import LivePredictor, weights_path_for_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +113,25 @@ POOL_MIN_SIZE: int = 1
 POOL_MAX_SIZE: int = 2
 
 # Default symbol — overridable via HIGHFREQ_PAPER_SYMBOL env var.
+# Multi-symbol deployment uses templated systemd units passing symbol
+# via this env (see deploy/neucast-paper-trader@.service).
 DEFAULT_SYMBOL: str = os.getenv("HIGHFREQ_PAPER_SYMBOL", "BTCUSDT")
 
-# Predictor weights/metrics paths — match the trainer's output paths.
-DEFAULT_WEIGHTS_PATH = Path(
-    os.getenv("HIGHFREQ_WEIGHTS_PATH", "weights/highfreq/btcusdt_1m.cbm")
-)
-DEFAULT_METRICS_PATH = Path(
-    os.getenv("HIGHFREQ_METRICS_PATH", "weights/highfreq/btcusdt_1m_metrics.json")
-)
+
+def _weights_path_for(symbol: str) -> Path:
+    """Per-symbol .cbm path. Honours explicit HIGHFREQ_WEIGHTS_PATH override
+    (single-symbol legacy); otherwise derives from the symbol via the
+    trainer's filename convention (``{symbol.lower()}_1m.cbm``)."""
+    explicit = os.getenv("HIGHFREQ_WEIGHTS_PATH")
+    if explicit:
+        return Path(explicit)
+    return weights_path_for_symbol(symbol)
+
+
+def _metrics_path_for(weights_path: Path) -> Path:
+    """``btcusdt_1m.cbm`` → ``btcusdt_1m_metrics.json`` — same convention
+    used by ``predictor._metrics_path_for``."""
+    return weights_path.with_suffix("").with_name(weights_path.stem + "_metrics.json")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -446,8 +456,14 @@ async def main() -> None:
     database_url = os.environ["DATABASE_URL"]
     symbol = DEFAULT_SYMBOL.upper()
 
+    weights_path = _weights_path_for(symbol)
+    metrics_path = _metrics_path_for(weights_path)
+    logger.info(
+        "predictor weights=%s metrics=%s symbol=%s",
+        weights_path, metrics_path, symbol,
+    )
     predictor = LivePredictor(
-        weights_path=DEFAULT_WEIGHTS_PATH, metrics_path=DEFAULT_METRICS_PATH,
+        weights_path=weights_path, metrics_path=metrics_path,
     )
     trader = PaperTrader(
         symbol,

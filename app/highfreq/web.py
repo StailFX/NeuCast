@@ -61,6 +61,19 @@ MIN_MINUTES_FOR_TRAINING: int = 65
 
 DEFAULT_SYMBOL: str = os.getenv("HIGHFREQ_DEFAULT_SYMBOL", "BTCUSDT")
 
+
+def _available_symbols() -> list[str]:
+    """Symbols the UI dropdown should expose.
+
+    Read from ``HIGHFREQ_SYMBOLS`` (comma-separated, same env the ingest
+    runner uses — keeps the UI and ingest in lock-step). Falls back to
+    just ``DEFAULT_SYMBOL`` so a fresh deploy without explicit env set
+    still works (single-symbol mode).
+    """
+    raw = os.getenv("HIGHFREQ_SYMBOLS", DEFAULT_SYMBOL)
+    out = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    return out or [DEFAULT_SYMBOL]
+
 # A row is considered "fresh" if its ts is within this many seconds of now.
 # The aggregator emits at 1-second cadence, so anything older than ~10s
 # is a clear sign the ingest pipeline has stalled.
@@ -377,6 +390,7 @@ async def highfreq_page(request: Request) -> HTMLResponse:
         {
             "symbol": DEFAULT_SYMBOL,
             "minutes_required": MIN_MINUTES_FOR_TRAINING,
+            "available_symbols": _available_symbols(),
         },
     )
 
@@ -445,9 +459,14 @@ async def get_health(
 # ── Forecast endpoint (Phase B scaffold) ──────────────────────────────────
 
 
-def _get_forecast_predictor() -> LivePredictor:
-    """DI-friendly predictor accessor — overrideable in tests."""
-    return get_predictor()
+def _get_forecast_predictor(symbol: str = DEFAULT_SYMBOL) -> LivePredictor:
+    """DI-friendly per-symbol predictor accessor — overrideable in tests.
+
+    FastAPI shares query params across the dependency tree, so the
+    ``?symbol=`` on the endpoint flows in here — each request gets the
+    cached predictor for that symbol via :func:`get_predictor`.
+    """
+    return get_predictor(symbol)
 
 
 @router.get("/api/highfreq/forecast")
@@ -786,14 +805,28 @@ def _config_to_dict(
 MIN_BARS_FOR_FIRST_FOLD: int = 1500
 
 # Path to the metrics JSON the trainer writes alongside the .cbm.
-# Overridable via env so the same web app can serve dev / prod.
+# Single-symbol legacy path — overridable via env. Multi-symbol callers
+# go through ``metrics_path_for_symbol`` instead.
 DEFAULT_METRICS_PATH = Path(
     os.getenv("HIGHFREQ_METRICS_PATH", "weights/highfreq/btcusdt_1m_metrics.json")
 )
 
 
+def metrics_path_for_symbol(symbol: str) -> Path:
+    """Per-symbol metrics path (mirrors trainer's --report convention).
+
+    e.g. ``"BTCUSDT"`` → ``weights/highfreq/btcusdt_1m_metrics.json``.
+    Lives next to the per-symbol .cbm; both paths share
+    ``HIGHFREQ_WEIGHTS_DIR`` if overridden.
+    """
+    base = Path(os.getenv("HIGHFREQ_WEIGHTS_DIR", "weights/highfreq"))
+    return base / f"{symbol.lower()}_1m_metrics.json"
+
+
 @router.get("/api/highfreq/training_report")
-async def get_training_report() -> JSONResponse:
+async def get_training_report(
+    symbol: str = DEFAULT_SYMBOL,
+) -> JSONResponse:
     """Return the trainer's last metrics report + computed fold-readiness.
 
     Used by the UI to render two things: (a) the calibration status
@@ -805,7 +838,15 @@ async def get_training_report() -> JSONResponse:
     trainer hasn't written its first ``metrics.json`` yet (cold-start).
     Never 503 — the page must keep rendering through trainer outages.
     """
-    path = DEFAULT_METRICS_PATH
+    symbol = symbol.upper()
+    # Use per-symbol path if symbol is given; fall back to the
+    # legacy default for backward compat with any single-symbol call sites.
+    path = metrics_path_for_symbol(symbol)
+    if not path.exists():
+        # Try the legacy override path as a last resort (catches cases
+        # where the trainer was invoked with --report at a custom path).
+        if DEFAULT_METRICS_PATH.exists():
+            path = DEFAULT_METRICS_PATH
     if not path.exists():
         return JSONResponse(content={
             "ok": False,
