@@ -945,6 +945,45 @@ async def get_microprice_history(
     })
 
 
+# ── Feature importance endpoint (Phase C.5d) ──────────────────────────
+
+
+@router.get("/api/highfreq/feature_importance")
+async def get_feature_importance(
+    symbol: str = DEFAULT_SYMBOL,
+    predictor: LivePredictor = Depends(_get_forecast_predictor),
+) -> JSONResponse:
+    """Per-feature importance from the loaded CatBoost model.
+
+    Used by the UI to render a horizontal bar chart — "which features
+    is the model actually using?". Constant for a given ``.cbm`` so
+    the UI can poll once on page load + on model-mtime change rather
+    than every 5 s.
+
+    Returns 200 always: empty/None ``importance`` is a valid no-model
+    state surfaced via ``ok=False``.
+    """
+    symbol = symbol.upper()
+    pairs = predictor.feature_importance()
+    status = predictor.status()
+    if pairs is None:
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_model" if not status.has_model else "unsupported",
+            "symbol": symbol,
+            "importance": [],
+            "model": status.to_dict(),
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "importance": pairs,
+        "model": status.to_dict(),
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 @router.get("/api/highfreq/training_report")
 async def get_training_report(
     symbol: str = DEFAULT_SYMBOL,

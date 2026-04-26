@@ -422,6 +422,72 @@
       color: var(--red);
     }
 
+    /* ─── Feature importance bars (Phase C.5d) ─── */
+    .fi-card {
+      grid-column: 1 / -1;
+      padding: 16px 20px 14px;
+      margin-bottom: 18px;
+      position: relative;
+      min-height: 80px;
+    }
+    .fi-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 12px;
+    }
+    .fi-stats {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+    .fi-bars {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+    .fi-row {
+      display: grid;
+      grid-template-columns: 200px 1fr 60px;
+      align-items: center;
+      gap: 10px;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 11.5px;
+    }
+    .fi-row .fi-name {
+      color: var(--text-dim);
+      text-align: right;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .fi-row .fi-bar-track {
+      height: 14px;
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .fi-row .fi-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue) 0%, var(--green) 100%);
+      border-radius: 4px;
+      transition: width 400ms ease-out;
+    }
+    .fi-row .fi-value {
+      color: #f1f5f9;
+      text-align: right;
+      font-weight: 600;
+    }
+    .fi-empty {
+      text-align: center;
+      color: var(--text-muted);
+      opacity: 0.55;
+      font-size: 13px;
+      padding: 20px 0;
+    }
+
     /* ─── Calibration plot (Phase C.5b) ─── */
     .calib-card {
       grid-column: 1 / -1;
@@ -822,6 +888,17 @@
         <div class="progress-meta" id="fc-fold-meta">
           ожидаем metrics.json от тренера
         </div>
+      </div>
+    </div>
+
+    <!-- ─── Phase C.5d: Feature importance ─── -->
+    <div class="card fi-card">
+      <div class="fi-header">
+        <div class="label">Feature importance · what the model uses</div>
+        <div class="fi-stats" id="fi-stats">—</div>
+      </div>
+      <div class="fi-bars" id="fi-bars">
+        <div class="fi-empty" id="fi-empty">пока нет модели</div>
       </div>
     </div>
 
@@ -1466,6 +1543,57 @@
       pollForecast();
       setInterval(pollForecast, FORECAST_POLL_MS);
 
+      // ─── Feature importance polling (Phase C.5d) ────────────────────
+      // Importance is constant for a given .cbm; poll at 30s — fast
+      // enough to pick up a new model deploy, slow enough to be free.
+      const FI_POLL_MS = 30000;
+      const elFiBars = $('fi-bars');
+      const elFiStats = $('fi-stats');
+
+      function renderFeatureImportance(d) {
+        if (!d || d.ok === false || !d.importance || !d.importance.length) {
+          elFiBars.innerHTML = '<div class="fi-empty">' +
+            (d && d.reason === 'no_model' ? 'модель ещё не обучена'
+                                          : 'данные недоступны') +
+            '</div>';
+          elFiStats.textContent = '—';
+          return;
+        }
+        const items = d.importance;
+        const maxImp = Math.max(...items.map((x) => x.importance), 1e-9);
+        const rows = items.map((it) => {
+          const pct = (it.importance / maxImp) * 100;
+          return (
+            '<div class="fi-row">' +
+              '<div class="fi-name" title="' + it.feature + '">' +
+                it.feature + '</div>' +
+              '<div class="fi-bar-track">' +
+                '<div class="fi-bar-fill" style="width:' + pct.toFixed(1) + '%"></div>' +
+              '</div>' +
+              '<div class="fi-value">' + it.importance.toFixed(2) + '</div>' +
+            '</div>'
+          );
+        }).join('');
+        elFiBars.innerHTML = rows;
+
+        const top = items.slice(0, 3).map((x) => x.feature).join(', ');
+        elFiStats.textContent = items.length + ' features · top: ' + top;
+      }
+
+      async function pollFeatureImportance() {
+        try {
+          const url = '/api/highfreq/feature_importance?symbol=' +
+                      encodeURIComponent(currentSymbol());
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          renderFeatureImportance(data);
+        } catch (_) { /* keep last shown */ }
+      }
+
+      pollFeatureImportance();
+      setInterval(pollFeatureImportance, FI_POLL_MS);
+
       // ─── Cumulative P&L sparkline (Phase C.5) ────────────────────────
       const elSparkLine = $('spark-line');
       const elSparkArea = $('spark-area');
@@ -1542,6 +1670,7 @@
           pollPaper();
           pollForecast();
           pollMpChart();
+          pollFeatureImportance();
         });
       }
     })();

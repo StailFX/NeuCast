@@ -496,6 +496,74 @@ def test_reset_predictor_clears_multi_symbol_cache():
     reset_predictor()
 
 
+# ───────────────────────── feature_importance ─────────────────────────
+
+
+class _StubModelWithImportance(_StubModel):
+    """Stub that exposes catboost's get_feature_importance API."""
+
+    def __init__(self, importance: list[float] | None = None, **kw):
+        super().__init__(**kw)
+        if importance is None:
+            # Default: linearly decreasing — proves sort works.
+            importance = [float(len(FEATURE_COLUMNS) - i)
+                          for i in range(len(FEATURE_COLUMNS))]
+        self._importance = importance
+
+    def get_feature_importance(self):
+        import numpy as _np
+        return _np.array(self._importance)
+
+
+def test_feature_importance_returns_none_without_model(tmp_path):
+    p = LivePredictor(
+        weights_path=tmp_path / "absent.cbm",
+        metrics_path=tmp_path / "absent.json",
+    )
+    assert p.feature_importance() is None
+
+
+def test_feature_importance_returns_sorted_pairs(tmp_path, monkeypatch):
+    weights = tmp_path / "btc.cbm"
+    _write_dummy_weights(weights)
+    stub = _StubModelWithImportance()
+    _patch_loader(monkeypatch, stub)
+
+    p = LivePredictor(weights_path=weights, metrics_path=tmp_path / "m.json")
+    out = p.feature_importance()
+    assert out is not None
+    assert len(out) == len(FEATURE_COLUMNS)
+    # Sorted desc by importance.
+    importances = [pair["importance"] for pair in out]
+    assert importances == sorted(importances, reverse=True)
+    # Each entry has the right shape.
+    assert set(out[0].keys()) == {"feature", "importance"}
+    assert out[0]["feature"] in FEATURE_COLUMNS
+
+
+def test_feature_importance_handles_model_without_method(tmp_path, monkeypatch):
+    """A stub model without get_feature_importance must return None
+    rather than crash — this is what test fixtures + future model
+    backends look like."""
+    weights = tmp_path / "btc.cbm"
+    _write_dummy_weights(weights)
+    _patch_loader(monkeypatch, _StubModel())  # no get_feature_importance
+
+    p = LivePredictor(weights_path=weights, metrics_path=tmp_path / "m.json")
+    assert p.feature_importance() is None
+
+
+def test_feature_importance_handles_length_mismatch(tmp_path, monkeypatch):
+    """Defensive: model trained on N != len(FEATURE_COLUMNS) features
+    (schema drift) → return None + log."""
+    weights = tmp_path / "btc.cbm"
+    _write_dummy_weights(weights)
+    _patch_loader(monkeypatch, _StubModelWithImportance(importance=[1.0, 2.0, 3.0]))
+
+    p = LivePredictor(weights_path=weights, metrics_path=tmp_path / "m.json")
+    assert p.feature_importance() is None
+
+
 def test_legacy_get_predictor_independent_from_per_symbol():
     """get_predictor() (no arg) and get_predictor('BTCUSDT') return
     DIFFERENT instances — they happen to read the same weights in

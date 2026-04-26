@@ -198,6 +198,47 @@ class LivePredictor:
             return float(proba[0, 1])
         return float(np.asarray(proba).ravel()[-1])
 
+    def feature_importance(self) -> list[dict[str, Any]] | None:
+        """Per-feature importance from the loaded CatBoost model.
+
+        Returns a list of ``{"feature": str, "importance": float}`` sorted
+        by importance descending, or ``None`` when no model is loaded.
+
+        Uses CatBoost's default ``PredictionValuesChange`` method —
+        average change in prediction when the feature is shuffled,
+        normalised to sum to 100. Constant for a given .cbm file, so
+        the result can be cached in the caller (we don't cache here
+        because it's cheap on 14 features and the predictor doesn't
+        own UI-cache lifetime).
+
+        Stub-friendly: if the model object exposes ``get_feature_importance``
+        (CatBoost convention), we use it. Otherwise return ``None`` —
+        keeps this method usable in tests with a minimal model stub.
+        """
+        self._maybe_reload_model()
+        if self._model is None:
+            return None
+        if not hasattr(self._model, "get_feature_importance"):
+            return None
+        try:
+            raw = self._model.get_feature_importance()
+        except Exception as exc:
+            logger.warning("get_feature_importance() failed: %s", exc)
+            return None
+        from app.highfreq.feature_pipeline import FEATURE_COLUMNS as _FC
+        if len(raw) != len(_FC):
+            logger.warning(
+                "feature_importance length mismatch: model=%d expected=%d",
+                len(raw), len(_FC),
+            )
+            return None
+        pairs = [
+            {"feature": name, "importance": float(value)}
+            for name, value in zip(_FC, raw)
+        ]
+        pairs.sort(key=lambda p: p["importance"], reverse=True)
+        return pairs
+
     def is_calibrated(self) -> bool:
         """``True`` when the latest bootstrap CI clears the threshold."""
         self._maybe_reload_metrics()
