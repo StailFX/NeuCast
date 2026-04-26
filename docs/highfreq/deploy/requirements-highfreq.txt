@@ -1,0 +1,29 @@
+# NeuCast HFT slice — minimal Python deps for ingest/predictor/paper-trader.
+#
+# Why this exists separately from root requirements.txt:
+# the main NeuCast app pulls in TensorFlow, PyTorch, transformers, chronos,
+# uni2ts, timesfm — easily ~5 GB on disk and several GB resident. The Tokyo
+# ingest VPS is 4 GB total RAM and runs ONLY the high-frequency slice; we
+# don't need (and can't afford) the full model zoo.
+#
+# Add deps here ONLY if they're imported by app/highfreq/*. Keep it lean.
+
+# WebSocket client for Binance L2 stream (depth20@100ms + trades).
+websockets>=12.0
+
+# Async Postgres driver — used by the L2 consumer's batch writer and by
+# the predictor's feature loader.
+asyncpg>=0.29.0
+
+# Numeric stack — feature aggregation, OFI/microprice math.
+numpy>=1.24.0
+pandas>=2.0.0
+
+# CatBoost — required by the predictor / trainer (Phase B+).
+# CPU wheel is ~80 MB; tolerable on the 4 GB VPS. If we ever drop the
+# in-process predictor on Tokyo (predict-on-Finland mode), this can move
+# back out.
+catboost>=1.2
+
+# Sklearn — used by the trainer for splits + metrics. ~30 MB.
+scikit-learn>=1.3.0
