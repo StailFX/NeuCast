@@ -133,6 +133,53 @@ _SIGNAL_EMOJI = {
 }
 
 
+def format_trade_closed_message(
+    *,
+    symbol: str,
+    side: str,                       # 'long' | 'short'
+    entry_price: float,
+    exit_price: float,
+    qty: float,
+    pnl_usd: float,
+    pnl_bps: float,
+    exit_reason: str,                # 'time_stop' | 'halt_close'
+    entry_ts: datetime,
+    exit_ts: datetime,
+    model_version: str = "",
+) -> str:
+    """HTML body for "paper trade just closed" notification.
+
+    Why a separate format from flip_message: the audience cares
+    about different things — a flip is "model just changed its
+    mind", a closed trade is "here's what happened with real
+    money-equivalent stakes". Mixing them in one template hides
+    the most-relevant fact.
+
+    P&L sign drives the emoji header: green for profit, red for
+    loss, gray for break-even. The bps figure is the
+    fee-adjusted, vol-normalised return — comparable across
+    BTC / ETH / BNB at very different price levels.
+    """
+    pnl_emoji = "🟢" if pnl_usd > 0 else ("🔴" if pnl_usd < 0 else "⚪")
+    side_arrow = "↑ LONG" if side == "long" else "↓ SHORT"
+    demo_tag = ""
+    if model_version == "pre-calibration-demo":
+        demo_tag = "\n<i>⚠️ pre-calibration trade — for visualisation only</i>"
+    elapsed_min = (exit_ts - entry_ts).total_seconds() / 60.0
+    return (
+        f"{pnl_emoji} <b>{symbol}</b> trade closed\n"
+        f"{side_arrow}  ·  {exit_reason}\n"
+        f"\n"
+        f"<code>entry  = {entry_price:>12,.2f}</code>\n"
+        f"<code>exit   = {exit_price:>12,.2f}</code>\n"
+        f"<code>qty    = {qty:>12.6f}</code>\n"
+        f"<code>pnl    = ${pnl_usd:>+11.4f}  ({pnl_bps:+.1f} bps)</code>\n"
+        f"<code>held   = {elapsed_min:>11.1f} min</code>\n"
+        f"<code>at     = {exit_ts.strftime('%Y-%m-%d %H:%M UTC')}</code>"
+        f"{demo_tag}"
+    )
+
+
 def format_flip_message(
     *,
     symbol: str,

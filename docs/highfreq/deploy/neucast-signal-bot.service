@@ -1,0 +1,34 @@
+[Unit]
+Description=NeuCast Signals — Telegram interactive bot worker
+Documentation=file:///opt/neucast/app/highfreq/telegram_bot_worker.py
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+
+# Long-polling worker — handles /stats, /trades, /accuracy, /model.
+# Outbound-only HTTP (no listening port to firewall).
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.telegram_bot_worker
+
+# Restart on failure but back off so a misconfigured token doesn't
+# spin in tight retries.
+Restart=on-failure
+RestartSec=10s
+
+# Tiny memory footprint — urllib + asyncpg + sqlalchemy. ~50 MB
+# resident; cap at 200 MB defensively.
+MemoryMax=200M
+MemoryHigh=150M
+Nice=10
+
+# Standard logging.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

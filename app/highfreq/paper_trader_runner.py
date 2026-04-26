@@ -511,6 +511,32 @@ async def process_one_tick(
                     exc_info=True,
                 )
 
+        # Telegram trade-close notification. Skips silently when the
+        # signal-bot env vars aren't set (config.enabled=False).
+        try:
+            from app.highfreq.signal_telegram import (
+                SignalAlertConfig,
+                format_trade_closed_message,
+                send_signal_alert_async,
+            )
+            cfg = SignalAlertConfig.from_env()
+            if cfg.enabled:
+                body = format_trade_closed_message(
+                    symbol=trade.symbol, side=trade.side,
+                    entry_price=trade.entry_price,
+                    exit_price=trade.exit_price,
+                    qty=trade.qty,
+                    pnl_usd=trade.pnl_usd, pnl_bps=trade.pnl_bps,
+                    exit_reason=trade.exit_reason,
+                    entry_ts=trade.entry_ts, exit_ts=trade.exit_ts,
+                    model_version=trade.model_version,
+                )
+                await send_signal_alert_async(cfg, body_html=body)
+        except Exception:
+            logger.warning(
+                "telegram trade-close notification failed", exc_info=True,
+            )
+
     return trade
 
 
