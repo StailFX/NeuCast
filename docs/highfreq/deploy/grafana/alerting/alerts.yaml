@@ -13,7 +13,7 @@ groups:
             relativeTimeRange: {from: 300, to: 0}
             datasourceUid: prom-tokyo
             model:
-              expr: rate(neucast_hf_ws_frames_total[2m])
+              expr: rate(neucast_hf_ws_frames_total{job="hf_ingest"}[2m])
               instant: true
               refId: A
           - refId: B
@@ -46,7 +46,7 @@ groups:
             relativeTimeRange: {from: 3600, to: 0}
             datasourceUid: prom-tokyo
             model:
-              expr: increase(neucast_hf_ws_reconnects_total[1h])
+              expr: increase(neucast_hf_ws_reconnects_total{job="hf_ingest"}[1h])
               instant: true
               refId: A
           - refId: B
@@ -112,7 +112,7 @@ groups:
             relativeTimeRange: {from: 300, to: 0}
             datasourceUid: prom-tokyo
             model:
-              expr: max(neucast_hf_paper_trader_halted{reason!="none"}) by (symbol, reason)
+              expr: max(neucast_hf_paper_trader_halted{job="hf_paper_trader",reason!="none"}) by (symbol, reason)
               instant: true
               refId: A
           - refId: B
@@ -145,7 +145,7 @@ groups:
             relativeTimeRange: {from: 300, to: 0}
             datasourceUid: prom-tokyo
             model:
-              expr: rate(neucast_hf_ofi_rows_written_total[5m])
+              expr: sum(rate(neucast_hf_ofi_rows_written_total{job="hf_ingest"}[5m]))
               instant: true
               refId: A
           - refId: B
