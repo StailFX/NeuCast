@@ -317,7 +317,15 @@ async def process_one_tick(
     if p_status.model_age_seconds is not None:
         M.predictor_model_age_seconds.labels(symbol=symbol).set(p_status.model_age_seconds)
 
-    model_version = str(p_status.model_age_seconds or 0)
+    # Tag trades opened before the model is calibrated with a sentinel
+    # version string so the realized-accuracy logger and any cohort
+    # analyses can filter them out cleanly. The actual numeric model
+    # age still appears in the report's ``model`` block — this just
+    # carries a discriminator into the trade row itself.
+    if not p_status.is_calibrated and not trader.config.require_calibrated:
+        model_version = "pre-calibration-demo"
+    else:
+        model_version = str(p_status.model_age_seconds or 0)
 
     # Realized intra-bar vol from the feature row drives vol-adjusted
     # sizing inside the trader. Falls back to None (= fixed notional)
@@ -583,9 +591,24 @@ async def main() -> None:
     predictor = LivePredictor(
         weights_path=weights_path, metrics_path=metrics_path,
     )
+    # Demo mode: when ``HF_PAPER_DEMO_MODE=1``, the trader bypasses the
+    # ``is_calibrated`` gate and trades on raw P(UP) thresholds even
+    # before the model has produced its first walk-forward fold. Trades
+    # opened in this mode are tagged ``model_version="pre-calibration-demo"``
+    # so they're EXCLUDED from realized-accuracy stats — visible
+    # in the UI for activity/visualization, but not counted as
+    # evidence of skill. Default off (preserves the original sim-only
+    # contract). Document the toggle in /etc/neucast/env.
+    demo_mode = os.environ.get("HF_PAPER_DEMO_MODE", "").strip() in ("1", "true", "yes")
+    if demo_mode:
+        logger.warning(
+            "DEMO MODE ENABLED — trader will open positions without "
+            "calibration gate. Trades tagged 'pre-calibration-demo' "
+            "and excluded from realized-accuracy reports."
+        )
     trader = PaperTrader(
         symbol,
-        config=PaperTraderConfig(),
+        config=PaperTraderConfig(require_calibrated=not demo_mode),
         risk_caps=RiskCaps(),
     )
 

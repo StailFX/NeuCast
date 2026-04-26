@@ -196,11 +196,17 @@ async def fetch_rolling_accuracy(
     """
     if window <= 0:
         raise ValueError(f"window must be positive, got {window}")
+    # Filter out pre-calibration demo trades (tagged via ``model_version``
+    # in paper_trader_runner) so they don't contaminate the realized-skill
+    # number. The whole point of the demo mode is "trades for visualization
+    # before the model has skill"; counting them as evidence either way
+    # would be dishonest.
     sql = (
         "SELECT symbol, side, entry_price, exit_price, exit_reason, "
         "       exit_ts, entry_prob_up "
         "  FROM paper_trades "
         " WHERE symbol = $1 "
+        "   AND model_version <> 'pre-calibration-demo' "
         " ORDER BY exit_ts DESC "
         " LIMIT $2"
     )
@@ -249,6 +255,7 @@ def fetch_rolling_accuracy_sync(
         "       exit_ts, entry_prob_up "
         "  FROM paper_trades "
         " WHERE symbol = :symbol "
+        "   AND model_version <> 'pre-calibration-demo' "
         " ORDER BY exit_ts DESC "
         " LIMIT :window"
     )

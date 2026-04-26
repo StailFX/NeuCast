@@ -435,9 +435,13 @@ def test_training_report_returns_no_report_yet_when_metrics_missing(tmp_path, mo
     import app.highfreq.web as web_mod
     monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", tmp_path / "absent.json")
 
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = Exception("no db in test")
     app = _make_app()
+    app.dependency_overrides[_get_db] = lambda: fake_db
     client = TestClient(app)
     r = client.get("/api/highfreq/training_report")
+    app.dependency_overrides.clear()
     assert r.status_code == 200
     j = r.json()
     assert j["ok"] is False
@@ -466,13 +470,18 @@ def test_training_report_returns_report_with_fold_progress(tmp_path, monkeypatch
     }))
     monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
 
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = Exception("no db in test")
     app = _make_app()
+    app.dependency_overrides[_get_db] = lambda: fake_db
     client = TestClient(app)
     r = client.get("/api/highfreq/training_report")
+    app.dependency_overrides.clear()
     assert r.status_code == 200
     j = r.json()
     assert j["ok"] is True
-    # 726 / 1500 = 48.4%
+    # When live_inventory fails, fold_ready_pct falls back to the
+    # report's frozen value: 726 / 1500 = 48.4%.
     assert j["fold_ready_pct"] == pytest.approx(48.4, abs=0.1)
     assert j["report"]["n_folds"] == 0
     assert j["report"]["n_minutes_after_neutral_drop"] == 726
@@ -489,9 +498,13 @@ def test_training_report_unreadable_file(tmp_path, monkeypatch):
     metrics.write_text("{this is not json")
     monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
 
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = Exception("no db in test")
     app = _make_app()
+    app.dependency_overrides[_get_db] = lambda: fake_db
     client = TestClient(app)
     r = client.get("/api/highfreq/training_report")
+    app.dependency_overrides.clear()
     assert r.status_code == 200
     j = r.json()
     assert j["ok"] is False
@@ -514,9 +527,13 @@ def test_training_report_fold_pct_caps_at_100(tmp_path, monkeypatch):
     }))
     monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
 
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = Exception("no db in test")
     app = _make_app()
+    app.dependency_overrides[_get_db] = lambda: fake_db
     client = TestClient(app)
     j = client.get("/api/highfreq/training_report").json()
+    app.dependency_overrides.clear()
     assert j["fold_ready_pct"] == 100.0  # not 333.3
 
 
@@ -798,9 +815,13 @@ def test_training_report_returns_enriched_folds(tmp_path, monkeypatch):
     }))
     monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
 
+    fake_db = MagicMock()
+    fake_db.execute.side_effect = Exception("no db in test")
     app = _make_app()
+    app.dependency_overrides[_get_db] = lambda: fake_db
     client = TestClient(app)
     j = client.get("/api/highfreq/training_report").json()
+    app.dependency_overrides.clear()
     folds = j["report"]["folds"]
     assert len(folds) == 2
     assert "dir_acc_ci_low" in folds[0]

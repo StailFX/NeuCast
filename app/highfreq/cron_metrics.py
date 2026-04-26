@@ -63,9 +63,16 @@ from typing import Mapping
 logger = logging.getLogger(__name__)
 
 #: Default location of node_exporter's ``--collector.textfile.directory``.
-#: Standard Debian/Ubuntu node_exporter package uses this path; if the
-#: deployment puts it elsewhere, set ``$TEXTFILE_COLLECTOR_DIR``.
-DEFAULT_TEXTFILE_DIR = "/var/lib/node_exporter/textfile_collector"
+#:
+#: The ``prometheus-node-exporter`` Debian/Ubuntu package (which is what
+#: we run on Tokyo) ships a default of ``/var/lib/prometheus/node-exporter``
+#: — note the ``prometheus`` parent dir, not ``node_exporter``. The
+#: upstream Prometheus docs sample uses ``/var/lib/node_exporter/...`` —
+#: confused exactly that path on first deployment (alerts fired with
+#: noDataState until 2026-04-27 when this default was corrected).
+#:
+#: If the deployment puts it elsewhere, set ``$TEXTFILE_COLLECTOR_DIR``.
+DEFAULT_TEXTFILE_DIR = "/var/lib/prometheus/node-exporter"
 
 
 def textfile_dir() -> Path:

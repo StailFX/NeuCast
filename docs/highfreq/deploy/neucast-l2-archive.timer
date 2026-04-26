@@ -19,7 +19,7 @@ Documentation=file:///opt/neucast/docs/highfreq/architecture.md
 # Tokyo death — the script archives WHOLE complete days, so you'd
 # still lose up to retention_days of hot data on a hard failure.
 # True 4h RPO requires hour-bucket chunking (separate redesign).
-OnCalendar=*-*-* 02:00:00,06:00:00,10:00:00,14:00:00,18:00:00,22:00:00 UTC
+OnCalendar=*-*-* 02,06,10,14,18,22:00:00 UTC
 
 # Catch up if the box was off when the timer should have fired.
 Persistent=true

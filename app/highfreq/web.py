@@ -1215,6 +1215,7 @@ async def get_feature_importance(
 @router.get("/api/highfreq/training_report")
 async def get_training_report(
     symbol: str = DEFAULT_SYMBOL,
+    db: Session = Depends(_get_db),
 ) -> JSONResponse:
     """Return the trainer's last metrics report + computed fold-readiness.
 
@@ -1223,11 +1224,40 @@ async def get_training_report(
     (b) the "X / Y bars for next fold" progress widget — so the user
     sees ramp-up progress visually rather than digging into journals.
 
+    Real-time fold readiness
+    ------------------------
+
+    Older revisions of this endpoint sourced ``fold_ready_pct`` from the
+    trainer's ``metrics.json`` — meaning the progress bar was frozen
+    until the next daily firing. We now compute a **live inventory**
+    via :func:`app.highfreq.data_inventory.fetch_live_inventory` (cached
+    30 s per symbol) and surface it as ``live_inventory`` in the response.
+    The UI's progress bar reads ``fold_ready_pct`` which is now derived
+    from the live count, so the user sees minute-by-minute progress
+    rather than "stuck at 14% all day".
+
     Returns 200 with ``ok=False, reason="no_report_yet"`` if the
-    trainer hasn't written its first ``metrics.json`` yet (cold-start).
+    trainer hasn't written its first ``metrics.json`` yet (cold-start)
+    — but even then, ``live_inventory`` is computed so the UI can show
+    ramp-up progress before the first model is fit.
     Never 503 — the page must keep rendering through trainer outages.
     """
     symbol = symbol.upper()
+
+    # Live inventory ALWAYS computed — the progress widget should work
+    # even before the trainer has fired its first run. Failure of the
+    # live computation degrades gracefully (None) without 503-ing the
+    # whole endpoint.
+    live: dict[str, Any] | None = None
+    try:
+        from app.highfreq.data_inventory import fetch_live_inventory
+        live_snap = fetch_live_inventory(db, symbol=symbol)
+        live = live_snap.to_dict()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("live_inventory query failed (%s): %s", symbol, exc)
+    except Exception as exc:
+        logger.warning("live_inventory unexpected failure (%s): %s", symbol, exc)
+
     # Use per-symbol path if symbol is given; fall back to the
     # legacy default for backward compat with any single-symbol call sites.
     path = metrics_path_for_symbol(symbol)
@@ -1237,13 +1267,24 @@ async def get_training_report(
         if DEFAULT_METRICS_PATH.exists():
             path = DEFAULT_METRICS_PATH
     if not path.exists():
-        return JSONResponse(content={
+        # Cold start: no report file yet, but live_inventory may still
+        # be populated. Compute fold_ready_pct from live data when
+        # available so the UI shows the progress bar from minute 1.
+        live_pct: float | None = None
+        if live is not None:
+            live_pct = min(
+                100.0,
+                100.0 * int(live.get("n_eligible_for_training") or 0) / MIN_BARS_FOR_FIRST_FOLD,
+            )
+        return JSONResponse(content=_scrub({
             "ok": False,
             "reason": "no_report_yet",
             "metrics_path": str(path),
             "min_bars_for_first_fold": MIN_BARS_FOR_FIRST_FOLD,
+            "live_inventory": live,
+            "fold_ready_pct": round(live_pct, 1) if live_pct is not None else 0.0,
             "ts": datetime.now(tz=timezone.utc).isoformat(),
-        })
+        }))
 
     try:
         report = json.loads(path.read_text())
@@ -1253,12 +1294,27 @@ async def get_training_report(
             "ok": False,
             "reason": "report_unreadable",
             "metrics_path": str(path),
+            "live_inventory": live,
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         })
 
-    # Computed fold readiness (UI can show "726 / 1500 bars (48%)").
-    bars_after_drop = int(report.get("n_minutes_after_neutral_drop") or 0)
-    fold_ready_pct = min(100.0, 100.0 * bars_after_drop / MIN_BARS_FOR_FIRST_FOLD)
+    # Fold readiness — TOTAL bars collected so far, regardless of how
+    # they'd split into train vs holdout. This is the user-facing
+    # "are we there yet?" number; the holdout-split detail goes into
+    # ``live_inventory`` for the curious.
+    #
+    # Why not use ``n_eligible_for_training``: during the first 7 days
+    # of operation, the entire dataset is recent enough to fall inside
+    # the holdout window — eligible=0 would mean the bar shows 0 % all
+    # week, which is unhelpful and makes the system look broken.
+    # Showing collection progress against the same denominator the
+    # trainer uses (``MIN_BARS_FOR_FIRST_FOLD``) lets users watch the
+    # ramp-up minute by minute.
+    if live is not None:
+        bars_for_pct = int(live.get("n_minutes_after_neutral_drop") or 0)
+    else:
+        bars_for_pct = int(report.get("n_minutes_after_neutral_drop") or 0)
+    fold_ready_pct = min(100.0, 100.0 * bars_for_pct / MIN_BARS_FOR_FIRST_FOLD)
 
     # Enrich per-fold dir_acc with Wilson CI for the calibration plot.
     folds_raw = report.get("folds") or []
@@ -1280,5 +1336,55 @@ async def get_training_report(
         "report_age_seconds": report_age_seconds,
         "min_bars_for_first_fold": MIN_BARS_FOR_FIRST_FOLD,
         "fold_ready_pct": round(fold_ready_pct, 1),
+        "live_inventory": live,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
+@router.get("/api/highfreq/training_history")
+async def get_training_history(
+    symbol: str = DEFAULT_SYMBOL,
+    since_days: int = 7,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Append-only history of trainer runs, for the UI's evolution
+    sparkline.
+
+    Backed by ``training_runs`` (migration 004). One row per
+    trainer run per symbol — gives a time-series view of how
+    ``dir_acc_mean``, the bar count, and ``n_folds`` evolved as data
+    accumulated. Defence-grade artefact: "model improved
+    monotonically over 14 days; here's the chart."
+
+    Read-only, never 503 — degrades to ``runs=[]`` on DB error so
+    the UI keeps rendering.
+    """
+    from app.highfreq.training_history import fetch_history_sync
+
+    symbol = symbol.upper()
+    # Sane bounds: since_days in [1, 90]. Past 90 days is way more
+    # than the trainer's training history is meaningful for at
+    # current cadences.
+    since_days = max(1, min(int(since_days), 90))
+
+    try:
+        runs = fetch_history_sync(db, symbol=symbol, since_days=since_days)
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("training_history fetch failed (%s): %s", symbol, exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "since_days": since_days,
+            "runs": [],
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "db_status": "ok",
+        "symbol": symbol,
+        "since_days": since_days,
+        "runs": runs,
         "ts": datetime.now(tz=timezone.utc).isoformat(),
     }))

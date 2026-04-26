@@ -314,6 +314,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if not symbols:
         logger.info("no symbols in paper_trades — nothing to back up")
+        # Empty-table run is still a SUCCESS — write the heartbeat so
+        # the cron-stale alert doesn't fire just because we haven't
+        # accumulated any paper trades yet (model not calibrated).
+        from app.highfreq.cron_metrics import write_cron_success
+        write_cron_success(
+            "neucast_hf_paper_trades_backup_last_success_timestamp_seconds",
+            file_stem="neucast_hf_paper_trades_backup",
+        )
         return 0
 
     logger.info(

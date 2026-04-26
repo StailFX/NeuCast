@@ -596,10 +596,21 @@ def main(argv: list[str] | None = None) -> int:
     # Normalise symbol to uppercase here (templated systemd units pass
     # lowercase via %I; DB stores uppercase). Single canonical form
     # keeps DB queries hitting the right rows.
+    from datetime import datetime as _dt, timezone as _tz
+    run_started_at = _dt.now(tz=_tz.utc)
     report = run_training(
         dsn, symbol=args.symbol.upper(), since_hours=args.since_hours,
         out_path=out, config=cfg,
     )
+
+    # Append-only training history. Fail-soft — a successful run that
+    # couldn't log itself is still a successful run (the .cbm + JSON
+    # are already on disk).
+    try:
+        from app.highfreq.training_history import persist_run_sync
+        persist_run_sync(dsn, report, run_started_at=run_started_at)
+    except Exception:
+        logger.warning("training_history persist failed", exc_info=True)
 
     # Console-friendly summary.
     logger.info(
