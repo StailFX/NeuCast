@@ -1,13 +1,27 @@
 # Phase A — Deployment notes
 
 This directory contains deploy artifacts referenced by
-[`../architecture.md`](../architecture.md) (ADR-006). Two deployment
-modes are supported:
+[`../architecture.md`](../architecture.md). Three deployment paths exist; pick
+based on where you're starting from.
 
 | Mode | Where | When |
 |---|---|---|
-| Docker Compose | `docker-compose.yml` → `highfreq-l2` service | Local dev; greenfield VPS |
-| Systemd | `neucast-highfreq.service` (this dir) | Existing NeuCast VPS where app/celery already run as systemd units |
+| **Tokyo greenfield (ADR-009)** | `bootstrap_tokyo.sh` | Fresh Ubuntu 22.04/24.04 VPS in Tokyo — single command from clean OS to running ingest + slim web. **This is the current production path.** |
+| Docker Compose | `docker-compose.yml` → `highfreq-l2` service | Local dev only |
+| Systemd (legacy) | `neucast-highfreq.service` (this dir) | Existing Hostkey Finland VPS where app/celery already run as systemd units. Per ADR-009, ingest no longer runs here — kept for reference. |
+
+## Production layout (post ADR-009)
+
+```
+TOKYO 147.45.49.40 (4VPS.su JP-cx21, Ubuntu 24.04)    FINLAND 151.245.139.21 (Hostkey)
+├─ neucast-highfreq.service       (L2 ingest)         ├─ nginx → reverse-proxies /highfreq* to Tokyo:8000
+├─ neucast-highfreq-web.service   (slim FastAPI)      ├─ neucast.service       (uvicorn, main webapp)
+├─ Postgres 5433  (single source of truth)            ├─ neucast-celery.service
+├─ UFW: 22 = world, 8000 = Finland-only               └─ Postgres 5433  (no highfreq tables)
+└─ /etc/neucast/env (DATABASE_URL + POSTGRES_PASSWORD)
+```
+
+See [ADR-009 in architecture.md](../architecture.md#adr-009--tokyo-vps-as-the-hft-data-plane-supersedes-adr-006-for-the-hft-slice) for the rationale.
 
 ## Production VPS layout (Hostkey Finland)
 

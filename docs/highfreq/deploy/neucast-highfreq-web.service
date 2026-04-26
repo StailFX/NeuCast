@@ -1,0 +1,40 @@
+[Unit]
+Description=NeuCast High-Frequency Web (slim FastAPI for reverse-proxy from Finland)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service neucast-highfreq.service
+# We don't Require= postgres because the slim app degrades gracefully
+# (web.py wraps DB calls in try/except → 503 with structured reason).
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+# Bind to all interfaces — UFW restricts to Finland's IP only (see
+# bootstrap_tokyo.sh "step 12" for the firewall rule). Binding to
+# 127.0.0.1 would be ideal but then Finland couldn't reach us; we'd
+# need a SSH tunnel which adds operational fragility.
+ExecStart=/opt/neucast/venv/bin/uvicorn \
+    app.highfreq.web_app:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 1 \
+    --loop uvloop \
+    --http httptools \
+    --proxy-headers \
+    --forwarded-allow-ips=151.245.139.21
+Restart=always
+RestartSec=5
+# Lighter than the ingest box but still snappy. uvicorn + 1 worker +
+# ~10 req/sec from polling clients is well under 200 MB.
+MemoryMax=400M
+MemoryHigh=300M
+# Lower priority than the ingest loop (nice -5) — the web layer is
+# I/O-bound and tolerant of latency, the ingest is hot.
+Nice=0
+IOSchedulingClass=best-effort
+IOSchedulingPriority=4
+
+[Install]
+WantedBy=multi-user.target

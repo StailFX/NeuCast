@@ -173,7 +173,7 @@ A backtest reporting only one of these is misleading. A backtest reporting only 
 
 ---
 
-### ADR-006 · Coexist via resource limits, not isolation
+### ADR-006 · Coexist via resource limits, not isolation *(superseded by ADR-009 for the HFT slice)*
 
 **Context.** We could pay ~900 ₽/month for a second VPS to isolate the HF module. We chose not to.
 
@@ -223,6 +223,30 @@ A backtest reporting only one of these is misleading. A backtest reporting only 
 **Trade-off accepted.** Compute cost is `O(n_folds × n_train)` rather than `O(n_train)` for a single train/eval split. With ≤ 7 days of data and CatBoost at `thread_count=2`, this still runs in under 5 minutes — well within the 04:00 UTC training window (ADR-006).
 
 **Alternative rejected.** Purged k-fold with embargo (López de Prado 2018, *Advances in Financial Machine Learning*, §7.4). Reason: theoretically cleaner but adds implementation complexity for a ~0.3 pp accuracy gain on this dataset size. Documented here as the natural Phase B upgrade.
+
+---
+
+### ADR-009 · Tokyo VPS as the HFT data plane (supersedes ADR-006 for the HFT slice)
+
+**Context.** The Phase A ingest ran on the Hostkey Finland VPS alongside the main webapp (per ADR-006). Measured TCP RTT to Binance Spot WebSocket from Finland is ~250 ms; from a Tokyo VPS in the same metro as `stream.binance.com` (AWS `ap-northeast-1`, IP 18.179.181.116) it is ~19 ms median (measured 2026-04-26 from 4VPS.su JP-cx21). The order-of-magnitude reduction is meaningless for our 1-minute horizon directional accuracy (network jitter << bar duration), but the **robustness gain under burst conditions** is real and asymmetric — we lose data exactly during flash-crash windows where the model is most useful. The HFT direction (Phase B+) also makes Tokyo placement *eventually* mandatory (sub-second horizons, future live-trading order routing), so co-locating now avoids a more expensive migration later when the dataset and tuned weights are larger.
+
+**Decision.** Move the entire HFT data plane (Postgres + ingest + slim FastAPI) to a dedicated Tokyo VPS:
+
+- **Tokyo (`147.45.49.40`)** — single source of truth: `postgres:15-alpine` on `127.0.0.1:5433`, `neucast-highfreq.service` (L2 ingest), `neucast-highfreq-web.service` (slim uvicorn on port 8000 serving `/highfreq` + `/api/highfreq/*`), eventually `neucast-highfreq-trainer.timer` and the C-phase `neucast-paper-trader.service`.
+- **Finland (`151.245.139.21`)** — public web tier only: nginx terminates TLS, reverse-proxies `/highfreq` and `/api/highfreq/*` to `http://147.45.49.40:8000`, serves everything else from the existing `app.main` uvicorn. The orphan `highfreq_*` tables on Finland Postgres are dropped — no replication, no drift to debug.
+- **Firewall.** Tokyo's UFW exposes port 8000 *only* to the Finland IP. Postgres stays bound to `127.0.0.1`. Public neucast.ru URLs continue terminating on Finland's certbot certificate; Tokyo never holds a TLS cert.
+
+**Why this works.**
+- **Single source of truth.** No replication lag, no two-DB drift, no "which Postgres is right" debugging.
+- **Public URL stays the same.** `https://neucast.ru/highfreq` works exactly as before for users; the topology change is invisible.
+- **Right home for each layer.** Webapp on the public-facing Finland box (cert + DNS already there); ingest on the box closest to the data source; UFW makes the Tokyo→Finland link essentially private.
+- **Cost.** ~1 080 ₽/month for the Tokyo VPS — recovered many times over by the ~6× simpler operational story vs. a replication setup, and by being the right architectural shape for the HFT direction.
+
+**Trade-off accepted.** Two hosts to monitor instead of one; weights produced by the trainer (which we'll keep running on Finland for the next month while data accumulates) need to be `scp`'d to Tokyo on a cron once we have a `.cbm`. Both are operationally trivial. Internal Tokyo↔Finland traffic is not encrypted at the application layer; the data is public market quotes + read-only API responses, not credentials, so the residual risk is "an attacker on the path could see what BTCUSDT did 30 seconds ago" — acceptable. Adding WireGuard between the two hosts is a half-day task whenever we want it.
+
+**Alternative rejected — Tokyo→Finland data replication.** Easier to set up (one cron + COPY) but doubles disk usage, introduces 30-60 s replication lag, and bakes a "second copy" into the operational story forever. With ADR-009's reverse-proxy approach the disk footprint stays single, the data is always fresh, and the only thing crossing the wire is the same ~1 KB/sec of API responses that nginx would serve anyway.
+
+**Alternative rejected — full webapp on Tokyo.** Would require pulling TensorFlow, PyTorch, transformers, chronos, timesfm, uni2ts (~5 GB on disk, several GB resident) onto a 4 GB VPS. The slim `app/highfreq/web_app.py` ASGI module mounts only the four HFT routes from `app/highfreq/web.py`, keeping the Tokyo footprint at ~80 MB resident.
 
 ---
 
@@ -335,7 +359,7 @@ To prevent scope creep, these are explicitly *not* part of Phase A:
 - Sub-1-minute prediction horizons
 - Multi-asset basket / cross-sectional ranking
 - LLM-based news / sentiment fusion
-- Tokyo VPS migration
+- ~~Tokyo VPS migration~~ → **done in ADR-009** (2026-04-26)
 - Reinforcement-learning-based execution
 
 Each of the above has an obvious slot in a Phase B or C plan and will be addressed there.

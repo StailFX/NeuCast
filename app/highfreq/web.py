@@ -364,10 +364,14 @@ async def highfreq_page(request: Request) -> HTMLResponse:
     rendering cheap and lets the page degrade gracefully if the ingest
     service is briefly down.
     """
+    # Note: starlette ≥ 0.27 deprecated the old `TemplateResponse(name, {"request": request, ...})`
+    # signature; in starlette ≥ 0.40 (which the Tokyo venv ships) it raises
+    # `TypeError: unhashable type: 'dict'` outright. The new API takes
+    # ``request`` as the first positional arg with a separate ``context`` dict.
     return templates.TemplateResponse(
+        request,
         "highfreq.html",
         {
-            "request": request,
             "symbol": DEFAULT_SYMBOL,
             "minutes_required": MIN_MINUTES_FOR_TRAINING,
         },
