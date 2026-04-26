@@ -823,6 +823,52 @@ def metrics_path_for_symbol(symbol: str) -> Path:
     return base / f"{symbol.lower()}_1m_metrics.json"
 
 
+# Z-score for 95% two-sided confidence — standard normal inverse at 0.975.
+# Inlined as a constant rather than scipy.stats import to avoid pulling
+# scipy onto the slim Tokyo deploy.
+_Z_95: float = 1.959963984540054
+
+
+def wilson_ci(*, successes: int, n: int, z: float = _Z_95) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion.
+
+    Better than the naive normal approximation when ``n`` is small or
+    the proportion is close to 0/1 (which is exactly the regime we're
+    in for per-fold dir_acc with n_test ≈ 60). Returns ``(lo, hi)`` in
+    [0, 1].
+
+    Reference: Wilson 1927; widely used in baseball SABR + clinical
+    trials for exactly this "directional accuracy with small sample"
+    case.
+    """
+    if n <= 0:
+        return 0.0, 1.0
+    p_hat = successes / n
+    denom = 1.0 + z * z / n
+    centre = (p_hat + z * z / (2 * n)) / denom
+    half = (z / denom) * math.sqrt(p_hat * (1 - p_hat) / n + z * z / (4 * n * n))
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def _enrich_folds_with_ci(folds: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add per-fold ``dir_acc_ci_low`` / ``dir_acc_ci_high`` via Wilson.
+
+    The trainer's bootstrap CI is over ALL folds combined (one number
+    for the whole report). For the calibration plot we want per-fold
+    error bars to see if the model is consistently calibrated or just
+    averages out across high-variance folds. Wilson is analytical from
+    ``dir_acc`` + ``n_test`` so no extra inference passes needed.
+    """
+    out = []
+    for f in folds:
+        n_test = int(f.get("n_test") or 0)
+        dir_acc = float(f.get("dir_acc") or 0.0)
+        successes = int(round(dir_acc * n_test))
+        ci_lo, ci_hi = wilson_ci(successes=successes, n=n_test)
+        out.append({**f, "dir_acc_ci_low": ci_lo, "dir_acc_ci_high": ci_hi})
+    return out
+
+
 @router.get("/api/highfreq/training_report")
 async def get_training_report(
     symbol: str = DEFAULT_SYMBOL,
@@ -870,6 +916,11 @@ async def get_training_report(
     # Computed fold readiness (UI can show "726 / 1500 bars (48%)").
     bars_after_drop = int(report.get("n_minutes_after_neutral_drop") or 0)
     fold_ready_pct = min(100.0, 100.0 * bars_after_drop / MIN_BARS_FOR_FIRST_FOLD)
+
+    # Enrich per-fold dir_acc with Wilson CI for the calibration plot.
+    folds_raw = report.get("folds") or []
+    if folds_raw:
+        report = {**report, "folds": _enrich_folds_with_ci(folds_raw)}
 
     # Age of the report — UI shows "trained 4 hours ago" so users can
     # tell stale weights from fresh ones.

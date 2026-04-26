@@ -518,3 +518,75 @@ def test_training_report_fold_pct_caps_at_100(tmp_path, monkeypatch):
     client = TestClient(app)
     j = client.get("/api/highfreq/training_report").json()
     assert j["fold_ready_pct"] == 100.0  # not 333.3
+
+
+# ───────────────────────── Wilson CI + fold enrichment ─────────────────────────
+
+
+def test_wilson_ci_known_case():
+    """33 successes / 60 trials at 95% confidence ≈ [0.42, 0.67] (Wilson)."""
+    from app.highfreq.web import wilson_ci
+    lo, hi = wilson_ci(successes=33, n=60)
+    assert lo == pytest.approx(0.425, abs=0.005)
+    assert hi == pytest.approx(0.669, abs=0.005)
+
+
+def test_wilson_ci_zero_n_returns_full_range():
+    """Defensive: division-by-zero must not crash."""
+    from app.highfreq.web import wilson_ci
+    assert wilson_ci(successes=0, n=0) == (0.0, 1.0)
+
+
+def test_wilson_ci_extreme_proportions_stay_in_unit_interval():
+    """0/100 and 100/100 should clamp to [0,1] without overshooting."""
+    from app.highfreq.web import wilson_ci
+    lo, hi = wilson_ci(successes=0, n=100)
+    assert 0.0 <= lo <= hi <= 1.0
+    lo, hi = wilson_ci(successes=100, n=100)
+    assert 0.0 <= lo <= hi <= 1.0
+
+
+def test_enrich_folds_adds_ci_low_and_high_per_fold():
+    """The enrichment must preserve all original keys + add CI bounds."""
+    from app.highfreq.web import _enrich_folds_with_ci
+    out = _enrich_folds_with_ci([
+        {"fold_idx": 0, "dir_acc": 0.55, "n_test": 60, "log_loss": 0.69},
+        {"fold_idx": 1, "dir_acc": 0.48, "n_test": 60},
+    ])
+    assert len(out) == 2
+    # Original keys preserved
+    assert out[0]["fold_idx"] == 0
+    assert out[0]["log_loss"] == 0.69
+    # New keys present + within plausible range
+    assert "dir_acc_ci_low" in out[0]
+    assert "dir_acc_ci_high" in out[0]
+    assert 0.40 <= out[0]["dir_acc_ci_low"] <= 0.55
+    assert 0.55 <= out[0]["dir_acc_ci_high"] <= 0.70
+
+
+def test_training_report_returns_enriched_folds(tmp_path, monkeypatch):
+    """Endpoint must include per-fold ci_low/ci_high so the UI plot
+    can draw error bars without a second round-trip."""
+    import json as _json
+    import app.highfreq.web as web_mod
+
+    metrics = tmp_path / "with_folds.json"
+    metrics.write_text(_json.dumps({
+        "n_minutes_after_neutral_drop": 5000,
+        "n_folds": 2,
+        "base_rate": 0.51,
+        "folds": [
+            {"fold_idx": 0, "dir_acc": 0.55, "n_test": 60, "log_loss": 0.69, "base_rate": 0.51},
+            {"fold_idx": 1, "dir_acc": 0.48, "n_test": 60, "log_loss": 0.71, "base_rate": 0.51},
+        ],
+    }))
+    monkeypatch.setattr(web_mod, "DEFAULT_METRICS_PATH", metrics)
+
+    app = _make_app()
+    client = TestClient(app)
+    j = client.get("/api/highfreq/training_report").json()
+    folds = j["report"]["folds"]
+    assert len(folds) == 2
+    assert "dir_acc_ci_low" in folds[0]
+    assert "dir_acc_ci_high" in folds[0]
+    assert folds[0]["dir_acc"] == 0.55  # original kept

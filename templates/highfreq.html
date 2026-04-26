@@ -372,6 +372,108 @@
       color: var(--red);
     }
 
+    /* ─── Calibration plot (Phase C.5b) ─── */
+    .calib-card {
+      grid-column: 1 / -1;
+      padding: 16px 20px 14px;
+      margin-bottom: 18px;
+      position: relative;
+    }
+    .calib-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 10px;
+    }
+    .calib-stats {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+    .calib-svg {
+      width: 100%;
+      height: 200px;
+      display: block;
+    }
+    .calib-axis {
+      stroke: rgba(148, 163, 184, 0.20);
+      stroke-width: 1;
+    }
+    .calib-baseline {
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+    }
+    .calib-baseline.calib-random {
+      stroke: rgba(148, 163, 184, 0.4);
+    }
+    .calib-baseline.calib-base {
+      stroke: rgba(245, 158, 11, 0.45);
+    }
+    .calib-tick {
+      fill: var(--text-muted);
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-anchor: end;
+      opacity: 0.7;
+    }
+    .calib-fold-bar {
+      stroke: var(--blue);
+      stroke-width: 1.6;
+      vector-effect: non-scaling-stroke;
+    }
+    .calib-fold-dot {
+      fill: var(--blue);
+      stroke: #f1f5f9;
+      stroke-width: 1;
+    }
+    .calib-fold-dot.above-50 { fill: var(--green); }
+    .calib-fold-dot.below-50 { fill: var(--red); }
+    .calib-fold-bar.above-50 { stroke: var(--green); }
+    .calib-fold-bar.below-50 { stroke: var(--red); }
+
+    .calib-empty {
+      position: absolute;
+      inset: 50px 0 50px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      opacity: 0.55;
+      font-size: 13px;
+      pointer-events: none;
+    }
+    .calib-empty.hidden { display: none; }
+
+    .calib-legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .calib-legend .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .calib-legend .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 999px;
+    }
+    .calib-legend .bar {
+      display: inline-block;
+      width: 18px; height: 0;
+      border-top: 1px dashed currentColor;
+    }
+    .legend-fold { background: var(--blue); }
+    .legend-random { color: rgba(148, 163, 184, 0.7); }
+    .legend-base { color: #fbbf24; }
+
     /* ─── Cumulative P&L sparkline (Phase C.5) ─── */
     .paper-spark-card {
       grid-column: 1 / -1;
@@ -654,6 +756,38 @@
         <div class="progress-meta" id="fc-fold-meta">
           ожидаем metrics.json от тренера
         </div>
+      </div>
+    </div>
+
+    <!-- ─── Phase C.5b: Calibration plot ─── -->
+    <div class="card calib-card">
+      <div class="calib-header">
+        <div class="label">Walk-forward calibration · per-fold directional accuracy</div>
+        <div class="calib-stats" id="calib-stats">—</div>
+      </div>
+      <svg class="calib-svg" id="calib-svg"
+           viewBox="0 0 800 200" preserveAspectRatio="none">
+        <!-- Y-axis labels (drawn by JS into <text> elements) -->
+        <line class="calib-axis" x1="40" y1="10" x2="40" y2="190"></line>
+        <line class="calib-axis" x1="40" y1="190" x2="790" y2="190"></line>
+        <!-- 0.50 random baseline (always present) -->
+        <line class="calib-baseline calib-random" x1="40" y1="100" x2="790" y2="100"></line>
+        <!-- Base-rate baseline (drawn by JS at the report's base_rate) -->
+        <line class="calib-baseline calib-base" id="calib-base-rate" x1="40" y1="100" x2="790" y2="100"></line>
+        <!-- Per-fold error bars + dots filled in by renderCalibration() -->
+        <g id="calib-folds"></g>
+        <!-- Y-axis tick labels -->
+        <text class="calib-tick" x="36" y="14">0.60</text>
+        <text class="calib-tick" x="36" y="104">0.50</text>
+        <text class="calib-tick" x="36" y="194">0.40</text>
+      </svg>
+      <div class="calib-empty" id="calib-empty">
+        график появится после первого walk-forward fold (нужно ≥1500 bars)
+      </div>
+      <div class="calib-legend">
+        <span class="legend-item"><span class="dot legend-fold"></span>fold dir_acc · Wilson 95% CI</span>
+        <span class="legend-item"><span class="bar legend-random"></span>0.50 random</span>
+        <span class="legend-item"><span class="bar legend-base"></span>base rate (always-majority)</span>
       </div>
     </div>
 
@@ -1082,6 +1216,7 @@
           elFcFoldMeta.textContent = (d && d.reason === 'no_report_yet')
             ? 'тренер ещё не запускался'
             : 'отчёт недоступен';
+          renderCalibration(null);
           return;
         }
         const r = d.report || {};
@@ -1100,6 +1235,77 @@
             bars + ' / ' + need + ' bars · нужно ещё ' + (need - bars) +
             ' (~' + Math.ceil((need - bars) / 60) + ' ч сбора)';
         }
+
+        renderCalibration(r);
+      }
+
+      // ─── Calibration plot render (Phase C.5b) ────────────────────────
+      const elCalibFolds = $('calib-folds');
+      const elCalibStats = $('calib-stats');
+      const elCalibEmpty = $('calib-empty');
+      const elCalibBaseRate = $('calib-base-rate');
+
+      function renderCalibration(report) {
+        const folds = (report && report.folds) || [];
+        if (!folds.length) {
+          elCalibFolds.innerHTML = '';
+          elCalibEmpty.classList.remove('hidden');
+          elCalibStats.textContent = '—';
+          // Hide the base-rate line until we have data.
+          elCalibBaseRate.setAttribute('y1', -10);
+          elCalibBaseRate.setAttribute('y2', -10);
+          return;
+        }
+        elCalibEmpty.classList.add('hidden');
+
+        // SVG viewBox: 800×200. X plot area: 40..790 (750w). Y plot
+        // area: 10..190 (180h) — covers dir_acc range [0.40, 0.60].
+        const X0 = 40, X1 = 790, Y0 = 10, Y1 = 190;
+        const Y_MIN = 0.40, Y_MAX = 0.60;
+        const toY = (v) => {
+          const clamped = Math.max(Y_MIN, Math.min(Y_MAX, v));
+          return Y0 + (Y_MAX - clamped) / (Y_MAX - Y_MIN) * (Y1 - Y0);
+        };
+        const xStep = folds.length > 1 ? (X1 - X0) / (folds.length - 1) : 0;
+
+        // Place the base-rate dashed line at the report's base_rate
+        // (or fall back to global base_rate if folds don't carry it).
+        const baseRate = (folds[0] && folds[0].base_rate) || report.base_rate || 0.5;
+        const baseY = toY(baseRate);
+        elCalibBaseRate.setAttribute('y1', baseY);
+        elCalibBaseRate.setAttribute('y2', baseY);
+
+        // Build per-fold SVG nodes.
+        const parts = folds.map((f, i) => {
+          const x = folds.length === 1 ? (X0 + X1) / 2 : (X0 + i * xStep);
+          const yMean = toY(f.dir_acc);
+          const yLo = toY(f.dir_acc_ci_low);
+          const yHi = toY(f.dir_acc_ci_high);
+          const cls = f.dir_acc > 0.50 ? 'above-50' :
+                      f.dir_acc < 0.50 ? 'below-50' : '';
+          return (
+            '<line class="calib-fold-bar ' + cls + '" ' +
+              'x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" ' +
+              'y1="' + yLo.toFixed(1) + '" y2="' + yHi.toFixed(1) + '"></line>' +
+            '<circle class="calib-fold-dot ' + cls + '" ' +
+              'cx="' + x.toFixed(1) + '" cy="' + yMean.toFixed(1) + '" r="3.5">' +
+              '<title>fold ' + (f.fold_idx ?? i) +
+              ': dir_acc=' + f.dir_acc.toFixed(3) +
+              '  CI=[' + f.dir_acc_ci_low.toFixed(3) + ', ' +
+                         f.dir_acc_ci_high.toFixed(3) + ']' +
+              '  n_test=' + (f.n_test || '—') + '</title>' +
+            '</circle>'
+          );
+        });
+        elCalibFolds.innerHTML = parts.join('');
+
+        // Stats line: how many folds, mean dir_acc, % above 0.50.
+        const accs = folds.map((f) => f.dir_acc);
+        const meanAcc = accs.reduce((a, b) => a + b, 0) / accs.length;
+        const aboveCount = accs.filter((a) => a > 0.50).length;
+        elCalibStats.textContent =
+          folds.length + ' folds · mean ' + meanAcc.toFixed(3) +
+          ' · ' + aboveCount + '/' + folds.length + ' above 0.50';
       }
 
       async function pollForecast() {
