@@ -15,10 +15,13 @@ Group=stailfx
 WorkingDirectory=/opt/neucast
 EnvironmentFile=/etc/neucast/env
 
-# Default: archive days older than 7 days, max 30 per run (catch up
-# safely after multi-week downtime without slamming the API).
+# Retention shrunk 7→2 days (release 2026-04-27): caps "still-in-hot
+# Postgres, not yet in S3" data loss to ~2 days on a hard Tokyo
+# failure. Cost: trivially more S3 storage (the same total data, just
+# in S3 instead of Postgres). max-days=30 retained for catch-up safety
+# after multi-week downtime.
 ExecStart=/opt/neucast/venv/bin/python -m tools.archive_l2_to_s3 \
-    --retention-days 7 \
+    --retention-days 2 \
     --max-days 30
 
 # Exit codes:

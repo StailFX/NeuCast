@@ -298,3 +298,81 @@ groups:
             class of bug should now page within 25h instead of being noticed by-eye.
         labels:
           severity: warning
+
+      - uid: ofi-archive-stale-rule
+        title: OFI 1-sec archive cron hasn't succeeded in >25h
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: time() - max(neucast_hf_ofi_archive_last_success_timestamp_seconds)
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [90000], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "Daily highfreq_ofi_1s → S3 archive cron is stale"
+          description: |
+            `tools/archive_ofi_1s_to_s3.py` hasn't recorded a success in over 25 hours.
+            The 1-second OFI/microprice/depth-imbalance feed is the entire training
+            dataset — without this archive, a Tokyo VPS death loses every microstructure
+            observation ever collected. Check `journalctl -u neucast-ofi-archive.service`
+            and `systemctl status neucast-ofi-archive.timer`. **If unmonitored, hot
+            Postgres will keep accumulating and disk-full alert (>85%) will fire next.**
+        labels:
+          severity: warning
+
+      - uid: paper-trades-backup-stale-rule
+        title: paper_trades backup cron hasn't succeeded in >25h
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prom-tokyo
+            model:
+              expr: time() - max(neucast_hf_paper_trades_backup_last_success_timestamp_seconds)
+              instant: true
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 0, to: 0}
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              refId: B
+              expression: A
+              conditions:
+                - evaluator: {params: [90000], type: gt}
+                  operator: {type: and}
+                  query: {params: [B]}
+                  reducer: {params: [], type: last}
+                  type: query
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "Daily paper_trades backup cron is stale"
+          description: |
+            `tools/archive_paper_trades_to_s3.py` hasn't recorded a success in over 25 hours.
+            paper_trades isn't deleted from hot Postgres (this is a backup, not an
+            archive), but a Tokyo VPS death between backups would lose up to 24h of
+            simulated trades — the realized-accuracy logger and the lifetime-P&L
+            widgets both depend on this table. Check `journalctl -u
+            neucast-paper-trades-backup.service`.
+        labels:
+          severity: warning

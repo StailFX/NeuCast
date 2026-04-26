@@ -1,0 +1,14 @@
+[Unit]
+Description=NeuCast HFT paper_trades backup schedule — daily 02:30 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 02:30 UTC = 30 min after L2 archive (02:00), 15 min before OFI
+# archive (02:45). Three crons walk through the same Postgres-S3
+# pipeline back-to-back with comfortable spacing.
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+RandomizedDelaySec=180
+
+[Install]
+WantedBy=timers.target

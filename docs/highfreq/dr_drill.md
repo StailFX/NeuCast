@@ -1,7 +1,18 @@
-# Disaster Recovery Drill — L2 Snapshot Archives
+# Disaster Recovery Drill — HF Archive Read-Path
 
-Purpose: prove the read path of `tools/archive_l2_to_s3.py` actually
+Purpose: prove the read path of the three HF S3 archives actually
 works **before** we need it to.
+
+| Source table | Archive script | S3 prefix | Retention in hot |
+|---|---|---|---|
+| `highfreq_l2_snapshots` | `tools/archive_l2_to_s3.py` | `highfreq_l2/<sym>/<day>.parquet` | **2 days** (post-2026-04-27) |
+| `highfreq_ofi_1s` | `tools/archive_ofi_1s_to_s3.py` | `highfreq_ofi_1s/<sym>/<day>.parquet` | 7 days |
+| `paper_trades` | `tools/archive_paper_trades_to_s3.py` | `paper_trades_backup/<sym>/<day>.parquet` | ∞ (backup-only, no delete) |
+
+The original DR drill tooling (`tools/dr_drill_l2.py`) only covers
+the **L2** archive. The other two follow identical patterns —
+DR-drilling them is a copy of `dr_drill_l2.py` swapping the prefix
+and column-set; tracked as a follow-up item below.
 
 ## Why this exists
 
@@ -194,3 +205,22 @@ Yandex S3 standard pricing: ~₽1.30 per 10k GET requests. A read-only
 drill of 3 symbols × 1 day = 3 GETs (₽0.0004). A full quarterly schedule
 of 4 days × 3 symbols × 4 quarters/year = 48 GETs/year ≈ free. Safe to
 schedule generously.
+
+## Coverage gaps + follow-ups
+
+* `tools/dr_drill_ofi_1s.py` — TODO. Same shape as `dr_drill_l2.py`
+  but for the OFI archive. Schema is simpler (no array columns), so
+  the validation step is just "all expected scalar columns present".
+* `tools/dr_drill_paper_trades.py` — TODO. Backup-only data; the
+  drill should additionally verify the row count in S3 equals the
+  row count in Postgres for that day (bidirectional consistency,
+  unique to this archive type).
+* Both follow-ups are routine; until they exist, the **manual** form
+  of the drill works:
+
+  ```bash
+  # Manual OFI drill — read one day from S3 and sanity-check.
+  aws --endpoint-url "$YANDEX_S3_ENDPOINT" s3 cp \
+      "s3://$YANDEX_S3_BUCKET/highfreq_ofi_1s/btcusdt/2026-04-20.parquet" /tmp/
+  python3 -c "import pyarrow.parquet as pq; t = pq.read_table('/tmp/2026-04-20.parquet'); print(t.num_rows, t.column_names)"
+  ```

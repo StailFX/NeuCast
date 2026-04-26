@@ -1,0 +1,33 @@
+[Unit]
+Description=NeuCast HFT paper_trades backup to Yandex S3 (oneshot, fired by .timer)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+
+# Backup-only: NEVER deletes from Postgres (paper_trades is small and
+# the UI's lifetime-stats widgets query the whole table). grace=1
+# keeps today's still-in-progress trades out of the backup so the
+# row-count idempotence check stays stable.
+ExecStart=/opt/neucast/venv/bin/python -m tools.archive_paper_trades_to_s3 \
+    --grace-days 1 \
+    --max-days 60
+
+SuccessExitStatus=0 1
+
+# paper_trades is tiny — the script's working set is a few hundred KB.
+MemoryMax=200M
+MemoryHigh=150M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=600
+
+[Install]
+# Activated by the .timer unit.

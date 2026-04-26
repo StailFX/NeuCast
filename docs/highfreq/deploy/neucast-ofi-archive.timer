@@ -1,0 +1,15 @@
+[Unit]
+Description=NeuCast HFT OFI 1-sec archival schedule — daily 02:45 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 02:45 UTC = 45 minutes after the L2 archive timer (02:00 UTC), so
+# the two crons don't contend on the same Postgres maintenance
+# window or Yandex S3 client. Both finish well before the trainer
+# fires at 04:00 UTC.
+OnCalendar=*-*-* 02:45:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

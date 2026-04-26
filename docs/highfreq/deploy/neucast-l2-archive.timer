@@ -1,12 +1,25 @@
 [Unit]
-Description=NeuCast L2 archival schedule — daily 02:00 UTC
+Description=NeuCast L2 archival schedule — every 4h
 Documentation=file:///opt/neucast/docs/highfreq/architecture.md
 
 [Timer]
-# 02:00 UTC = 05:00 MSK. Fires BEFORE the trainer at 04:00 UTC so the
-# trainer doesn't see partially-archived data. Both run on the same
-# Postgres but different tables — no contention.
-OnCalendar=*-*-* 02:00:00 UTC
+# Every 4 hours: 02:00, 06:00, 10:00, 14:00, 18:00, 22:00 UTC.
+#
+# Why every 4h instead of daily:
+# - Most firings are no-ops (script is idempotent — skips days
+#   already in S3). Cost: ~6 cheap LIST ops per day. Negligible.
+# - The benefit is RETRY RESILIENCE: a transient S3 hiccup or
+#   Postgres lock at 02:00 UTC no longer blocks for 24h — the next
+#   firing in 4h tries again.
+# - Combined with retention=2 (in the .service unit), the worst-case
+#   "data is in hot Postgres but not yet in S3" window is bounded:
+#   a fresh complete day is archived within 4h of becoming eligible.
+#
+# Note on RPO: this does NOT give a 4h Recovery Point Objective for
+# Tokyo death — the script archives WHOLE complete days, so you'd
+# still lose up to retention_days of hot data on a hard failure.
+# True 4h RPO requires hour-bucket chunking (separate redesign).
+OnCalendar=*-*-* 02:00:00,06:00:00,10:00:00,14:00:00,18:00:00,22:00:00 UTC
 
 # Catch up if the box was off when the timer should have fired.
 Persistent=true
