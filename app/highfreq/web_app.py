@@ -34,6 +34,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from prometheus_client import make_asgi_app
 
 from app.highfreq.web import router as highfreq_router
 
@@ -58,6 +59,13 @@ app = FastAPI(
 )
 
 app.include_router(highfreq_router)
+
+# Prometheus /metrics endpoint — scraped by Tokyo's local Prometheus
+# every 15s. Mounted as a sub-app so the prometheus_client's WSGI/ASGI
+# bridge handles content-type + format negotiation natively. Excluded
+# from the OpenAPI schema so it doesn't pollute /docs (which we already
+# disabled, but kept consistent for any future re-enable).
+app.mount("/metrics", make_asgi_app())
 
 
 @app.get("/", include_in_schema=False)

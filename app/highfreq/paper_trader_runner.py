@@ -80,6 +80,7 @@ from app.highfreq.paper_trader import (
     RiskCaps,
 )
 from app.highfreq.predictor import LivePredictor, weights_path_for_symbol
+from app.highfreq import metrics as M
 
 logger = logging.getLogger(__name__)
 
@@ -291,13 +292,30 @@ async def process_one_tick(
         return None
     feat, microprice_close = inference
 
+    # Time the prediction for the latency histogram.
+    import time as _time
+    _t0 = _time.perf_counter()
     prob_up = predictor.predict(feat)
+    M.prediction_latency_seconds.labels(symbol=symbol).observe(
+        _time.perf_counter() - _t0,
+    )
     if prob_up is None:
         logger.warning(
             "tick %s: predictor.predict returned None despite has_model=True",
             bar_close_ts.isoformat(),
         )
         return None
+
+    # Update calibration gauges for this symbol so the dashboard sees
+    # the latest values without needing to wait for the next prediction
+    # cycle if calibration just changed.
+    M.predictor_calibrated.labels(symbol=symbol).set(
+        1.0 if p_status.is_calibrated else 0.0,
+    )
+    if p_status.dir_acc_ci_low is not None:
+        M.predictor_dir_acc_ci_low.labels(symbol=symbol).set(p_status.dir_acc_ci_low)
+    if p_status.model_age_seconds is not None:
+        M.predictor_model_age_seconds.labels(symbol=symbol).set(p_status.model_age_seconds)
 
     model_version = str(p_status.model_age_seconds or 0)
 
@@ -312,6 +330,17 @@ async def process_one_tick(
     except (KeyError, ValueError, TypeError):
         pass
 
+    # Classify the signal before we hand it to the trader so the metric
+    # reflects what the predictor actually said (independent of whether
+    # the trader's halt state allowed action).
+    if prob_up >= 0.55:
+        signal = "up"
+    elif prob_up <= 0.45:
+        signal = "down"
+    else:
+        signal = "neutral"
+    M.predictions_total.labels(symbol=symbol, signal=signal).inc()
+
     trade = trader.on_bar_close(
         ts=bar_close_ts,
         microprice=microprice_close,
@@ -321,6 +350,19 @@ async def process_one_tick(
         realized_vol_bps=realized_vol_bps,
     )
 
+    # Sync trader state → gauges (simple snapshot, no historical tracking).
+    M.paper_consecutive_losses.labels(symbol=symbol).set(
+        trader.state.consecutive_losses,
+    )
+    halt_reason = trader.state.halted_reason or "none"
+    # Two-step: clear all halt-state combos for this symbol, then set the
+    # current one. Keeps the gauge unambiguous (only one label combination
+    # is 1 at a time).
+    for r in ("loss_streak", "daily_loss", "none"):
+        M.paper_trader_halted.labels(symbol=symbol, reason=r).set(
+            1.0 if r == halt_reason else 0.0,
+        )
+
     logger.info(
         "tick %s: prob_up=%.4f calibrated=%s last_no_op=%s",
         bar_close_ts.isoformat(),
@@ -329,7 +371,29 @@ async def process_one_tick(
         trader.state.last_no_op.value if trader.state.last_no_op else None,
     )
 
+    # If the trader OPENED a position this tick, track it. The only
+    # observable signal is open_position becoming non-None — but that
+    # state could also come from a previous tick. To avoid double-count,
+    # check last_no_op == OK_OPENED.
+    from app.highfreq.paper_trader import _NoOpReason
+    if trader.state.last_no_op == _NoOpReason.OK_OPENED \
+            and trader.state.open_position is not None:
+        M.paper_trades_opened_total.labels(
+            symbol=symbol, side=trader.state.open_position.side,
+        ).inc()
+
     if trade is not None:
+        # Counters BEFORE the DB write — even if the write fails, the
+        # trader's accounting already counted this trade. The metric
+        # should reflect that.
+        M.paper_trades_closed_total.labels(
+            symbol=symbol, exit_reason=trade.exit_reason,
+        ).inc()
+        if trade.pnl_usd >= 0:
+            M.paper_pnl_usd_total.labels(symbol=symbol).inc(trade.pnl_usd)
+        else:
+            M.paper_loss_usd_total.labels(symbol=symbol).inc(abs(trade.pnl_usd))
+
         try:
             new_id = await write_paper_trade(pool, trade)
             logger.info(
@@ -467,6 +531,21 @@ async def main() -> None:
 
     database_url = os.environ["DATABASE_URL"]
     symbol = DEFAULT_SYMBOL.upper()
+
+    # Start a Prometheus /metrics HTTP server. Each templated systemd
+    # instance (btcusdt/ethusdt/bnbusdt) gets a different port via env;
+    # default 9091 + symbol-index offset. Bound to 127.0.0.1 since
+    # Prometheus runs locally on Tokyo and scrapes localhost.
+    metrics_port = int(os.getenv("HIGHFREQ_PAPER_METRICS_PORT", "9091"))
+    try:
+        from prometheus_client import start_http_server
+        start_http_server(metrics_port, addr="127.0.0.1")
+        logger.info("prometheus metrics server on 127.0.0.1:%d", metrics_port)
+    except Exception:
+        logger.exception(
+            "failed to start prometheus /metrics on :%d — continuing without",
+            metrics_port,
+        )
 
     weights_path = _weights_path_for(symbol)
     metrics_path = _metrics_path_for(weights_path)

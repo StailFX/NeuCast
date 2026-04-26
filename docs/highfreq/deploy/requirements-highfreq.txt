@@ -40,3 +40,13 @@ jinja2>=3.1.0
 sqlalchemy>=2.0.0
 # Sync Postgres driver — app.highfreq.web uses SQLAlchemy sync sessions.
 psycopg2-binary>=2.9.0
+
+# Prometheus instrumentation — exposes /metrics on the slim web app
+# and standalone HTTP metric servers in the ingest + paper_trader
+# runners. Pure-Python, no extra system deps. ~80 KB wheel.
+prometheus_client>=0.20.0
+
+# boto3 + pyarrow installed already on Tokyo for the L2 archival cron;
+# listed here so a fresh deploy picks them up.
+boto3>=1.34.0
+pyarrow>=14.0.0

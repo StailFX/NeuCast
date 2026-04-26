@@ -36,6 +36,7 @@ from app.highfreq.l2_snapshot_writer import (
     DEFAULT_TOP_N as L2_SNAP_TOP_N,
     L2SnapshotWriter,
 )
+from app.highfreq import metrics as M
 
 
 def _configure_logging() -> None:
@@ -123,6 +124,20 @@ async def _main() -> None:
         update_speed_ms=update_speed_ms,
     )
 
+    # Prometheus /metrics HTTP server. Bound to 127.0.0.1 — Prometheus
+    # runs locally on Tokyo and scrapes localhost. Default port 9090
+    # (matches Prometheus convention for the main app's exporter port).
+    metrics_port = int(os.getenv("HIGHFREQ_INGEST_METRICS_PORT", "9090"))
+    try:
+        from prometheus_client import start_http_server
+        start_http_server(metrics_port, addr="127.0.0.1")
+        logger.info("prometheus metrics server on 127.0.0.1:%d", metrics_port)
+    except Exception:
+        logger.exception(
+            "failed to start prometheus /metrics on :%d — continuing without",
+            metrics_port,
+        )
+
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -141,12 +156,65 @@ async def _main() -> None:
     consumer_task = asyncio.create_task(consumer.run_forever())
 
     # Periodic health log: every 30 s emit counters so journalctl shows progress.
+    # Also synchronises Prometheus counters from the consumer's live counters
+    # (we use _inc_to to mirror absolute values into monotonic counters).
+    last_seen = {
+        "frames": 0, "reconnects": 0,
+        "snaps_per_sym": {s: 0 for s in symbols},
+        "trades_per_sym": {s: 0 for s in symbols},
+        "ofi_rows_per_sym": {s: 0 for s in symbols},
+        "l2_per_sym": {s: 0 for s in symbols},
+    }
+
+    def _sync_counter(counter, label_value, current: int, key: str, sub_key: str | None = None):
+        bucket = last_seen[key] if sub_key is None else last_seen[key].get(sub_key, 0)
+        delta = current - (bucket if sub_key is None else last_seen[key][sub_key])
+        if delta > 0:
+            if label_value is None:
+                counter.inc(delta)
+            else:
+                counter.labels(symbol=label_value).inc(delta)
+        if sub_key is None:
+            last_seen[key] = current
+        else:
+            last_seen[key][sub_key] = current
+
     async def _health_log() -> None:
         while not stop_event.is_set():
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
+
+            # Sync Prometheus counters with consumer/aggregator state.
+            _sync_counter(M.ws_frames_total, None, consumer.frames_received, "frames")
+            _sync_counter(M.ws_reconnects_total, None, consumer.reconnect_count, "reconnects")
+            for sym in symbols:
+                _sync_counter(
+                    M.snapshots_dispatched_total, sym,
+                    consumer.snapshots_per_symbol.get(sym, 0)
+                    if hasattr(consumer, "snapshots_per_symbol") else 0,
+                    "snaps_per_sym", sym,
+                )
+                _sync_counter(
+                    M.trades_dispatched_total, sym,
+                    consumer.trades_per_symbol.get(sym, 0)
+                    if hasattr(consumer, "trades_per_symbol") else 0,
+                    "trades_per_sym", sym,
+                )
+                _sync_counter(
+                    M.ofi_rows_written_total, sym,
+                    aggregator.rows_per_symbol.get(sym, 0)
+                    if hasattr(aggregator, "rows_per_symbol") else 0,
+                    "ofi_rows_per_sym", sym,
+                )
+                if snapshot_writer is not None:
+                    _sync_counter(
+                        M.l2_snapshots_written_total, sym,
+                        snapshot_writer._counters.get(sym, 0) // snapshot_writer.sample_every_n,
+                        "l2_per_sym", sym,
+                    )
+
             snap_stats = (
                 f" l2snaps_written={snapshot_writer.snapshots_written}"
                 if snapshot_writer is not None else ""

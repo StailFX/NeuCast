@@ -1,0 +1,14 @@
+[Unit]
+Description=NeuCast Prometheus snapshot schedule — daily 03:30 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 03:30 UTC = 06:30 MSK. Sandwiched between L2-archive (02:00) and
+# trainer (04:00) — all three on the same Postgres but different tables
+# / different IO paths, no contention.
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
