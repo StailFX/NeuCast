@@ -339,3 +339,53 @@ def build_latest_feature_row(df_seconds: pd.DataFrame) -> pd.Series | None:
 
     # Most recent complete-minute feature row.
     return feats.iloc[-1]
+
+
+def build_latest_inference_bar(
+    df_seconds: pd.DataFrame,
+) -> tuple[pd.Series, float] | None:
+    """Like :func:`build_latest_feature_row`, but also returns the raw
+    ``microprice_close`` of the last complete minute.
+
+    Use case: the paper-trader runner needs BOTH the feature vector
+    (to score with the predictor) AND the close microprice of the same
+    bar (to record as the entry/exit price of the simulated trade).
+    Calling :func:`build_latest_feature_row` separately and then
+    re-deriving the close from the seconds frame would duplicate the
+    in-flight-drop + aggregate work and risk drift if the two helpers
+    ever diverge.
+
+    Returns ``(features, close_microprice)`` for the most recent
+    COMPLETE minute, or ``None`` at cold-start (same semantics as
+    :func:`build_latest_feature_row`).
+
+    The ``close_microprice`` is the raw microprice of the LAST 1-second
+    sample inside the bar (mirrors ``microprice_close`` in
+    :func:`aggregate_to_minute`). It is intentionally NOT one of
+    :data:`FEATURE_COLUMNS` — absolute price level isn't predictive,
+    only changes are — but the trader needs the level to compute
+    notional sizes and P&L.
+    """
+    if df_seconds.empty:
+        return None
+
+    df = df_seconds.copy()
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    if df["ts"].empty:
+        return None
+
+    now_minute = df["ts"].max().floor("1min")
+    df = df.loc[df["ts"] < now_minute].copy()
+    if df.empty:
+        return None
+
+    minute_df = aggregate_to_minute(df)
+    if minute_df.empty:
+        return None
+
+    feats = build_features(minute_df)
+    if feats.empty:
+        return None
+
+    last_close = float(minute_df.iloc[-1]["microprice_close"])
+    return feats.iloc[-1], last_close

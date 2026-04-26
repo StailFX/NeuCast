@@ -23,6 +23,7 @@ import pandas as pd
 from app.highfreq.feature_pipeline import (
     FEATURE_COLUMNS,
     build_latest_feature_row,
+    build_latest_inference_bar,
 )
 
 
@@ -189,3 +190,56 @@ def test_build_latest_handles_string_timestamps():
     # exception; we explicitly guarantee parsability.
     assert row is not None
     assert list(row.index) == FEATURE_COLUMNS
+
+
+# ───────── build_latest_inference_bar ─────────
+
+
+def test_build_latest_inference_bar_returns_features_plus_close_microprice():
+    """The runner needs both — must come from the SAME bar (same in-flight
+    drop semantics as build_latest_feature_row)."""
+    full = _seconds_frame(n_minutes=2, seconds_per_minute=60)
+    partial = _seconds_frame(
+        n_minutes=1, seconds_per_minute=15, start="2026-04-25 00:02:00",
+    )
+    df = pd.concat([full, partial], ignore_index=True)
+
+    out = build_latest_inference_bar(df)
+    assert out is not None
+    feats, close_mp = out
+
+    # Features = the same row build_latest_feature_row would return.
+    expected_feats = build_latest_feature_row(df)
+    assert (feats == expected_feats).all()
+
+    # Close microprice = a positive float in BTC's regime
+    # (~$77k from _seconds_frame's defaults).
+    assert isinstance(close_mp, float)
+    assert 50_000 < close_mp < 100_000
+
+
+def test_build_latest_inference_bar_returns_none_at_cold_start():
+    """Empty / single-in-flight-minute frames bail same as
+    build_latest_feature_row (consistent contract)."""
+    assert build_latest_inference_bar(pd.DataFrame()) is None
+    # Single in-flight minute only.
+    assert build_latest_inference_bar(_seconds_frame(n_minutes=1, seconds_per_minute=30)) is None
+
+
+def test_build_latest_inference_bar_close_matches_last_seconds_microprice():
+    """Sanity: the returned close_microprice equals the microprice of the
+    LAST 1-second sample in the LAST COMPLETE minute."""
+    full = _seconds_frame(n_minutes=2, seconds_per_minute=60)
+    in_flight = _seconds_frame(
+        n_minutes=1, seconds_per_minute=15, start="2026-04-25 00:02:00",
+    )
+    df = pd.concat([full, in_flight], ignore_index=True)
+
+    # The last complete minute is 2026-04-25 00:01:00 → 00:01:59.
+    last_sec_of_complete = pd.Timestamp("2026-04-25 00:01:59", tz="UTC")
+    expected_close = float(df.loc[df["ts"] == last_sec_of_complete, "microprice"].iloc[0])
+
+    out = build_latest_inference_bar(df)
+    assert out is not None
+    _, close_mp = out
+    assert close_mp == expected_close
