@@ -699,9 +699,27 @@ async def main() -> None:
             "calibration gate. Trades tagged 'pre-calibration-demo' "
             "and excluded from realized-accuracy reports."
         )
+
+    # Tunable entry thresholds via env. Tighter thresholds = fewer
+    # trades but stronger signals — cuts the fee-burden noise that
+    # dominates retail-tier 1-min directional ML. Defaults preserve
+    # the original 0.55 / 0.45 contract; demo mode operators raise
+    # to 0.60 / 0.40 to filter out marginal signals.
+    entry_long = float(os.environ.get("HF_ENTRY_LONG_THRESHOLD", "0.55"))
+    entry_short = float(os.environ.get("HF_ENTRY_SHORT_THRESHOLD", "0.45"))
+    if entry_long != 0.55 or entry_short != 0.45:
+        logger.info(
+            "entry thresholds overridden via env: long >= %.4f, short <= %.4f",
+            entry_long, entry_short,
+        )
+
     trader = PaperTrader(
         symbol,
-        config=PaperTraderConfig(require_calibrated=not demo_mode),
+        config=PaperTraderConfig(
+            require_calibrated=not demo_mode,
+            entry_long_threshold=entry_long,
+            entry_short_threshold=entry_short,
+        ),
         risk_caps=RiskCaps(),
     )
 

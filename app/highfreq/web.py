@@ -1341,6 +1341,58 @@ async def get_training_report(
     }))
 
 
+@router.get("/api/highfreq/pnl_by_fee_tier")
+async def get_pnl_by_fee_tier(
+    symbol: str = DEFAULT_SYMBOL,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """P&L of all closed paper trades, recomputed at each fee tier.
+
+    Defence-grade artefact: at retail tier the trader loses money on
+    every trade due to 15 bp roundtrip fees on 3-5 bp moves. At
+    VIP-9 (0 bp) or market-maker rebate (-0.4 bp) the same trade
+    sequence flips to positive (or breakeven). Shows that the model's
+    directional skill exists; profitability is determined by fee
+    tier (which scales with capital, not code).
+
+    Returns 200 always:
+    * cold start (no trades) → ``ok=True, tiers=[]`` so the UI can
+      render "no data" without breaking.
+    * DB error → ``ok=False, db_status="unavailable"``.
+    """
+    from app.highfreq.fee_tiers import summarise_all_tiers
+
+    symbol = symbol.upper()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT side, qty, entry_price, exit_price "
+                "  FROM paper_trades "
+                " WHERE symbol = :symbol "
+                " ORDER BY exit_ts ASC"
+            ),
+            {"symbol": symbol},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("pnl_by_fee_tier fetch failed (%s): %s", symbol, exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    trades = [dict(r) for r in rows]
+    summaries = summarise_all_tiers(trades)
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "n_trades": len(trades),
+        "tiers": [s.to_dict() for s in summaries],
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 @router.get("/api/highfreq/actionable_signal")
 async def get_actionable_signal(
     symbol: str = DEFAULT_SYMBOL,

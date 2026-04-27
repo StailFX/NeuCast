@@ -168,6 +168,7 @@ HELP_TEXT = (
     "<code>/trades [SYMBOL] [N]</code> — recent paper trades (default 5)\n"
     "<code>/accuracy</code> — directional accuracy from predictions_log\n"
     "<code>/model</code> — latest trainer report per symbol\n"
+    "<code>/feetiers [SYMBOL]</code> — what P&amp;L would be at retail / VIP / MM-rebate fee tiers\n"
     "<code>/help</code> — this message"
 )
 
@@ -231,6 +232,54 @@ def _format_accuracy_response(rows: list[dict[str, Any]]) -> str:
             f"<code>{r['symbol']:>8}: {hits:>3d} / {n:<3d}  ({pct})</code>"
         )
     return "\n".join(lines)
+
+
+def _format_fee_tiers_response(symbol: str, n_trades: int,
+                                tiers: list[dict[str, Any]]) -> str:
+    """Render the fee-tier P&L breakdown.
+
+    Each tier shows the same trade sequence simulated at a
+    different fee assumption — the gap between rows IS the fee
+    burden. Operator can read off "edge exists, fees eat it" from
+    the table.
+    """
+    if n_trades == 0:
+        return f"<i>No paper trades for {symbol} yet.</i>"
+    lines = [
+        f"<b>{symbol}</b> — P&amp;L by fee tier",
+        f"<i>{n_trades} trades, recomputed at different fee assumptions</i>\n",
+    ]
+    for t in tiers:
+        pnl = t["pnl_usd"]
+        emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+        bps_total = t["pnl_bps_avg"] * t["n_trades"]
+        fee_str = f"{t['fee_bps_per_side']:+.1f}bp/side"
+        lines.append(
+            f"{emoji} <b>{t['tier']:>10}</b>  <code>{fee_str}</code>\n"
+            f"   <code>pnl  = ${pnl:>+10.4f}  ({t['pnl_bps_avg']:+.1f} bps avg)</code>\n"
+            f"   <code>w/l  = {t['n_wins']:>3d}W / {t['n_losses']:<3d}L</code>"
+        )
+    return "\n\n".join(lines)
+
+
+def _query_fee_tiers(database_url: str, *,
+                     symbol: str | None = None) -> tuple[int, list[dict[str, Any]]]:
+    """Fetch trades + run the fee-tier sim. Returns (n_trades, tier_dicts)."""
+    from sqlalchemy import create_engine, text
+    from app.highfreq.fee_tiers import summarise_all_tiers
+
+    eng = create_engine(database_url, future=True)
+    sql = text(
+        "SELECT side, qty, entry_price, exit_price "
+        "  FROM paper_trades "
+        + (" WHERE symbol = :symbol " if symbol else " ")
+        + " ORDER BY exit_ts ASC"
+    )
+    params = {"symbol": symbol.upper()} if symbol else {}
+    with eng.connect() as conn:
+        rows = [dict(r._mapping) for r in conn.execute(sql, params)]
+    summaries = summarise_all_tiers(rows)
+    return len(rows), [s.to_dict() for s in summaries]
 
 
 def _format_model_response(rows: list[dict[str, Any]]) -> str:
@@ -432,6 +481,15 @@ def _process_update(
         elif cmd == "/model":
             rows = _query_model(database_url)
             _send_html(bot_token, chat_id, _format_model_response(rows))
+        elif cmd == "/feetiers":
+            symbol_arg = args[0].upper() if args else None
+            n_trades, tiers = _query_fee_tiers(database_url, symbol=symbol_arg)
+            _send_html(
+                bot_token, chat_id,
+                _format_fee_tiers_response(
+                    symbol_arg or "ALL", n_trades, tiers,
+                ),
+            )
         else:
             _send_html(
                 bot_token, chat_id,
