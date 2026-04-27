@@ -124,6 +124,30 @@ def _read_holdout_cutoff_from_metrics(metrics_path: Path) -> Optional[str]:
     return d.get("holdout_cutoff_iso") or None
 
 
+def _is_bootstrap_mode_run(metrics_path: Path) -> bool:
+    """True when the latest trainer run was in bootstrap mode
+    (``frozen_holdout_days=0``) — meaning the model was fit on the
+    FULL dataset and there is no honest holdout to evaluate against.
+
+    Crucial guard: without this check, holdout-eval would happily
+    score the model on data it was trained on, producing leaked
+    near-100 % dir_acc. Defense-grade: refuse to publish a number
+    that's known-bogus.
+    """
+    if not metrics_path.exists():
+        return False
+    try:
+        d = json.loads(metrics_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    holdout_days = d.get("frozen_holdout_days")
+    if holdout_days is None:
+        # Legacy report (pre-release-A) — no field at all. Treat as
+        # bootstrap to avoid the leak in either case.
+        return True
+    return int(holdout_days) <= 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.eval_frozen_holdout",
                                 description=__doc__)
@@ -154,6 +178,60 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     metrics_path = weights_path.with_suffix("").with_name(weights_path.stem + "_metrics.json")
+
+    # Refuse to run if the trainer was in bootstrap mode (no holdout
+    # was reserved) — evaluating the model on the data it was trained
+    # on would leak and produce a meaningless ~99 % dir_acc number,
+    # which is much WORSE than no number at all (bootstrap regression
+    # 2026-04-27).
+    if _is_bootstrap_mode_run(metrics_path):
+        logger.warning(
+            "trainer is in bootstrap mode (frozen_holdout_days=0) — "
+            "no honest holdout to evaluate against. Skipping eval. "
+            "Once enough data accumulates, raise --frozen-holdout-days "
+            "in the trainer's systemd ExecStart."
+        )
+        # Still write a stub report so the heartbeat fires + the UI
+        # surfaces "bootstrap" rather than missing-data.
+        report = HoldoutReport(
+            symbol=symbol,
+            evaluated_at=__import__("pandas").Timestamp.utcnow().isoformat(),
+            weights_path=str(weights_path),
+            weights_mtime_iso=__import__("pandas").Timestamp(
+                weights_path.stat().st_mtime, unit="s", tz="UTC",
+            ).isoformat(),
+            holdout_cutoff_iso=None,
+            n_seconds_loaded=0,
+            n_minutes_after_aggregation=0,
+            n_minutes_after_neutral_drop=0,
+            n_eligible=0,
+            base_rate=float("nan"),
+            dir_acc=float("nan"),
+            dir_acc_ci_low=float("nan"),
+            dir_acc_ci_high=float("nan"),
+            dir_acc_p_value=float("nan"),
+            log_loss=float("nan"),
+            elapsed_seconds=0.0,
+        )
+        report_path = (
+            Path(args.report) if args.report
+            else weights_path.with_suffix("").with_name(
+                weights_path.stem + "_holdout.json"
+            )
+        )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report.to_json())
+        try:
+            from app.highfreq.cron_metrics import write_cron_success
+            write_cron_success(
+                "neucast_hf_holdout_eval_last_success_timestamp_seconds",
+                file_stem=f"neucast_hf_holdout_{symbol.lower()}",
+                labels={"symbol": symbol, "mode": "bootstrap_skip"},
+            )
+        except Exception:
+            pass
+        return 0
+
     cutoff_iso = _read_holdout_cutoff_from_metrics(metrics_path)
     if cutoff_iso is None:
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz

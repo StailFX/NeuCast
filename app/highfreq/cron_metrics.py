@@ -163,6 +163,14 @@ def write_cron_success(
         ) as f:
             f.write(body)
             tmp_path = Path(f.name)
+        # tempfile defaults to mode 0600 (owner-only). node_exporter
+        # runs as a DIFFERENT user (`prometheus`) and silently skips
+        # files it can't read. World-readable is required so the
+        # scraper can pick the metric up.
+        # Bug fixed 2026-04-27: prior version forgot the chmod and
+        # all 5 cron-stale alerts fired with noDataState: Alerting
+        # for ~12 hours before being noticed.
+        os.chmod(tmp_path, 0o644)
         final_path = target_dir / f"{file_stem}.prom"
         os.replace(tmp_path, final_path)
         logger.debug(

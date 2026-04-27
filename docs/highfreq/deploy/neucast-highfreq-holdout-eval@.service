@@ -13,10 +13,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=neucast
-Group=neucast
+User=stailfx
+Group=stailfx
 WorkingDirectory=/opt/neucast
-EnvironmentFile=/etc/default/neucast-highfreq-trainer
+EnvironmentFile=/etc/neucast/env
 # `%I` is the lowercase symbol (e.g. "btcusdt") — eval_frozen_holdout
 # uppercases internally before hitting the DB. Same %I conventions as
 # the trainer template service so an operator only needs to remember

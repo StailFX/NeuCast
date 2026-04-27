@@ -19,7 +19,19 @@ ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.trainer \
     --symbol %I \
     --since-hours 72 \
     --out /opt/neucast/weights/highfreq/%i_1m.cbm \
-    --report /opt/neucast/weights/highfreq/%i_1m_metrics.json
+    --report /opt/neucast/weights/highfreq/%i_1m_metrics.json \
+    --frozen-holdout-days 0
+
+# Bootstrap mode: ``--frozen-holdout-days 0`` disables the holdout
+# split until we have >> 7 days of data. With < 7 days the cutoff
+# (now - 7d) lands BEFORE all our data, so the trainer's
+# ``meta["minute"] < cutoff`` mask is all-False and the train set
+# becomes empty — no folds, no .cbm written. Bootstrap mode lets the
+# trainer fit on the full dataset.
+#
+# Once we have ~14 days of accumulated data, raise this to 7 (or any
+# value < days_of_data - 1) so the holdout becomes meaningful.
+# Tracked in docs/highfreq/live-trading-architecture.md.
 
 # Trainer exit codes (see neucast-highfreq-trainer.service for full
 # discussion): 0 = at least one fold; 1 = "no folds yet" — both treated
