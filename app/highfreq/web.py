@@ -925,6 +925,45 @@ def _enrich_folds_with_ci(folds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def compute_edge_vs_base_rate(
+    dir_acc_mean: float | None,
+    base_rate: float | None,
+) -> float | None:
+    """Model's directional accuracy minus the naive majority-class
+    baseline.
+
+    The naive classifier "always predict the more common class"
+    achieves ``max(base_rate, 1 - base_rate)`` accuracy by definition.
+    Subtracting that from the model's ``dir_acc_mean`` gives the
+    edge — how much MORE the model captures than a 1-line if-else
+    that ignores features entirely.
+
+    Defence-grade interpretation:
+    *   ``> 0`` : model has measurable directional skill beyond
+        the trivial "guess the dominant class" classifier.
+    *   ``≈ 0`` : model is no better than naive baseline. Could
+        still be useful (provides probabilities, not just labels)
+        but the directional claim is weak.
+    *   ``< 0`` : model UNDERPERFORMS naive baseline. This is what
+        we observed on BTC fold-0 (dir_acc 0.567 vs base_rate 0.583
+        → edge -0.017). At small n it's noise; at large n it's a
+        red flag that suggests feature engineering or training
+        regression.
+
+    Both inputs accept ``None`` / NaN; the helper returns ``None``
+    in those cases so the API can render "—" rather than a
+    misleading number.
+    """
+    if dir_acc_mean is None or base_rate is None:
+        return None
+    if not (0.0 <= dir_acc_mean <= 1.0) or not (0.0 <= base_rate <= 1.0):
+        return None
+    if math.isnan(dir_acc_mean) or math.isnan(base_rate):
+        return None
+    naive_baseline = max(base_rate, 1.0 - base_rate)
+    return float(dir_acc_mean - naive_baseline)
+
+
 # ── Microprice history endpoint (live chart, Phase C.5c) ──────────────
 
 
@@ -1330,6 +1369,14 @@ async def get_training_report(
     except OSError:
         report_age_seconds = None
 
+    # Edge over naive majority-class baseline. Computed on the report
+    # values (not live_inventory — naive baseline is a model-skill
+    # metric, not a data-collection metric).
+    edge_vs_base_rate = compute_edge_vs_base_rate(
+        dir_acc_mean=report.get("dir_acc_mean"),
+        base_rate=report.get("base_rate"),
+    )
+
     return JSONResponse(content=_scrub({
         "ok": True,
         "report": report,
@@ -1337,6 +1384,7 @@ async def get_training_report(
         "min_bars_for_first_fold": MIN_BARS_FOR_FIRST_FOLD,
         "fold_ready_pct": round(fold_ready_pct, 1),
         "live_inventory": live,
+        "edge_vs_base_rate": edge_vs_base_rate,
         "ts": datetime.now(tz=timezone.utc).isoformat(),
     }))
 

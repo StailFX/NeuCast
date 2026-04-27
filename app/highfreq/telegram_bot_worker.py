@@ -290,6 +290,7 @@ def _format_model_response(rows: list[dict[str, Any]]) -> str:
         if r["dir_acc_mean"] is None:
             ci_str = "—"
             p_str = "—"
+            edge_str = "—"
         else:
             ci_str = (
                 f"{r['dir_acc_mean']:.4f} "
@@ -299,13 +300,26 @@ def _format_model_response(rows: list[dict[str, Any]]) -> str:
                 f"{r['dir_acc_p_value']:.4f}"
                 if r["dir_acc_p_value"] is not None else "—"
             )
+            # Edge over naive majority-class classifier — POSITIVE means
+            # the model captures more than the trivial "always predict
+            # the dominant class" baseline. NEGATIVE = model under-
+            # performs the trivial classifier (red flag at large n).
+            base_rate = r.get("base_rate")
+            if base_rate is not None:
+                naive = max(float(base_rate), 1.0 - float(base_rate))
+                edge = float(r["dir_acc_mean"]) - naive
+                edge_emoji = "✅" if edge > 0 else ("⚠️" if edge < 0 else "➖")
+                edge_str = f"{edge_emoji} {edge:+.4f}  (naive baseline = {naive:.4f})"
+            else:
+                edge_str = "—"
         lines.append(
             f"<b>{r['symbol']}</b>\n"
-            f"<code>bars       = {r['n_minutes_after_neutral_drop']}</code>\n"
-            f"<code>folds      = {r['n_folds']}</code>\n"
-            f"<code>dir_acc    = {ci_str}</code>\n"
-            f"<code>p-value    = {p_str}</code>\n"
-            f"<code>at         = {r['run_started_at']:%Y-%m-%d %H:%M UTC}</code>"
+            f"<code>bars        = {r['n_minutes_after_neutral_drop']}</code>\n"
+            f"<code>folds       = {r['n_folds']}</code>\n"
+            f"<code>dir_acc     = {ci_str}</code>\n"
+            f"<code>p-value     = {p_str}</code>\n"
+            f"<code>edge vs naive = {edge_str}</code>\n"
+            f"<code>at          = {r['run_started_at']:%Y-%m-%d %H:%M UTC}</code>"
         )
     return "\n\n".join(lines)
 
@@ -398,14 +412,15 @@ def _query_accuracy(database_url: str) -> list[dict[str, Any]]:
 
 
 def _query_model(database_url: str) -> list[dict[str, Any]]:
-    """Latest training_runs row per symbol."""
+    """Latest training_runs row per symbol. Includes ``base_rate`` so
+    the formatter can compute edge-over-naive-baseline locally."""
     from sqlalchemy import create_engine, text
     eng = create_engine(database_url, future=True)
     sql = text("""
         SELECT DISTINCT ON (symbol)
                symbol, run_started_at, n_minutes_after_neutral_drop,
                n_folds, dir_acc_mean, dir_acc_ci_low, dir_acc_ci_high,
-               dir_acc_p_value
+               dir_acc_p_value, base_rate
           FROM training_runs
          ORDER BY symbol, run_started_at DESC
     """)
