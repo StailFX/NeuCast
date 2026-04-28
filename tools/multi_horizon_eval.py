@@ -82,7 +82,7 @@ FEE_TIERS_BPS: dict[str, float] = {
 
 @dataclass
 class HorizonEvalRow:
-    """One row of the comparison table — per (symbol, bar_minutes)."""
+    """One row of the comparison table — per (symbol, bar_minutes, feature_set)."""
     symbol: str
     bar_minutes: int
     n_seconds_loaded: int
@@ -98,6 +98,8 @@ class HorizonEvalRow:
     # E[P&L per trade] at each fee tier, given dir_acc and mean_abs_return:
     # E[P&L] = (2*dir_acc − 1) * mean_abs_return − fees_roundtrip_bps
     pnl_per_trade_bps: dict[str, float | None]
+    # Defaults at end to preserve dataclass argument-order rules.
+    feature_set: str = "microstructure"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -151,19 +153,36 @@ def evaluate_one_horizon(
     test_fold_bars: int,
     step_bars: int,
     neutral_band_bps: float,
+    feature_set: str = "microstructure",  # 'microstructure' | 'long_horizon'
     catboost_iterations: int = 200,
     catboost_depth: int = 5,
     catboost_learning_rate: float = 0.05,
     random_seed: int = 42,
 ) -> HorizonEvalRow:
-    """Aggregate, build supervised, walk-forward CV. Returns one row."""
+    """Aggregate, build supervised, walk-forward CV. Returns one row.
+
+    ``feature_set`` selects which feature pipeline to use:
+    * 'microstructure' (default) — original 14+4 calendar features.
+      Optimised for 1-min horizon.
+    * 'long_horizon' — OHLC + classical TA features
+      (LONG_HORIZON_FEATURE_COLUMNS). Hypothesis: works better at 5m+
+      where microstructure decays.
+    """
     from app.highfreq.feature_pipeline import (
-        FEATURE_COLUMNS,
         aggregate_to_minute,
         build_features,
         build_target,
-        make_supervised,
     )
+    if feature_set == "long_horizon":
+        from app.highfreq.feature_pipeline_long_horizon import (
+            LONG_HORIZON_FEATURE_COLUMNS as ACTIVE_FEATURE_COLUMNS,
+            build_long_horizon_features as _build_features_active,
+        )
+    else:
+        from app.highfreq.feature_pipeline import (
+            FEATURE_COLUMNS as ACTIVE_FEATURE_COLUMNS,
+            build_features as _build_features_active,
+        )
 
     n_seconds_loaded = int(len(df_secs))
 
@@ -171,10 +190,21 @@ def evaluate_one_horizon(
     minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
     n_bars_agg = int(len(minute_df))
 
-    # 2) make_supervised — drops neutral band + unobservable last bars.
-    X, y, meta = make_supervised(
-        df_secs, neutral_band_bps=neutral_band_bps, bar_minutes=bar_minutes,
-    )
+    # 2) Build target + features using the SELECTED pipeline.
+    #    (Cannot reuse make_supervised because it hardcodes the
+    #    microstructure pipeline; we inline its logic here so we can
+    #    swap _build_features_active.)
+    targeted = build_target(minute_df, horizon=1, neutral_band_bps=neutral_band_bps)
+    if targeted.empty:
+        X = pd.DataFrame(columns=ACTIVE_FEATURE_COLUMNS)
+        y = pd.Series(dtype=np.int8)
+    else:
+        keep_mask = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
+        targeted = targeted.loc[keep_mask].reset_index(drop=True)
+        X = _build_features_active(targeted)
+        # Reorder to canonical column order — defence against silent drift.
+        X = X[ACTIVE_FEATURE_COLUMNS]
+        y = targeted["y"].astype(np.int8)
     n_bars_kept = int(len(X))
 
     # mean |return| in bps — across all post-aggregation bars BEFORE
@@ -198,7 +228,7 @@ def evaluate_one_horizon(
     if n_bars_kept < initial_train_bars + test_fold_bars:
         # Insufficient — return early with what we have.
         return HorizonEvalRow(
-            symbol=symbol, bar_minutes=bar_minutes,
+            symbol=symbol, bar_minutes=bar_minutes, feature_set=feature_set,
             n_seconds_loaded=n_seconds_loaded,
             n_bars_after_aggregation=n_bars_agg,
             n_bars_after_neutral_drop=n_bars_kept,
@@ -247,7 +277,7 @@ def evaluate_one_horizon(
 
     if not folds_y_true:
         return HorizonEvalRow(
-            symbol=symbol, bar_minutes=bar_minutes,
+            symbol=symbol, bar_minutes=bar_minutes, feature_set=feature_set,
             n_seconds_loaded=n_seconds_loaded,
             n_bars_after_aggregation=n_bars_agg,
             n_bars_after_neutral_drop=n_bars_kept,
@@ -277,7 +307,7 @@ def evaluate_one_horizon(
     }
 
     return HorizonEvalRow(
-        symbol=symbol, bar_minutes=bar_minutes,
+        symbol=symbol, bar_minutes=bar_minutes, feature_set=feature_set,
         n_seconds_loaded=n_seconds_loaded,
         n_bars_after_aggregation=n_bars_agg,
         n_bars_after_neutral_drop=n_bars_kept,
@@ -308,27 +338,28 @@ def _markdown_table(rows: list[HorizonEvalRow]) -> str:
     lines.append("Same OFI 1-second history → same model architecture → "
                   "different aggregation horizon. Defence-grade artefact "
                   "showing where directional edge becomes monetisable.\n")
-    lines.append("| symbol | bar | n_kept | folds | dir_acc | CI | p | E[\\|move\\|] | retail | vip5 | vip9 | mm_rebate |")
-    lines.append("|---|---:|---:|---:|---:|---|---:|---:|---|---|---|---|")
+    lines.append("| symbol | bar | features | n_kept | folds | dir_acc | CI | p | E[\\|move\\|] | retail | vip9 | mm_rebate |")
+    lines.append("|---|---:|---|---:|---:|---:|---|---:|---:|---|---|---|")
     for r in rows:
+        fset = r.feature_set[:4]  # 'micr' or 'long'
         if r.dir_acc is None:
             lines.append(
-                f"| {r.symbol} | {r.bar_minutes}m | {r.n_bars_after_neutral_drop} | "
-                f"{r.n_folds} | — | — | — | — | — | — | — | — |"
+                f"| {r.symbol} | {r.bar_minutes}m | {fset} | "
+                f"{r.n_bars_after_neutral_drop} | "
+                f"{r.n_folds} | — | — | — | — | — | — | — |"
             )
             continue
         ci = f"[{r.dir_acc_ci_low:.3f}, {r.dir_acc_ci_high:.3f}]"
         p_str = f"{r.dir_acc_p_value:.2e}" if r.dir_acc_p_value < 0.01 else f"{r.dir_acc_p_value:.3f}"
         mar = f"{r.mean_abs_return_bps:.1f}bp" if r.mean_abs_return_bps is not None else "—"
         retail = _verdict(r.pnl_per_trade_bps.get("retail"))
-        vip5 = _verdict(r.pnl_per_trade_bps.get("vip5"))
         vip9 = _verdict(r.pnl_per_trade_bps.get("vip9"))
         mmr = _verdict(r.pnl_per_trade_bps.get("mm_rebate"))
         lines.append(
-            f"| **{r.symbol}** | **{r.bar_minutes}m** | "
+            f"| **{r.symbol}** | **{r.bar_minutes}m** | {fset} | "
             f"{r.n_bars_after_neutral_drop} | {r.n_folds} | "
             f"{r.dir_acc:.4f} | {ci} | {p_str} | {mar} | "
-            f"{retail} | {vip5} | {vip9} | {mmr} |"
+            f"{retail} | {vip9} | {mmr} |"
         )
     return "\n".join(lines)
 
@@ -338,6 +369,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--symbols", nargs="+", default=["BTCUSDT", "ETHUSDT", "BNBUSDT"])
     p.add_argument("--horizons", type=int, nargs="+", default=[1, 5, 15, 60],
                    help="bar sizes in minutes to compare")
+    p.add_argument("--feature-sets", nargs="+",
+                   default=["microstructure"],
+                   choices=["microstructure", "long_horizon"],
+                   help="which feature pipelines to evaluate. Pass both to "
+                        "compare side-by-side.")
     p.add_argument("--since-hours", type=float, default=96.0)
     p.add_argument("--neutral-band-bps", type=float, default=None,
                    help="override default. Auto-scales as sqrt(bar_minutes) × 1bp "
@@ -379,36 +415,41 @@ def main(argv: list[str] | None = None) -> int:
                 # z-score threshold across horizons. At 1m it's the
                 # original 1bp; at 60m it's 1*sqrt(60) ≈ 7.7bp.
                 neutral = 1.0 * math.sqrt(h)
-            logger.info(
-                "  horizon=%dm neutral=%.2fbp init_train=%d test=%d",
-                h, neutral, initial_train_bars, test_fold_bars,
-            )
-            try:
-                row = evaluate_one_horizon(
-                    df_secs, symbol=symbol, bar_minutes=h,
-                    initial_train_bars=initial_train_bars,
-                    test_fold_bars=test_fold_bars,
-                    step_bars=step_bars,
-                    neutral_band_bps=neutral,
-                )
-            except Exception:
-                logger.exception("eval failed for symbol=%s horizon=%d", symbol, h)
-                continue
-            rows.append(row)
-            if row.dir_acc is None:
+            for fset in args.feature_sets:
                 logger.info(
-                    "    %s @ %dm: insufficient data (n_bars_kept=%d, need %d)",
-                    symbol, h, row.n_bars_after_neutral_drop,
-                    initial_train_bars + test_fold_bars,
+                    "  horizon=%dm fset=%s neutral=%.2fbp init_train=%d test=%d",
+                    h, fset, neutral, initial_train_bars, test_fold_bars,
                 )
-            else:
-                logger.info(
-                    "    %s @ %dm: dir_acc=%.4f [%.3f, %.3f] p=%.2e folds=%d "
-                    "mean|move|=%.1fbp",
-                    symbol, h, row.dir_acc, row.dir_acc_ci_low, row.dir_acc_ci_high,
-                    row.dir_acc_p_value, row.n_folds,
-                    row.mean_abs_return_bps if row.mean_abs_return_bps else 0.0,
-                )
+                try:
+                    row = evaluate_one_horizon(
+                        df_secs, symbol=symbol, bar_minutes=h,
+                        feature_set=fset,
+                        initial_train_bars=initial_train_bars,
+                        test_fold_bars=test_fold_bars,
+                        step_bars=step_bars,
+                        neutral_band_bps=neutral,
+                    )
+                except Exception:
+                    logger.exception(
+                        "eval failed for symbol=%s horizon=%d fset=%s",
+                        symbol, h, fset,
+                    )
+                    continue
+                rows.append(row)
+                if row.dir_acc is None:
+                    logger.info(
+                        "    %s @ %dm fset=%s: insufficient data (n=%d, need %d)",
+                        symbol, h, fset, row.n_bars_after_neutral_drop,
+                        initial_train_bars + test_fold_bars,
+                    )
+                else:
+                    logger.info(
+                        "    %s @ %dm fset=%s: dir_acc=%.4f [%.3f, %.3f] "
+                        "p=%.2e folds=%d mean|move|=%.1fbp",
+                        symbol, h, fset, row.dir_acc, row.dir_acc_ci_low,
+                        row.dir_acc_ci_high, row.dir_acc_p_value, row.n_folds,
+                        row.mean_abs_return_bps if row.mean_abs_return_bps else 0.0,
+                    )
 
     elapsed = time.monotonic() - started
     logger.info("done in %.1fs", elapsed)
