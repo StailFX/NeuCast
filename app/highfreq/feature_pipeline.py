@@ -68,6 +68,17 @@ MIN_SECONDS_PER_MINUTE: int = 30
 #: Feature columns in the order the trainer fits and the predictor
 #: serves. Changing this list IS a model-incompatibility break — bump
 #: the model version and retrain.
+#:
+#: Composition:
+#: * Microstructure (12) — OFI / depth_imb / spread / trade_imb / microprice.
+#:   Capture order-flow signal at 1-minute scale.
+#: * Cross-scale (2) — spread + depth_imb "now vs windowed".
+#: * Calendar (4, release L 2026-04-29) — hour_of_day / minute_of_hour /
+#:   day_of_week / hour_of_week. Captures regime-by-time-of-day:
+#:   crypto has strong patterns around US market open (13:30 UTC),
+#:   Asia open (00:00 UTC), and weekend low-vol. CatBoost handles
+#:   these as numerical features; it will learn step-function thresholds
+#:   automatically (no embedding needed).
 FEATURE_COLUMNS: list[str] = [
     # 60-second window stats (the bar itself).
     "ofi_sum", "ofi_mean", "ofi_std",
@@ -79,6 +90,11 @@ FEATURE_COLUMNS: list[str] = [
     # Cross-scale / state features (current vs windowed).
     "spread_bps_now_to_mean",
     "depth_imb_now",
+    # Calendar features — UTC-anchored time-of-day / day-of-week.
+    "hour_of_day",        # 0..23
+    "minute_of_hour",     # 0..59
+    "day_of_week",        # 0=Mon .. 6=Sun
+    "hour_of_week",       # 0..167; fine-grained pattern across the week
 ]
 
 
@@ -247,6 +263,18 @@ def build_features(df_minutes: pd.DataFrame) -> pd.DataFrame:
         1.0,
     )
 
+    # Calendar features (release L 2026-04-29). Derived from the
+    # bar-floor timestamp in `minute` column. UTC-anchored.
+    #   hour_of_day  ∈ [0, 23]   — Asia / EU / US trading regimes
+    #   minute_of_hour ∈ [0, 59] — top-of-hour momentum patterns
+    #   day_of_week  ∈ [0, 6]    — Monday effect, weekend low-vol
+    #   hour_of_week ∈ [0, 167]  — fine-grained week pattern
+    minute_ts = pd.to_datetime(df["minute"], utc=True)
+    hod = minute_ts.dt.hour.astype(float)
+    mof = minute_ts.dt.minute.astype(float)
+    dow = minute_ts.dt.dayofweek.astype(float)
+    how = (dow * 24 + hod).astype(float)
+
     feats = pd.DataFrame({
         "ofi_sum": df["ofi_sum"].astype(float),
         "ofi_mean": df["ofi_mean"].astype(float),
@@ -262,6 +290,11 @@ def build_features(df_minutes: pd.DataFrame) -> pd.DataFrame:
         "n_updates_sum": df["n_updates_sum"].astype(float),
         "spread_bps_now_to_mean": pd.Series(spread_now_to_mean, index=df.index, dtype=float),
         "depth_imb_now": df["depth_imb_last"].astype(float),
+        # Calendar — UTC-anchored, monotonically convertible from `minute`.
+        "hour_of_day": hod.values,
+        "minute_of_hour": mof.values,
+        "day_of_week": dow.values,
+        "hour_of_week": how.values,
     }, index=df.index)
 
     # Replace any residual NaN/inf — CatBoost handles missing but we
