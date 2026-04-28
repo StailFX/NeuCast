@@ -416,10 +416,53 @@ async def process_one_tick(
                     "signal_telegram send failed", exc_info=True,
                 )
 
+    # Anti-skill protection (release I, 2026-04-28). Each tick we
+    # query the rolling gross-winrate of the most recent N closed
+    # paper trades. If the bootstrap CI's UPPER bound is below 0.5,
+    # the model is statistically anti-skilled — meaning it's
+    # consistently directional-WRONG and the inverse trade would
+    # have been profitable. Three policies via env:
+    #   * 'alert'  (default) — Telegram warn, take no action.
+    #   * 'halt'   — set the trader's halt flag, block new entries.
+    #   * 'invert' — flip prob_up around 0.5 so 'up' becomes 'down'
+    #                and vice versa.
+    # Fail-soft: any error => default behaviour (no flip, no halt).
+    effective_prob_up = float(prob_up)
+    try:
+        from app.highfreq.anti_skill_detector import (
+            fetch_anti_skill_async,
+            parse_response_policy,
+        )
+        anti_skill_report = await fetch_anti_skill_async(pool, symbol=symbol)
+        if anti_skill_report.is_anti_skilled:
+            policy = parse_response_policy(os.environ.get("HF_ANTI_SKILL_RESPONSE"))
+            logger.warning(
+                "anti-skill detected for %s (winrate=%.3f, n=%d, policy=%s): %s",
+                symbol,
+                anti_skill_report.gross_winrate or 0.0,
+                anti_skill_report.n_trades_in_window,
+                policy,
+                anti_skill_report.note,
+            )
+            if policy == "halt":
+                # Use the trader's existing halt mechanism — same
+                # codepath as max_consecutive_losses. Setting the
+                # reason makes the no-op logger explain itself.
+                trader.state.halted_reason = "anti_skill"
+            elif policy == "invert":
+                # Flip the probability around 0.5 so the entry-side
+                # decision inverts. trader.on_bar_close still applies
+                # all other gates (calibration, halt, neutral band).
+                effective_prob_up = 1.0 - float(prob_up)
+            # 'alert' = pass through; the warning log + future
+            # Telegram hook is the only response.
+    except Exception:
+        logger.warning("anti_skill check failed — proceeding without", exc_info=True)
+
     trade = trader.on_bar_close(
         ts=bar_close_ts,
         microprice=microprice_close,
-        prob_up=float(prob_up),
+        prob_up=effective_prob_up,
         calibrated=p_status.is_calibrated,
         model_version=model_version,
         realized_vol_bps=realized_vol_bps,

@@ -169,6 +169,7 @@ HELP_TEXT = (
     "<code>/accuracy</code> — directional accuracy from predictions_log\n"
     "<code>/model</code> — latest trainer report per symbol\n"
     "<code>/feetiers [SYMBOL]</code> — what P&amp;L would be at retail / VIP / MM-rebate fee tiers\n"
+    "<code>/antiskill [SYMBOL]</code> — gross winrate &amp; anti-skill detector status\n"
     "<code>/help</code> — this message"
 )
 
@@ -260,6 +261,63 @@ def _format_fee_tiers_response(symbol: str, n_trades: int,
             f"   <code>w/l  = {t['n_wins']:>3d}W / {t['n_losses']:<3d}L</code>"
         )
     return "\n\n".join(lines)
+
+
+def _format_anti_skill_response(reports: list[dict[str, Any]]) -> str:
+    """Render anti-skill detector status across symbols."""
+    if not reports:
+        return "<i>No symbols to evaluate.</i>"
+    lines = ["<b>Anti-skill detector</b>", "<i>gross winrate over last N closed trades</i>\n"]
+    for r in reports:
+        if r["gross_winrate"] is None:
+            lines.append(
+                f"<b>{r['symbol']}</b>\n"
+                f"<code>{r['note']}</code>"
+            )
+            continue
+        emoji = "🚨" if r["is_anti_skilled"] else (
+            "⚠️" if r["gross_winrate"] < 0.50 else "✅"
+        )
+        ci = ""
+        if r.get("gross_winrate_ci_low") is not None:
+            ci = f"  CI [{r['gross_winrate_ci_low']:.3f}, {r['gross_winrate_ci_high']:.3f}]"
+        lines.append(
+            f"{emoji} <b>{r['symbol']}</b>\n"
+            f"<code>winrate = {r['gross_winrate']:.3f}  ({r['n_gross_wins']}/{r['n_trades_in_window']}){ci}</code>\n"
+            f"<i>{r['note']}</i>"
+        )
+    return "\n\n".join(lines)
+
+
+def _query_anti_skill(database_url: str, *,
+                       symbol: str | None = None) -> list[dict[str, Any]]:
+    """Run the anti-skill detector for one symbol or all known."""
+    from sqlalchemy import create_engine, text
+    from app.highfreq.anti_skill_detector import compute_anti_skill_from_rows
+
+    eng = create_engine(database_url, future=True)
+    with eng.connect() as conn:
+        if symbol:
+            symbols = [symbol.upper()]
+        else:
+            symbols = [
+                r[0] for r in conn.execute(text(
+                    "SELECT DISTINCT symbol FROM paper_trades ORDER BY symbol"
+                ))
+            ]
+            if not symbols:
+                return []
+        reports = []
+        for sym in symbols:
+            res = conn.execute(text(
+                "SELECT side, entry_price, exit_price, exit_reason, exit_ts "
+                "  FROM paper_trades "
+                " WHERE symbol = :symbol "
+                " ORDER BY exit_ts DESC LIMIT 50"
+            ), {"symbol": sym})
+            rows = [dict(r._mapping) for r in res]
+            reports.append(compute_anti_skill_from_rows(rows, symbol=sym).to_dict())
+    return reports
 
 
 def _query_fee_tiers(database_url: str, *,
@@ -504,6 +562,13 @@ def _process_update(
                 _format_fee_tiers_response(
                     symbol_arg or "ALL", n_trades, tiers,
                 ),
+            )
+        elif cmd == "/antiskill":
+            symbol_arg = args[0].upper() if args else None
+            reports = _query_anti_skill(database_url, symbol=symbol_arg)
+            _send_html(
+                bot_token, chat_id,
+                _format_anti_skill_response(reports),
             )
         else:
             _send_html(

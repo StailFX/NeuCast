@@ -1389,6 +1389,41 @@ async def get_training_report(
     }))
 
 
+@router.get("/api/highfreq/anti_skill")
+async def get_anti_skill(
+    symbol: str = DEFAULT_SYMBOL,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Anti-skill detector — surfaces "model is statistically WORSE
+    than chance on directional calls".
+
+    Returns the same :class:`AntiSkillReport` shape the runner uses
+    each tick. UI / Telegram / operators can read this without
+    needing live access to the runner's process state.
+
+    Never 503: DB error degrades to ``ok=False, db_status="unavailable"``
+    so the page keeps rendering.
+    """
+    from app.highfreq.anti_skill_detector import fetch_anti_skill_sync
+
+    symbol = symbol.upper()
+    try:
+        report = fetch_anti_skill_sync(db, symbol=symbol)
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("anti_skill fetch failed (%s): %s", symbol, exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        **report.to_dict(),
+    }))
+
+
 @router.get("/api/highfreq/pnl_by_fee_tier")
 async def get_pnl_by_fee_tier(
     symbol: str = DEFAULT_SYMBOL,
