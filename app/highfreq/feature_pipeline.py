@@ -87,8 +87,9 @@ FEATURE_COLUMNS: list[str] = [
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def aggregate_to_minute(df_seconds: pd.DataFrame) -> pd.DataFrame:
-    """Roll up 1-second rows into 1-minute bars.
+def aggregate_to_minute(df_seconds: pd.DataFrame, *,
+                         bar_minutes: int = 1) -> pd.DataFrame:
+    """Roll up 1-second rows into bars of ``bar_minutes`` length.
 
     Parameters
     ----------
@@ -96,21 +97,30 @@ def aggregate_to_minute(df_seconds: pd.DataFrame) -> pd.DataFrame:
         DataFrame with columns matching ``highfreq_ofi_1s``: ``ts``
         (datetime64[ns, UTC]), ``symbol``, ``ofi``, ``microprice``,
         ``depth_imb``, ``spread_bps``, ``trade_imb``, ``n_updates``.
+    bar_minutes
+        Bar size in minutes (default 1, preserving the original
+        contract). Pass 5 / 15 / 60 to aggregate to longer bars
+        — used by the multi-horizon eval tool. The ``minute`` column
+        in the output frame still carries the bar-floor timestamp
+        (a poor name for 5-minute bars but kept for backward compat
+        with build_target / build_features which read it).
 
     Returns
     -------
     pd.DataFrame
-        Indexed by minute-floor ``ts`` with columns sufficient for
+        Indexed by bar-floor ``ts`` with columns sufficient for
         :func:`build_features` and :func:`build_target`. Bars with
-        fewer than :data:`MIN_SECONDS_PER_MINUTE` covered seconds are
-        dropped (logged at INFO).
+        fewer than ``bar_minutes × MIN_SECONDS_PER_MINUTE`` covered
+        seconds are dropped (logged at INFO).
     """
     if df_seconds.empty:
         return df_seconds.copy()
+    if bar_minutes <= 0:
+        raise ValueError(f"bar_minutes must be positive, got {bar_minutes}")
 
     df = df_seconds.copy()
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    df["minute"] = df["ts"].dt.floor("1min")
+    df["minute"] = df["ts"].dt.floor(f"{int(bar_minutes)}min")
 
     # Aggregate. ``microprice_open`` and ``microprice_close`` are picked
     # by event-time order — sort_values enforces that within each group.
@@ -138,12 +148,16 @@ def aggregate_to_minute(df_seconds: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
 
     # Discard bars with poor coverage (likely WS drop or restart).
-    keep = out["seconds_observed"] >= MIN_SECONDS_PER_MINUTE
+    # Scale the floor by bar_minutes — a 5-minute bar with <150s of
+    # data is the structural equivalent of a 1-minute bar with <30s.
+    min_seconds = MIN_SECONDS_PER_MINUTE * int(bar_minutes)
+    keep = out["seconds_observed"] >= min_seconds
     dropped = (~keep).sum()
     if dropped > 0:
         logger.info(
-            "aggregate_to_minute: dropped %d bars with <%d seconds coverage",
-            dropped, MIN_SECONDS_PER_MINUTE,
+            "aggregate_to_minute: dropped %d bars with <%d seconds coverage "
+            "(bar_minutes=%d)",
+            dropped, min_seconds, bar_minutes,
         )
     return out.loc[keep].reset_index(drop=True)
 
@@ -260,6 +274,7 @@ def make_supervised(
     *,
     horizon: int = HORIZON_MIN,
     neutral_band_bps: float = NEUTRAL_BAND_BPS,
+    bar_minutes: int = 1,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """Convenience: 1-second rows → ``(X, y, meta)`` ready for training.
 
@@ -270,8 +285,12 @@ def make_supervised(
     Bars with missing future returns (the last ``horizon`` rows) and
     bars in the neutral band are dropped — the trainer does not learn
     on noise.
+
+    ``bar_minutes`` lets the multi-horizon eval tool aggregate to
+    longer bars (5 / 15 / 60 minutes). The default 1 preserves the
+    original 1-minute trainer contract.
     """
-    minute_df = aggregate_to_minute(df_seconds)
+    minute_df = aggregate_to_minute(df_seconds, bar_minutes=bar_minutes)
     targeted = build_target(
         minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps
     )
