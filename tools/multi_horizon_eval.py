@@ -153,7 +153,8 @@ def evaluate_one_horizon(
     test_fold_bars: int,
     step_bars: int,
     neutral_band_bps: float,
-    feature_set: str = "microstructure",  # 'microstructure' | 'long_horizon'
+    feature_set: str = "microstructure",  # 'microstructure' | 'long_horizon' | 'cross_asset'
+    reference_df_secs: pd.DataFrame | None = None,  # for cross_asset only
     catboost_iterations: int = 200,
     catboost_depth: int = 5,
     catboost_learning_rate: float = 0.05,
@@ -178,6 +179,26 @@ def evaluate_one_horizon(
             LONG_HORIZON_FEATURE_COLUMNS as ACTIVE_FEATURE_COLUMNS,
             build_long_horizon_features as _build_features_active,
         )
+    elif feature_set == "cross_asset":
+        from app.highfreq.feature_pipeline_cross_asset import (
+            build_cross_asset_features,
+            feature_columns_for,
+        )
+        # Cross-asset features need a reference symbol — for ETH/BNB
+        # we point at BTC; for BTC itself we have no reference and
+        # fall back to base + lagged.
+        reference_symbol = (
+            None if symbol.upper() == "BTCUSDT" else "BTCUSDT"
+        )
+        ACTIVE_FEATURE_COLUMNS = feature_columns_for(reference_symbol)
+        # Curry into the same single-arg signature the other branches use.
+        _ref_minutes_holder: dict = {"ref": None}
+        def _build_features_active(targeted_df: pd.DataFrame) -> pd.DataFrame:
+            return build_cross_asset_features(
+                targeted_df,
+                reference_minutes=_ref_minutes_holder["ref"],
+                reference_symbol=reference_symbol,
+            )
     else:
         from app.highfreq.feature_pipeline import (
             FEATURE_COLUMNS as ACTIVE_FEATURE_COLUMNS,
@@ -189,6 +210,12 @@ def evaluate_one_horizon(
     # 1) Aggregate to bars + count after coverage drop.
     minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
     n_bars_agg = int(len(minute_df))
+
+    # 1b) For cross_asset mode: also aggregate the reference symbol's
+    #     seconds at the SAME horizon, then stash for the closure.
+    if feature_set == "cross_asset" and reference_df_secs is not None:
+        ref_minutes = aggregate_to_minute(reference_df_secs, bar_minutes=bar_minutes)
+        _ref_minutes_holder["ref"] = ref_minutes
 
     # 2) Build target + features using the SELECTED pipeline.
     #    (Cannot reuse make_supervised because it hardcodes the
@@ -371,9 +398,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="bar sizes in minutes to compare")
     p.add_argument("--feature-sets", nargs="+",
                    default=["microstructure"],
-                   choices=["microstructure", "long_horizon"],
-                   help="which feature pipelines to evaluate. Pass both to "
-                        "compare side-by-side.")
+                   choices=["microstructure", "long_horizon", "cross_asset"],
+                   help="which feature pipelines to evaluate. Pass multiple "
+                        "to compare side-by-side. cross_asset uses BTC as "
+                        "reference for ETH/BNB; for BTC itself it falls back "
+                        "to base + lagged features only.")
     p.add_argument("--since-hours", type=float, default=96.0)
     p.add_argument("--neutral-band-bps", type=float, default=None,
                    help="override default. Auto-scales as sqrt(bar_minutes) × 1bp "
@@ -397,6 +426,18 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[HorizonEvalRow] = []
     started = time.monotonic()
+
+    # Pre-load BTC seconds once if cross_asset mode requested for any
+    # non-BTC symbol (avoids redundant DB queries).
+    btc_df_secs = None
+    if "cross_asset" in args.feature_sets and any(
+        s.upper() != "BTCUSDT" for s in args.symbols
+    ):
+        logger.info("=" * 60)
+        logger.info("pre-loading BTCUSDT seconds for cross-asset reference")
+        btc_df_secs = load_seconds(dsn, symbol="BTCUSDT", since_hours=args.since_hours)
+        logger.info("loaded %d BTC rows for cross-asset reference", len(btc_df_secs))
+
     for symbol in args.symbols:
         logger.info("=" * 60)
         logger.info("loading %s seconds (since_hours=%g)", symbol, args.since_hours)
@@ -420,10 +461,16 @@ def main(argv: list[str] | None = None) -> int:
                     "  horizon=%dm fset=%s neutral=%.2fbp init_train=%d test=%d",
                     h, fset, neutral, initial_train_bars, test_fold_bars,
                 )
+                # Cross-asset for non-BTC: pass BTC as reference. For
+                # BTC: ref is None (handled internally).
+                ref_secs = None
+                if fset == "cross_asset" and symbol.upper() != "BTCUSDT":
+                    ref_secs = btc_df_secs
                 try:
                     row = evaluate_one_horizon(
                         df_secs, symbol=symbol, bar_minutes=h,
                         feature_set=fset,
+                        reference_df_secs=ref_secs,
                         initial_train_bars=initial_train_bars,
                         test_fold_bars=test_fold_bars,
                         step_bars=step_bars,
