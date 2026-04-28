@@ -1,0 +1,23 @@
+[
+  {
+    "name": "FOMC decision",
+    "ts": "2026-05-01T18:00:00+00:00",
+    "halt_before_min": 15,
+    "halt_after_min": 60,
+    "category": "macro"
+  },
+  {
+    "name": "US CPI print",
+    "ts": "2026-05-13T12:30:00+00:00",
+    "halt_before_min": 15,
+    "halt_after_min": 45,
+    "category": "macro"
+  },
+  {
+    "name": "US Non-Farm Payrolls",
+    "ts": "2026-05-02T12:30:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  }
+]

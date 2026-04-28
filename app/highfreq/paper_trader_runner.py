@@ -416,6 +416,35 @@ async def process_one_tick(
                     "signal_telegram send failed", exc_info=True,
                 )
 
+    # Event-aware halt (release L, 2026-04-29). Pause new entries
+    # during scheduled high-vol events (FOMC, CPI, ETH forks, etc.).
+    # Existing positions still close on time-stop normally — we
+    # don't strand capital, just don't open NEW exposure into a
+    # known coin-flip window. Calendar lives at
+    # docs/highfreq/event_calendar.json; reload-per-tick is cheap
+    # (~1 ms for hundreds of entries) and lets the operator update
+    # without restarting the runner.
+    try:
+        from app.highfreq.event_calendar import (
+            DEFAULT_CALENDAR_PATH,
+            load_events_from_json,
+            should_halt_for_event,
+        )
+        events = load_events_from_json(DEFAULT_CALENDAR_PATH)
+        event_decision = should_halt_for_event(
+            events, symbol=symbol, now=bar_close_ts,
+        )
+        if event_decision.halted:
+            logger.info(
+                "event-halt active for %s: %s @ %s (mins_until=%.1f)",
+                symbol, event_decision.event_name,
+                event_decision.event_ts_iso,
+                event_decision.minutes_until_event or 0.0,
+            )
+            trader.state.halted_reason = "event"
+    except Exception:
+        logger.warning("event-calendar check failed", exc_info=True)
+
     # Anti-skill protection (release I, 2026-04-28). Each tick we
     # query the rolling gross-winrate of the most recent N closed
     # paper trades. If the bootstrap CI's UPPER bound is below 0.5,
@@ -475,8 +504,9 @@ async def process_one_tick(
     halt_reason = trader.state.halted_reason or "none"
     # Two-step: clear all halt-state combos for this symbol, then set the
     # current one. Keeps the gauge unambiguous (only one label combination
-    # is 1 at a time).
-    for r in ("loss_streak", "daily_loss", "none"):
+    # is 1 at a time). Includes "anti_skill" (release I) and "event"
+    # (release L) reasons.
+    for r in ("loss_streak", "daily_loss", "anti_skill", "event", "none"):
         M.paper_trader_halted.labels(symbol=symbol, reason=r).set(
             1.0 if r == halt_reason else 0.0,
         )
