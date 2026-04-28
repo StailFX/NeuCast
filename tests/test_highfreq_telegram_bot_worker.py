@@ -103,15 +103,19 @@ def test_format_stats_zero_accuracy_renders_dash():
 
 
 def test_format_accuracy_with_data():
+    """Updated 2026-04-28: formatter now renders Wilson CI + p-value
+    (defence-grade upgrade from raw percentage). Pin the new format."""
     out = _format_accuracy_response([
         {"symbol": "BTCUSDT", "directional": 7, "hits": 5},
         {"symbol": "ETHUSDT", "directional": 8, "hits": 4},
     ])
     assert "BTCUSDT" in out
     assert "ETHUSDT" in out
-    assert "5 / 7" in out
-    assert "71.4%" in out
-    assert "50.0%" in out
+    assert "(5/7)" in out  # raw counts now embedded with no spaces
+    assert "0.7143" in out  # acc 5/7 = 0.7143
+    assert "0.5000" in out  # acc 4/8 = 0.5000
+    assert "CI95" in out
+    assert "p=" in out
 
 
 def test_format_accuracy_empty():
@@ -245,6 +249,52 @@ def test_non_command_messages_ignored():
             database_url="postgresql://x",
         )
     assert send.call_count == 0
+
+
+def test_format_anti_skill_escapes_lt_in_note():
+    """REGRESSION (2026-04-28): the detector's ``note`` field contains
+    text like "n=21 < min_sample=30" with a literal `<`. Telegram's
+    HTML parser reads `<` as an unclosed tag and 400s the message.
+    The formatter MUST html-escape note + symbol before embedding,
+    otherwise /antiskill silently fails for everyone except the dev
+    who wrote the formatter."""
+    from app.highfreq.telegram_bot_worker import _format_anti_skill_response
+
+    out = _format_anti_skill_response([{
+        "symbol": "BTCUSDT",
+        "n_trades_in_window": 21,
+        "n_gross_wins": 11,
+        "gross_winrate": 0.524,
+        "gross_winrate_ci_low": None,
+        "gross_winrate_ci_high": None,
+        "is_anti_skilled": False,
+        "note": "n=21 < min_sample=30 — detector quiet",
+    }])
+    # Literal `<` must NOT appear in the rendered body — escaped to &lt;
+    # The only `<` left should be inside our deliberate HTML tags
+    # (<b>, <code>, <i>).
+    assert "n=21 &lt; min_sample=30" in out
+    # Tag chars themselves still present (we use them deliberately).
+    assert "<b>BTCUSDT</b>" in out
+
+
+def test_format_anti_skill_handles_low_sample_no_ci():
+    """When n < min_sample, ci_low/ci_high are None — formatter
+    must not crash on the missing CI block."""
+    from app.highfreq.telegram_bot_worker import _format_anti_skill_response
+
+    out = _format_anti_skill_response([{
+        "symbol": "BTCUSDT",
+        "n_trades_in_window": 5,
+        "n_gross_wins": 2,
+        "gross_winrate": 0.40,
+        "gross_winrate_ci_low": None,
+        "gross_winrate_ci_high": None,
+        "is_anti_skilled": False,
+        "note": "n=5 < min_sample=30",
+    }])
+    # No "CI [...]" string when CI bounds are None.
+    assert "CI [" not in out
 
 
 def test_at_mention_strips_bot_username():

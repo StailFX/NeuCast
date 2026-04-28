@@ -219,20 +219,71 @@ def _format_stats_response(stats: dict[str, Any]) -> str:
 
 
 def _format_accuracy_response(rows: list[dict[str, Any]]) -> str:
+    """Render realized directional accuracy with Wilson CI + one-sided
+    binomial p-value (H₀: p = 0.5, H_a: p > 0.5).
+
+    Defence-grade: a 54.8 % point estimate is just a number until
+    you also state "n=2145, CI [0.527, 0.569], p < 10⁻⁵".
+    Telegram is where the operator goes when /highfreq UI isn't at
+    hand, so the same statistical rigour belongs here too.
+    """
     if not rows:
         return "<i>No backfilled predictions yet.</i>"
-    lines = ["<b>Realized directional accuracy</b>", "<i>from predictions_log (excludes neutral signals)</i>\n"]
-    for r in rows:
-        n = r["directional"]
-        hits = r["hits"]
+
+    import math
+    try:
+        from scipy.stats import binomtest
+    except ImportError:
+        binomtest = None  # gracefully degrade — print acc only
+
+    def _wilson(k: int, n: int, *, z: float = 1.96) -> tuple[float, float]:
         if n == 0:
-            pct = "—"
+            return 0.0, 1.0
+        p = k / n
+        denom = 1.0 + z * z / n
+        centre = (p + z * z / (2 * n)) / denom
+        half = (z / denom) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+        return max(0.0, centre - half), min(1.0, centre + half)
+
+    def _verdict_emoji(p_value: float | None, lo: float) -> str:
+        # Definitive skill: p<0.001 AND CI lower bound > 0.5
+        if p_value is not None and p_value < 0.001 and lo > 0.5:
+            return "✅"
+        # Borderline: CI lower above 0.5 but p > 0.001 (rare)
+        if lo > 0.5:
+            return "🟢"
+        # Negative-edge red flag
+        if p_value is not None and p_value > 0.99:
+            return "🚨"
+        # Noise: CI crosses 0.5
+        return "⚪"
+
+    lines = [
+        "<b>Realized directional accuracy</b>",
+        "<i>from predictions_log (n=all backfilled minutes; neutral excluded)</i>\n",
+    ]
+    for r in rows:
+        n = int(r["directional"])
+        hits = int(r["hits"])
+        if n == 0:
+            lines.append(f"<code>{r['symbol']:>8}: no data yet</code>")
+            continue
+        acc = hits / n
+        lo, hi = _wilson(hits, n)
+        if binomtest is not None:
+            p_val = float(binomtest(k=hits, n=n, p=0.5, alternative="greater").pvalue)
+            p_str = f"p={p_val:.2e}" if p_val < 0.01 else f"p={p_val:.3f}"
         else:
-            pct = f"{100.0 * hits / n:.1f}%"
+            p_val = None
+            p_str = ""
+        emoji = _verdict_emoji(p_val, lo)
         lines.append(
-            f"<code>{r['symbol']:>8}: {hits:>3d} / {n:<3d}  ({pct})</code>"
+            f"{emoji} <b>{r['symbol']}</b>\n"
+            f"<code>acc  = {acc:.4f}  ({hits}/{n})</code>\n"
+            f"<code>CI95 = [{lo:.4f}, {hi:.4f}]</code>\n"
+            f"<code>{p_str}</code>"
         )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def _format_fee_tiers_response(symbol: str, n_trades: int,
@@ -264,15 +315,24 @@ def _format_fee_tiers_response(symbol: str, n_trades: int,
 
 
 def _format_anti_skill_response(reports: list[dict[str, Any]]) -> str:
-    """Render anti-skill detector status across symbols."""
+    """Render anti-skill detector status across symbols.
+
+    The ``note`` field contains operator-facing text including the
+    literal ``<`` character (e.g. "n=21 < min_sample=30") — those
+    MUST be html-escaped before embedding into the Telegram HTML
+    body, otherwise Telegram's parser reads them as unclosed tags
+    and rejects the whole message with HTTP 400.
+    """
+    import html as _html
     if not reports:
         return "<i>No symbols to evaluate.</i>"
     lines = ["<b>Anti-skill detector</b>", "<i>gross winrate over last N closed trades</i>\n"]
     for r in reports:
+        note_esc = _html.escape(r.get("note") or "")
         if r["gross_winrate"] is None:
             lines.append(
-                f"<b>{r['symbol']}</b>\n"
-                f"<code>{r['note']}</code>"
+                f"<b>{_html.escape(r['symbol'])}</b>\n"
+                f"<code>{note_esc}</code>"
             )
             continue
         emoji = "🚨" if r["is_anti_skilled"] else (
@@ -282,9 +342,9 @@ def _format_anti_skill_response(reports: list[dict[str, Any]]) -> str:
         if r.get("gross_winrate_ci_low") is not None:
             ci = f"  CI [{r['gross_winrate_ci_low']:.3f}, {r['gross_winrate_ci_high']:.3f}]"
         lines.append(
-            f"{emoji} <b>{r['symbol']}</b>\n"
+            f"{emoji} <b>{_html.escape(r['symbol'])}</b>\n"
             f"<code>winrate = {r['gross_winrate']:.3f}  ({r['n_gross_wins']}/{r['n_trades_in_window']}){ci}</code>\n"
-            f"<i>{r['note']}</i>"
+            f"<i>{note_esc}</i>"
         )
     return "\n\n".join(lines)
 

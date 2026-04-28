@@ -1389,6 +1389,106 @@ async def get_training_report(
     }))
 
 
+@router.get("/api/highfreq/realized_accuracy_full")
+async def get_realized_accuracy_full(
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Full realized directional accuracy with Wilson CI + p-value
+    per symbol, computed over ALL minute-level predictions in
+    ``predictions_log``.
+
+    Critical defence-grade endpoint: the walk-forward CV in the
+    trainer reports skill on n≈120 (2 folds × 60 OOS bars), giving
+    a wide CI that crosses 0.5 — looks like noise. The realized
+    accuracy on the FULL ``predictions_log`` operates on n>2000,
+    tightening the CI by 3-4× and revealing whether the model has
+    statistically detectable directional skill.
+
+    Excludes neutral signals (no directional claim made) and rows
+    where the t+1 microprice hasn't yet been backfilled.
+
+    Returns 200 always; DB error degrades to ``ok=False``.
+    """
+    import math
+    try:
+        from scipy.stats import binomtest as _binomtest
+    except ImportError:
+        _binomtest = None
+
+    sql = text(
+        "SELECT symbol, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS NOT NULL) AS directional, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS TRUE)     AS hits "
+        "  FROM predictions_log "
+        " GROUP BY symbol "
+        " ORDER BY symbol"
+    )
+    try:
+        raw_rows = db.execute(sql).all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("realized_accuracy_full failed: %s", exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    def _wilson(k: int, n: int, *, z: float = 1.96) -> tuple[float, float]:
+        if n == 0:
+            return 0.0, 1.0
+        p = k / n
+        denom = 1.0 + z * z / n
+        centre = (p + z * z / (2 * n)) / denom
+        half = (z / denom) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+        return max(0.0, centre - half), min(1.0, centre + half)
+
+    out: list[dict[str, Any]] = []
+    for r in raw_rows:
+        sym = r[0]
+        n = int(r[1] or 0)
+        hits = int(r[2] or 0)
+        if n == 0:
+            out.append({
+                "symbol": sym, "n": 0, "hits": 0,
+                "dir_acc": None, "ci_low": None, "ci_high": None,
+                "p_value": None,
+                "verdict": "no_data",
+            })
+            continue
+        acc = hits / n
+        lo, hi = _wilson(hits, n)
+        p_val: float | None
+        if _binomtest is not None:
+            p_val = float(_binomtest(k=hits, n=n, p=0.5, alternative="greater").pvalue)
+        else:
+            p_val = None
+        # Verdict per defence-grade convention
+        if p_val is not None and p_val < 0.001 and lo > 0.5:
+            verdict = "definitive_skill"
+        elif lo > 0.5:
+            verdict = "borderline_skill"
+        elif p_val is not None and p_val > 0.99:
+            verdict = "anti_skill"
+        else:
+            verdict = "noise"
+        out.append({
+            "symbol": sym,
+            "n": n,
+            "hits": hits,
+            "dir_acc": acc,
+            "ci_low": lo,
+            "ci_high": hi,
+            "p_value": p_val,
+            "verdict": verdict,
+        })
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "rows": out,
+    }))
+
+
 @router.get("/api/highfreq/anti_skill")
 async def get_anti_skill(
     symbol: str = DEFAULT_SYMBOL,
