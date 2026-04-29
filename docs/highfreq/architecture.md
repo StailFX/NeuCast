@@ -341,6 +341,143 @@ When halted, `on_bar_close` returns `None` for any new entry but **still closes*
 
 ---
 
+### ADR-012 · Cross-asset features (BTC microprice as input for ETH/BNB models)
+
+**Context.** Phase A models for the 3 spot symbols were trained independently — each model only sees its own symbol's microstructure history. Empirical evidence in 1-minute crypto suggests BTC leads alts by 1-3 minutes during regime shifts (BTC moves first; ETH/BNB follow). A symbol-local model is structurally blind to that lead/lag, throwing away free signal.
+
+**Decision.** For ETH and BNB models we add 5 lagged BTC features at the SAME minute boundary the target lives on:
+
+* `ofi_sum_btc_lag1`, `ofi_sum_btc_lag2` — BTC's order-flow imbalance one and two minutes ago,
+* `microprice_return_bps_btc_lag1` — BTC's last-minute return,
+* `depth_imb_btc_lag1`, `spread_bps_btc_lag1` — BTC's top-of-book state.
+
+Implementation lives in `app/highfreq/feature_pipeline_cross_asset.py` and is gated by `feature_columns_for(reference_symbol)`. The BTC model itself has no reference symbol (no asymmetric pair to use as predictor) so it stays on the original microstructure pipeline.
+
+**Empirical result (Release L.cross, 2026-04-28).** Per-symbol multi-horizon eval on 96 h of data: ETH 1m dir_acc 0.5450 → 0.5614 (+1.6 pp); BNB 1m dir_acc 0.5571 → 0.5786 (+2.2 pp). Both with `p < 1e-5` on the fold-pooled OOS sample. BTC unchanged (no reference to use).
+
+**Trade-off accepted.** Feature count grows from 18 → 22 → 27 (microstructure 14 + calendar 4 + lagged 4 + BTC-cross 5). Larger feature space = larger overfit risk on small samples, mitigated by:
+1. CatBoost regularises via tree depth + iterations bounded by ADR-006's 2-thread CPU budget.
+2. Walk-forward CV on the same data as the no-cross baseline — if the cross-asset features were over-fitting noise, the pooled OOS dir_acc would NOT have lifted.
+3. The chosen features are economically motivated (BTC leadership is well-documented in crypto microstructure literature), not empirically mined from a wide sweep.
+
+**Alternative rejected — full price-history attention.** Would let the model attend to arbitrary BTC bars in the past. Adds 100s of features for marginal gain; CatBoost can't exploit attention semantics and would just regularise toward the same lagged subset we hand-picked.
+
+**Alternative rejected — train one model per (predictor, target) pair.** ETH model fed BTC-lagged features and ETH model fed ETH-lagged features as TWO different models, then ensemble. Doubles training time, doubles deployment surface, and the ensemble logic adds another layer of failure modes. Single model with both feature families wins on operational simplicity.
+
+---
+
+### ADR-013 · Joint multi-symbol training (pooled BTC+ETH+BNB with symbol-id features)
+
+**Context.** ADR-012 lifted ETH/BNB by adding BTC features to per-symbol models. The natural next step: train ONE model on the pooled data of all three symbols, with symbol-id one-hot features so the model can specialise where useful and share parameters where not. At 1-minute granularity per-symbol n is in the 2000-3000 range (limited by data accumulation), but pooled n is 8000+ — a substantial CI tightening even before any specialisation effect.
+
+**Decision.** Add `app/highfreq/feature_pipeline_joint.py` with:
+
+* `JOINT_FEATURE_COLUMNS` = base microstructure + calendar + 3 one-hot symbol indicators (`is_btc`, `is_eth`, `is_bnb`),
+* `make_joint_supervised(df_secs_by_symbol, ...)` pools per-symbol seconds frames and produces a single (X, y, meta) ready for unified training.
+
+Walk-forward CV operates on the chronologically-sorted pooled dataset. Each fold trains on past pooled bars and tests on the next slice — the test set may contain multiple symbols. The `_joint_long_horizon` variant swaps in OHLC + classical TA features for 5m+ horizons (microstructure features lose signal-to-noise at long horizons; mean-reversion + momentum features dominate, empirically lifting joint 15m dir_acc from 0.521 → 0.5485).
+
+**Empirical result (Release N, 2026-04-28).** Joint at 1m: dir_acc 0.5728 with n=8481, `p = 1.4e-34`. Per-symbol point estimate is HIGHER (BTC 0.5794 / ETH 0.5614 / BNB 0.5786) but joint has tighter CI and 30× lower p-value because pooled n is bigger. At 15m horizon, joint+TA gives the only `n>500` significant result we can report (`p = 0.016`).
+
+**Trade-off accepted — single point estimate, multiple symbols.** Reviewers asking "which model is best" get the per-symbol numbers if they care about point estimate, joint if they care about statistical significance. Both are reported. We do NOT silently pick one; the multi-horizon eval tool (`tools/multi_horizon_eval.py`) renders the full grid.
+
+**Alternative rejected — meta-learning across symbols (MAML).** Theoretical fit but training-time complexity is much higher and the gradient interaction between asynchronous data streams is itself a research question. Joint pooling with symbol-id features captures most of the benefit at zero MAML overhead.
+
+**Alternative rejected — soft sharing via multi-task heads.** A single feature trunk with per-symbol output heads. Cleaner than full pooling for asymmetric data sizes but requires per-task loss balancing and doesn't have an obvious gain on the OOS metric we care about (dir_acc on each symbol's distribution).
+
+---
+
+### ADR-014 · Probability calibration (Platt scaling co-loaded with model)
+
+**Context.** CatBoost's raw `predict_proba` output is the gradient-boosting model's confidence; in tree ensembles this is empirically **mis-calibrated** — a 0.7 raw probability on the held-out set typically corresponds to a 0.6 actual win rate. The runner uses `prob_up >= 0.55` as a long-entry threshold (ADR-011); when raw probability is biased, the threshold is operationally a different decision boundary than what the metric report claims.
+
+**Decision.** Fit a Platt scaler (1-D logistic regression on `logit(raw_proba) → y_true`) on the pooled OOS predictions from walk-forward CV. Save it next to the `.cbm` file (`weights/highfreq/<symbol>_1m_calibrator.joblib`). The predictor co-loads it on the same hot-reload tick that loads the `.cbm` and applies it inside `predict()`. Falls back to raw probability if the calibrator is missing (legacy models or fit failure).
+
+**Reliability metrics in the training report.**
+* `calibrator_brier` — Brier score (mean squared error between predicted probability and binary outcome). Lower is better.
+* `calibrator_ece` — Expected Calibration Error (binned discrepancy between predicted and observed). Pinned to ≤ 10 bins; defence-grade visual is the reliability diagram.
+
+**Trade-off accepted — single-fold edge case.** When walk-forward CV produces a fold where `y_true` is single-class, Platt's logistic regression has no gradient to fit. We ship a `_PassthroughCalibrator` that returns the raw probability unchanged. Tested explicitly so a refactor doesn't accidentally substitute a bad fitted scaler.
+
+**Alternative rejected — isotonic regression.** Strictly more flexible than Platt and often better-calibrated empirically; requires more data and is monotonic but not smooth. With our typical 2000-5000 OOS sample size, Platt's two parameters fit cleanly and don't over-fit; isotonic's monotone-piecewise-constant output also creates flat plateaux that interact awkwardly with the runner's threshold-based entry. A → B switch is one config flag away if data accumulates and reliability drift becomes visible.
+
+---
+
+### ADR-015 · Event-aware halt (halt around FOMC/CPI/forks)
+
+**Context.** Macro releases (FOMC, CPI, NFP) and idiosyncratic crypto events (hard forks, exchange listings, halving anniversaries) cause discontinuous price jumps that the ML model was NOT trained to handle (the training distribution is order-flow-driven steady-state minutes; jump events are a different process). Trading through such windows is operationally negative-EV — the model has zero edge, fees still apply, and the risk of wrong-side blow-out is high.
+
+**Decision.** Maintain a curated event calendar (`docs/highfreq/event_calendar.json`) with each event tagged by category (`macro` / `crypto` / `fork` / `informational`) and per-event halt windows (`halt_before_min`, `halt_after_min`). The runner evaluates `should_halt_for_event(events, symbol, now)` on every bar close; when the halt is active, no new entries are opened (matching ADR-011's risk-cap halt semantics — open positions still close on time-stop).
+
+**Coverage as of Release O.** 23 events through 2026-06: FOMC May/June, CPI/PPI/PCE/NFP/Retail Sales/ADP/ISM PMI prints, ECB/BOE/BOJ decisions, plus 2 crypto-specific (Binance BNB burn, ETH dev call) and 1 informational (Bitcoin halving anniversary). Halt windows scaled by event significance: FOMC = ±15 / +60 min, CPI = ±15 / +45 min, smaller prints = ±5 / +15 min.
+
+**Trade-off accepted — manually curated calendar.** A 1× / week ops review keeps it fresh; reduces operational load vs. parsing a third-party API and inheriting its data-quality bugs. Calendar parsing is malformed-entry tolerant (skips invalid rows with a warning rather than crashing) so a partial JSON edit can never take the runner offline.
+
+**Alternative rejected — auto-fetch from economic calendar API.** Several free APIs exist (Investing.com, Trading Economics) but none commit to a stable schema or uptime SLA. A WS gap during a critical FOMC release silently means the runner trades through it. Static JSON committed to the repo gives the same coverage with a known failure mode (a stale entry → traded an event we shouldn't have, visible in audit log) and zero runtime dependency.
+
+---
+
+### ADR-016 · Sample weighting + embargo (recent > old, López de Prado boundary)
+
+**Context.** Walk-forward CV in financial ML has two well-documented gotchas:
+
+1. **Concept drift.** Market regime shifts mean older bars distract the fitter from current dynamics; uniform sample weights treat the bar from 24 hours ago as equally informative as the one from 5 minutes ago, which is empirically wrong on minute-bar crypto.
+2. **Train→test target leakage.** When the target is forward-shifted (target at t = sign(return at t+H)), the last bar of the train fold has its target in the test fold's window. The leakage is at most 1 bar at H=1 but is the kind of subtle error that erodes a defence-grade claim of "no leakage".
+
+**Decision.**
+
+* **Exponential sample weighting** with half-life of 720 bars (≈ 12 hours at 1m). Most-recent bar gets weight 1.0; a bar 720 bars older gets weight 0.5; pinned as `WalkForwardConfig.sample_weight_half_life_bars = 720`. CatBoost honors `sample_weight` natively. Disabled by setting half-life to 0 (uniform, original behaviour).
+* **Embargo of 1 bar (López de Prado)** — drop the LAST `embargo_bars` rows from the train fold before fitting. With H=1 the leakage is exactly 1 bar; embargo=1 closes the loop. `WalkForwardConfig.embargo_bars = 1` is the production default. `purge_bars = 0` reserves the more aggressive purging for future multi-horizon work.
+
+**Trade-off accepted — modest train-set shrinkage from embargo.** At H=1 we drop one bar per fold; at H=15 (long-horizon eval) we drop 15. Walk-forward already discards the last fold's worth of bars so the marginal penalty is small. The OOS dir_acc lifts from this combined change (sample weighting + embargo) on BTC are within the same fold geometry's noise band — it's a defence-grade move (academic correctness), not an empirical alpha generator.
+
+**Alternative rejected — group k-fold by hour-of-day.** Hour-of-day-aware folding addresses some of the same leakage class (a model trained on 3pm bars inferring 4pm bars on the same day). For minute-bar trading the autocorrelation horizon is bars not hours; embargo=1 is the right granularity.
+
+**Alternative rejected — heavier exponential decay (half-life 60).** Tested informally during development — the resulting fit is dominated by the last hour and dir_acc on the older parts of the test window collapses. 720 bars (12 h) is the empirically chosen sweet spot: recent enough to track regime, broad enough to learn the structural features.
+
+---
+
+### ADR-017 · Magnitude regression evaluation (offline tool, NOT yet integrated)
+
+**Context.** The production model is a *classifier* — predicts `P(price up at t+1)` for a binary directional bet (ADR-007). Two pieces of information are thrown away:
+
+1. **Confidence (size).** A 60 % bet on a 1-bp move is worth far less than a 60 % bet on a 4-bp move. Kelly sizing wants `E[return]`, not `P(positive)`.
+2. **Fee-aware filtering.** At retail fees (15 bp round-trip) sub-2-bp expected moves are unprofitable regardless of directional skill. The classifier can't express "this bar's signal is too weak to bother".
+
+**Decision (Release P, 2026-04-29).** Add `tools/regression_eval.py` — an offline-only evaluation tool that walk-forward CVs a `CatBoostRegressor` on the continuous `return_bps` target, mirroring the classifier's data / fold geometry / neutral-band drop / sample-weighting for apples-to-apples comparison. Reports MAE / RMSE / R² / Pearson IC / Spearman IC plus sign accuracy (= directly comparable to dir_acc), plus threshold curves at θ ∈ {0, 1, 2, 4, 8} bp showing per-fee-tier realized P&L when filtering on `|E[r]| > θ`.
+
+**The tool is offline-only by design.** No `.cbm` is written, no production weights are touched, no predictor / paper-trader / runner is modified. The classifier path keeps running unchanged. Empirics decide: if the regressor's sign accuracy is comparable to the classifier's dir_acc, integration is justified; otherwise the regressor's only value is fee-aware threshold filtering, which we can layer on top of the existing classifier without a rewrite.
+
+**Trade-off accepted — duplicates some fold logic.** The eval tool reimplements walk-forward CV (in fewer lines than the trainer because it doesn't need final-model fit, calibrator, or persistence). The duplication is intentional — the trainer is the production-critical path and shouldn't get a `target_mode` flag added speculatively before we know whether regression is worth integrating.
+
+**Alternative rejected — wire regression as a `target_mode` flag inside `app.highfreq.trainer`.** Faster path to integration but bloats the production trainer with a code path that may never ship. Offline-first is the cheaper experiment.
+
+**Alternative rejected — quantile regression (CatBoost loss `Quantile:alpha=...`).** Theoretically gives a richer view of the predicted distribution; in practice for 1-minute crypto the conditional return distribution is well-approximated by Gaussian within a regime, and quantile loss is more sensitive to outliers than RMSE. Reserved for a future regime-aware extension.
+
+---
+
+### ADR-018 · Bayesian credible intervals for dir_acc (Beta-Binomial posterior)
+
+**Context.** The trainer reports a 95 % bootstrap CI on dir_acc (ADR-008) and a one-sided binomial p-value for "model has skill above chance" (Release J). Both are *frequentist*: they answer "if I rerun this experiment many times, what range covers the true value 95 % of the time" and "could this number have come from random guessing". A reviewer reading "95 % CI is [0.55, 0.59]" typically intuits a *Bayesian* statement ("there's a 95 % posterior probability the true dir_acc is in [0.55, 0.59]"), which the bootstrap CI does not literally claim.
+
+**Decision (Release Q, 2026-04-29).** Compute the Bayesian credible interval via the Beta-Binomial conjugate posterior with a uniform Beta(1, 1) prior:
+
+```
+posterior ~ Beta(1 + n_correct, 1 + n_total - n_correct)
+CI = (ppf(α/2), ppf(1 - α/2))     # default α = 0.05
+point = posterior_mean = (1 + n_correct) / (2 + n_total)   # NB: not k/n
+```
+
+Reported alongside the bootstrap CI as `dir_acc_bayesian_ci_low` / `dir_acc_bayesian_ci_high` in `TrainingReport` and `HorizonEvalRow`. At large n with the uniform prior the two intervals coincide to within a few hundredths; at small n the Bayesian interval is wider (correctly capturing the right-tail uncertainty that the bootstrap can underestimate).
+
+**Trade-off accepted — Laplace smoothing of point estimate.** With a uniform prior, perfect score 100/100 yields posterior mean 101/102 ≈ 0.99 (NOT 1.0); zero-correct yields ~0.01 (NOT 0.0). This is mathematically correct and pinned in tests. The slight pull-toward-0.5 is the correct prior-driven shrinkage — a perfect 100/100 isn't strong evidence of literally 100 % future accuracy.
+
+**Alternative rejected — Jeffreys prior Beta(0.5, 0.5).** Slightly less smoothing; intervals differ by ~0.01 from uniform at typical n. Both are exposed via the function's `prior_alpha / prior_beta` arguments — the production default is uniform because it has the most defensible interpretation ("equal prior weight to all dir_acc values in (0,1)").
+
+**Alternative rejected — full posterior visualisation.** Kernel-density plot of the posterior would be the most informative single chart but adds frontend complexity. The CI captures the relevant bounds; reliability diagram (ADR-014) handles the orthogonal question of probability calibration.
+
+---
+
 ## 5 · Module layout
 
 ```
