@@ -677,19 +677,7 @@
   <div class="orb orb-2"></div>
   <div class="orb orb-3"></div>
 
-  <nav class="nav">
-    <a href="/" class="nav-brand">
-      <div class="nav-logo">
-        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
-      </div>
-      <span class="nav-name">NeuCast</span>
-    </a>
-    <div class="nav-links">
-      <a href="/" class="nav-btn nav-btn-ghost">Главная</a>
-      <a href="/highfreq" class="nav-btn nav-btn-ghost">Подробно</a>
-      <a href="/register" class="nav-btn nav-btn-primary">Начать</a>
-    </div>
-  </nav>
+  {% include "_partials/nav.html" %}
 
   <section class="hero">
     <div class="hero-badge">
@@ -1063,15 +1051,7 @@
     </div>
   </section>
 
-  <footer>
-    <p><strong>NeuCast</strong> — учебный исследовательский проект машинного обучения на high-frequency данных.</p>
-    <p>Все сделки на этой странице — <strong>симуляция</strong>. Реальных позиций на бирже не открывается. Не является инвестиционным советом.</p>
-    <div class="footer-links">
-      <a href="/">Главная</a>
-      <a href="/highfreq">Подробно (для разработчика)</a>
-      <a href="https://github.com/StailFX/NeuCast" target="_blank" rel="noopener">GitHub</a>
-    </div>
-  </footer>
+  {% include "_partials/footer.html" %}
 
   <script>
     // ──────────────────────────────────────────────────────────────

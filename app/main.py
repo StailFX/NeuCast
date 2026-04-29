@@ -514,6 +514,7 @@ async def forecast_page(
         "request": request,
         "logged_in": True,
         "is_admin": role == "admin",
+        "current_page": "forecast",
     })
 
 
@@ -540,6 +541,7 @@ async def highfreq_admin_page(
         "request": request,
         "logged_in": True,
         "is_admin": True,
+        "current_page": "highfreq",
         # Defaults previously injected by Tokyo's web.py renderer; the
         # template uses these only for the symbol-switcher dropdown +
         # the "minutes required" first-fold progress widget.

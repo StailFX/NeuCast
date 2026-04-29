@@ -890,26 +890,8 @@
   <!-- Particles -->
   <div class="particles" id="particles"></div>
 
-  <!-- Navbar -->
-  <nav class="nav" id="navbar" aria-label="Main navigation">
-    <a href="/" class="nav-brand">
-      <div class="nav-logo">
-        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
-      </div>
-      <span class="nav-name">NeuCast</span>
-    </a>
-    <div class="nav-links">
-      {% if logged_in %}
-        <a href="/forecast" class="nav-btn nav-btn-ghost">Прогноз LIVE</a>
-        {# TODO: вернуть кнопку Портфеля после доработки страницы /portfolio #}
-        {# <a href="/portfolio" class="nav-btn nav-btn-ghost">Портфель</a> #}
-        <a href="/dashboard" class="nav-btn nav-btn-primary">Dashboard</a>
-      {% else %}
-        <a href="/login" class="nav-btn nav-btn-ghost">Войти</a>
-        <a href="/register" class="nav-btn nav-btn-primary">Начать</a>
-      {% endif %}
-    </div>
-  </nav>
+  {# Shared site nav — see templates/_partials/nav.html #}
+  {% include "_partials/nav.html" %}
 
   <main>
   <!-- Hero -->
@@ -1081,16 +1063,8 @@
 
   </main>
 
-  <footer>
-    <div style="max-width:900px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;">
-      <div>NeuCast &copy; 2026 &mdash; AI-прогнозирование финансовых рынков</div>
-      <nav aria-label="Footer navigation" style="display:flex;gap:1.5rem;font-size:0.8rem;">
-        <a href="/#features" style="color:var(--text-muted);text-decoration:none;">Возможности</a>
-        <a href="/register" style="color:var(--text-muted);text-decoration:none;">Регистрация</a>
-        <a href="/login" style="color:var(--text-muted);text-decoration:none;">Вход</a>
-      </nav>
-    </div>
-  </footer>
+  {# Shared site footer — see templates/_partials/footer.html #}
+  {% include "_partials/footer.html" %}
 
   <script>
     // ── Navbar scroll effect ──

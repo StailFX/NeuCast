@@ -1,0 +1,177 @@
+{# ──────────────────────────────────────────────────────────────
+   Shared navbar partial — included by landing / forecast / highfreq.
+   Single source of truth for site chrome (release T.5, 2026-04-29).
+
+   Caller may pass:
+     current_page  ∈ "home" | "forecast" | "highfreq" | "dashboard" | None
+     logged_in     bool
+     is_admin      bool
+
+   Falls back to safe defaults so callers that forgot to set these
+   (e.g. legacy templates) still render.
+─────────────────────────────────────────────────────────────────#}
+<style>
+  /* Navbar — identical across all pages. Uses CSS variables that
+     the page-level <style> block declares (--green, --blue, --bg,
+     --text, --text-dim, --border). */
+  .nc-nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 3rem;
+    background: rgba(6, 10, 19, 0.85);
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.3s, background 0.3s;
+  }
+  .nc-nav.scrolled {
+    border-bottom-color: var(--border);
+    background: rgba(6, 10, 19, 0.95);
+  }
+  @supports (backdrop-filter: blur(1px)) {
+    @media (min-width: 769px) {
+      .nc-nav { backdrop-filter: blur(24px); background: rgba(6, 10, 19, 0.6); }
+      .nc-nav.scrolled { background: rgba(6, 10, 19, 0.9); }
+    }
+  }
+  @media (max-width: 700px) {
+    .nc-nav { padding: 0.85rem 1.25rem; }
+  }
+
+  .nc-brand {
+    display: flex; align-items: center; gap: 0.75rem;
+    text-decoration: none;
+    color: var(--text, #f1f5f9);
+  }
+  .nc-brand:visited, .nc-brand:hover, .nc-brand:focus {
+    color: var(--text, #f1f5f9);
+  }
+  .nc-logo {
+    width: 38px; height: 38px;
+    background: linear-gradient(135deg, var(--green, #10b981), var(--blue, #3b82f6));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+    transition: transform 0.3s;
+  }
+  .nc-brand:hover .nc-logo { transform: rotate(-5deg) scale(1.05); }
+  .nc-logo svg { width: 18px; height: 18px; fill: white; }
+  .nc-name {
+    font-size: 1.2rem; font-weight: 700;
+    color: var(--text, #f1f5f9);
+    letter-spacing: -0.01em;
+  }
+
+  .nc-links { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  @media (max-width: 700px) { .nc-links { gap: 0.4rem; } }
+
+  .nc-btn {
+    padding: 0.55rem 1.15rem;
+    font-size: 0.85rem; font-weight: 500;
+    font-family: inherit;
+    border-radius: 10px;
+    text-decoration: none;
+    transition: all 0.25s;
+    cursor: pointer;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  @media (max-width: 700px) {
+    .nc-btn { padding: 0.45rem 0.85rem; font-size: 0.8rem; }
+  }
+  .nc-btn-ghost {
+    color: var(--text-dim, #94a3b8);
+    border-color: var(--border, rgba(51,65,85,0.35));
+    background: transparent;
+  }
+  .nc-btn-ghost:hover {
+    color: var(--text, #f1f5f9);
+    border-color: rgba(59, 130, 246, 0.4);
+    background: rgba(59, 130, 246, 0.05);
+  }
+  .nc-btn-ghost.active {
+    color: var(--green, #10b981);
+    border-color: rgba(16, 185, 129, 0.4);
+    background: rgba(16, 185, 129, 0.08);
+  }
+  .nc-btn-primary {
+    color: #fff;
+    background: linear-gradient(135deg, var(--green, #10b981), var(--green-dark, #059669));
+    border: none;
+    box-shadow: 0 2px 12px rgba(16, 185, 129, 0.2);
+  }
+  .nc-btn-primary:hover {
+    box-shadow: 0 4px 24px rgba(16, 185, 129, 0.35);
+    transform: translateY(-1px);
+  }
+  .nc-btn-live::before {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--green, #10b981);
+    border-radius: 50%;
+    margin-right: 0.4rem;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+    vertical-align: middle;
+    animation: ncPulse 2s ease-in-out infinite;
+  }
+  @keyframes ncPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .nc-btn-live::before { animation: none; }
+  }
+</style>
+
+<nav class="nc-nav" id="nc-navbar">
+  <a href="/" class="nc-brand">
+    <div class="nc-logo">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/>
+      </svg>
+    </div>
+    <span class="nc-name">NeuCast</span>
+  </a>
+  <div class="nc-links">
+    {# Logged-in users see the live forecast link + dashboard.
+       Admins additionally get the operator /highfreq page. #}
+    {% if logged_in %}
+      <a href="/forecast" class="nc-btn nc-btn-ghost nc-btn-live{% if current_page == 'forecast' %} active{% endif %}">
+        Прогноз
+      </a>
+      {% if is_admin %}
+        <a href="/highfreq" class="nc-btn nc-btn-ghost{% if current_page == 'highfreq' %} active{% endif %}">
+          Operator
+        </a>
+      {% endif %}
+      <a href="/dashboard" class="nc-btn nc-btn-primary">Dashboard</a>
+    {% else %}
+      <a href="/login" class="nc-btn nc-btn-ghost">Войти</a>
+      <a href="/register" class="nc-btn nc-btn-primary">Начать</a>
+    {% endif %}
+  </div>
+</nav>
+
+<script>
+  // Reactive border on scroll — same effect as landing has used since
+  // launch. Idempotent: safe to run on every page that includes nav.
+  (function() {
+    var nav = document.getElementById('nc-navbar');
+    if (!nav) return;
+    var ticking = false;
+    function onScroll() {
+      if (window.scrollY > 8) nav.classList.add('scrolled');
+      else nav.classList.remove('scrolled');
+      ticking = false;
+    }
+    window.addEventListener('scroll', function() {
+      if (!ticking) {
+        window.requestAnimationFrame(onScroll);
+        ticking = true;
+      }
+    }, { passive: true });
+  })();
+</script>

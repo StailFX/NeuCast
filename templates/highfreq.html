@@ -872,18 +872,8 @@
   <div class="orb orb-1"></div>
   <div class="orb orb-2"></div>
 
-  <nav class="nav" aria-label="Main navigation">
-    <a href="/" class="nav-brand">
-      <div class="nav-logo">
-        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
-      </div>
-      <span class="nav-name">NeuCast</span>
-    </a>
-    <div class="nav-links">
-      <a href="/" class="nav-btn nav-btn-ghost">← Главная</a>
-      <a href="/forecast" class="nav-btn nav-btn-ghost">User-view</a>
-    </div>
-  </nav>
+  {# Shared site nav — see templates/_partials/nav.html #}
+  {% include "_partials/nav.html" %}
 
   <div class="container">
     <div class="header-row">
@@ -1998,5 +1988,8 @@
       }
     })();
   </script>
+
+  {# Shared site footer — see templates/_partials/footer.html #}
+  {% include "_partials/footer.html" %}
 </body>
 </html>

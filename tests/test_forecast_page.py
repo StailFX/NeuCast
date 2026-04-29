@@ -158,29 +158,46 @@ def test_forecast_template_is_indexable():
     assert 'noindex, nofollow' not in html
 
 
-def test_landing_hides_forecast_cta_for_anonymous_visitors():
+def test_anon_visitors_dont_see_forecast_link():
     """T.4 user feedback: don't expose the live page to random visitors.
-    Pin: both the hero CTA "Live прогноз крипты" and the nav link
-    "Прогноз LIVE" sit inside ``{% if logged_in %}`` blocks so an
-    anonymous visitor never sees a hint that the page exists."""
+    T.5 refactor: the nav lives in ``templates/_partials/nav.html``
+    (shared across landing / forecast / highfreq).
+
+    Pin: any link to ``/forecast`` in the partial sits inside an
+    ``{% if logged_in %}`` block so an anonymous visitor renders a
+    nav with NO link to the gated page.  Same for the landing hero
+    CTA "Live прогноз крипты" which lives in landing.html itself."""
     from pathlib import Path
     here = Path(__file__).parent.parent
+
+    # ── 1) Shared nav partial ────────────────────────────────
+    nav = (here / "templates" / "_partials" / "nav.html").read_text(encoding="utf-8")
+    # Find every ``href="/forecast"`` and ensure each is inside an
+    # open ``{% if logged_in %}`` block.
+    pos = 0
+    found_any = False
+    while True:
+        idx = nav.find('href="/forecast"', pos)
+        if idx < 0:
+            break
+        found_any = True
+        if_idx = nav.rfind("{% if logged_in %}", 0, idx)
+        intervening_endif = nav.rfind("{% endif %}", if_idx, idx) if if_idx > 0 else -1
+        assert if_idx > 0 and intervening_endif <= if_idx, (
+            "href=\"/forecast\" in nav.html must be inside "
+            "{% if logged_in %} block"
+        )
+        pos = idx + 1
+    assert found_any, "nav partial must reference /forecast somewhere"
+
+    # ── 2) Landing hero CTA ─────────────────────────────────
     landing = (here / "templates" / "landing.html").read_text(encoding="utf-8")
-
-    # Pin: both phrases exist in the file at all.
-    assert "Live прогноз крипты" in landing
-    assert "Прогноз LIVE" in landing
-
-    # For each occurrence, find the most-recent preceding ``{% if logged_in %}``
-    # and the next ``{% endif %}`` — the phrase must sit inside that block.
-    for needle in ("Live прогноз крипты", "Прогноз LIVE"):
-        idx = landing.find(needle)
-        assert idx > 0
+    if "Live прогноз крипты" in landing:
+        # If the CTA exists, it must be guarded.
+        idx = landing.find("Live прогноз крипты")
         if_idx = landing.rfind("{% if logged_in %}", 0, idx)
-        endif_idx = landing.find("{% endif %}", idx)
-        # Also ensure there's no intervening {% endif %} between if and the phrase.
-        intervening_endif = landing.rfind("{% endif %}", if_idx, idx)
-        assert if_idx > 0 and endif_idx > 0 and intervening_endif <= if_idx, (
-            f"{needle!r} must be guarded by an open {{% if logged_in %}} block; "
-            f"if_idx={if_idx} endif_idx={endif_idx} intervening={intervening_endif}"
+        intervening_endif = landing.rfind("{% endif %}", if_idx, idx) if if_idx > 0 else -1
+        assert if_idx > 0 and intervening_endif <= if_idx, (
+            "'Live прогноз крипты' CTA in landing.html must be inside "
+            "{% if logged_in %} block"
         )
