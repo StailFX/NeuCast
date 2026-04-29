@@ -349,6 +349,80 @@ def binom_test_p_greater_half(n_correct: int, n_total: int) -> float:
     return float(binomtest(k=n_correct, n=n_total, p=0.5, alternative="greater").pvalue)
 
 
+def bayesian_dir_acc_ci(
+    n_correct: int,
+    n_total: int,
+    *,
+    alpha: float = 0.05,
+    prior_alpha: float = 1.0,
+    prior_beta: float = 1.0,
+) -> tuple[float, float, float]:
+    """Bayesian credible interval for ``dir_acc`` via Beta-Binomial posterior.
+
+    The Beta distribution is the conjugate prior of the Binomial
+    likelihood, so the posterior given ``n_correct`` successes out of
+    ``n_total`` is::
+
+        posterior = Beta(prior_alpha + n_correct, prior_beta + n_total - n_correct)
+
+    The credible interval is the (α/2, 1−α/2) quantile range of that
+    posterior — by default a 95 % equal-tailed interval.
+
+    Returns ``(point, lo, hi)`` where ``point`` is the posterior MEAN
+    (NOT the MLE ``k/n``).  Mean-of-Beta is::
+
+        E[θ] = (prior_alpha + k) / (prior_alpha + prior_beta + n)
+
+    With the default Beta(1, 1) uniform prior this differs from k/n by a
+    Laplace smoothing of one success and one failure.
+
+    Why a separate metric from the bootstrap CI
+    -------------------------------------------
+
+    The bootstrap CI is a *frequentist* coverage interval: "if I rerun
+    the experiment many times, the true value is inside this range
+    95 % of the time".  A Bayesian credible interval is a *posterior*
+    statement: "given my prior + this data, there's a 95 % posterior
+    probability that the true value is in this range".  The latter is
+    what most people *think* a CI means; reporting both gives reviewers
+    the choice and demonstrates statistical literacy.
+
+    For dir_acc on a dichotomous outcome (correct / incorrect) the
+    Beta-Binomial posterior is the canonical, exact answer — no
+    bootstrap resampling needed.  The two intervals tend to coincide
+    for large n and a uniform prior; they diverge meaningfully on small
+    samples (where the bootstrap is too narrow because it doesn't
+    propagate the right uncertainty about extreme proportions).
+
+    Returns
+    -------
+    (point, lo, hi)
+        Posterior mean and (1 − alpha) credible interval bounds.
+        ``(NaN, NaN, NaN)`` when no data was observed yet.
+    """
+    if n_total <= 0:
+        return float("nan"), float("nan"), float("nan")
+    if not (0 < alpha < 1):
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+    if prior_alpha <= 0 or prior_beta <= 0:
+        raise ValueError(
+            f"prior parameters must be positive, "
+            f"got alpha={prior_alpha} beta={prior_beta}"
+        )
+    if not (0 <= n_correct <= n_total):
+        raise ValueError(
+            f"n_correct={n_correct} must be in [0, n_total={n_total}]"
+        )
+
+    a = prior_alpha + float(n_correct)
+    b = prior_beta + float(n_total - n_correct)
+    point = a / (a + b)
+    from scipy.stats import beta  # transitive dep via sklearn
+    lo = float(beta.ppf(alpha / 2.0, a, b))
+    hi = float(beta.ppf(1.0 - alpha / 2.0, a, b))
+    return float(point), lo, hi
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Final-model fit + persistence
 # ────────────────────────────────────────────────────────────────────────────
@@ -474,6 +548,16 @@ class TrainingReport:
     #: on. Lower is better for both metrics.
     calibrator_brier: float | None = None
     calibrator_ece: float | None = None
+    #: Bayesian 95 % credible interval (Beta-Binomial posterior, uniform
+    #: prior). Reported alongside the bootstrap CI for two reasons:
+    #: 1) the posterior interpretation ("there's a 95 % posterior
+    #: probability the true dir_acc is in this range") matches what
+    #: most reviewers intuit when they read "95 % CI"; 2) for a
+    #: dichotomous outcome the Beta-Binomial posterior is the canonical,
+    #: exact answer that doesn't depend on resampling. ``None`` when
+    #: no folds have been produced yet. Release Q (2026-04-29).
+    dir_acc_bayesian_ci_low: float | None = None
+    dir_acc_bayesian_ci_high: float | None = None
 
     def to_json(self) -> str:
         """JSON-serialise the report. NaN/Inf are emitted as ``null`` so
@@ -564,8 +648,18 @@ def run_training(
         )
         n_total = int(len(preds))
         dir_acc_p_value = binom_test_p_greater_half(n_correct_total, n_total)
+        # Bayesian credible interval — defence-grade companion to the
+        # bootstrap CI. Uniform Beta(1,1) prior so the posterior is
+        # essentially the data with Laplace smoothing.
+        try:
+            _, bayes_lo, bayes_hi = bayesian_dir_acc_ci(
+                n_correct=n_correct_total, n_total=n_total,
+            )
+        except Exception:
+            bayes_lo = bayes_hi = float("nan")
     else:
         dir_acc_mean = ll_mean = ci_lo = ci_hi = dir_acc_p_value = float("nan")
+        bayes_lo = bayes_hi = float("nan")
 
     weights_path: str | None = None
     calibrator_brier: float | None = None
@@ -637,6 +731,8 @@ def run_training(
         holdout_cutoff_iso=holdout_cutoff_iso,
         calibrator_brier=calibrator_brier,
         calibrator_ece=calibrator_ece,
+        dir_acc_bayesian_ci_low=bayes_lo,
+        dir_acc_bayesian_ci_high=bayes_hi,
         folds=[asdict(f) for f in folds],
         # Cautious default: claim "we have skill" only when the 95 % CI
         # lower bound is strictly above chance. NaN (no data) keeps the

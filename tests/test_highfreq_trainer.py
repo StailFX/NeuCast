@@ -22,6 +22,7 @@ from app.highfreq.trainer import (
     TrainingReport,
     WalkForwardConfig,
     aggregate_to_minute,
+    bayesian_dir_acc_ci,
     binom_test_p_greater_half,
     bootstrap_dir_acc_ci,
     build_features,
@@ -230,6 +231,139 @@ def test_binom_test_p_value_below_half_is_large():
     model with a sign flip)."""
     p = binom_test_p_greater_half(30, 100)
     assert p > 0.99
+
+
+# ───── Bayesian credible interval (Beta-Binomial posterior) ─────
+
+
+def test_bayesian_ci_zero_total_returns_nan_triple():
+    """No data → cannot compute posterior. Pin: returns NaN triple
+    rather than 0 or raise — same convention as bootstrap_dir_acc_ci /
+    binom_test_p_greater_half so the JSON serialiser converts to null."""
+    point, lo, hi = bayesian_dir_acc_ci(0, 0)
+    assert np.isnan(point) and np.isnan(lo) and np.isnan(hi)
+
+
+def test_bayesian_ci_uniform_prior_centered_near_data():
+    """58/100 with Beta(1,1) prior → posterior Beta(59, 43).
+    Posterior mean = 59/102 ≈ 0.5784. Pin to defend against accidental
+    swap of (alpha, beta) in the formula."""
+    point, lo, hi = bayesian_dir_acc_ci(58, 100)
+    assert point == pytest.approx(59.0 / 102.0, abs=1e-6)
+    # 95 % credible interval for Beta(59, 43) ≈ [0.482, 0.672]. Pinned
+    # tightly so a refactor that flips ppf args (high vs low) breaks.
+    assert 0.47 < lo < 0.50
+    assert 0.65 < hi < 0.69
+    assert lo < point < hi
+
+
+def test_bayesian_ci_50_percent_data_centered_at_half():
+    """Symmetric data + symmetric uniform prior → posterior mean
+    exactly 0.5; CI symmetric around 0.5."""
+    point, lo, hi = bayesian_dir_acc_ci(50, 100)
+    assert point == pytest.approx(0.5, abs=1e-6)
+    # CI must be symmetric — a sign-flip in ppf would produce asymmetric
+    # bounds. Pin tightness: the CI half-width is ~0.097 for Beta(51,51).
+    assert pytest.approx((lo + hi) / 2, abs=1e-3) == 0.5
+
+
+def test_bayesian_ci_perfect_score_pulled_below_one():
+    """100/100 with Beta(1,1) prior → posterior Beta(101, 1).
+    Posterior mean = 101/102 ≈ 0.9902 (NOT 1.0 — the prior keeps
+    finite probability of imperfection). High-end of the 95 % CI is
+    very close to 1; low end is around 0.97. Pin to defend against
+    'k/n' being returned instead of the posterior mean."""
+    point, lo, hi = bayesian_dir_acc_ci(100, 100)
+    assert point == pytest.approx(101.0 / 102.0, abs=1e-6)
+    assert point < 1.0  # crucial: prior prevents collapse to 1
+    assert lo > 0.95
+    assert hi < 1.0001  # ppf can be exactly 1 for very large alpha
+
+
+def test_bayesian_ci_zero_correct_pulled_above_zero():
+    """0/100 → posterior Beta(1, 101). Mean = 1/102 ≈ 0.0098 — NOT 0,
+    by the same Laplace-smoothing logic. Symmetric counterpart to
+    perfect-score test."""
+    point, lo, hi = bayesian_dir_acc_ci(0, 100)
+    assert point == pytest.approx(1.0 / 102.0, abs=1e-6)
+    assert point > 0.0
+    assert lo > -1e-9  # ppf(0.025) for Beta(1, 101) tiny but positive
+    assert hi < 0.05
+
+
+def test_bayesian_ci_widens_with_smaller_n():
+    """Same point estimate (0.55), smaller n → wider CI. Pin: a refactor
+    that ignores n entirely (e.g. uses raw k/n only) would fail this."""
+    _, lo_small, hi_small = bayesian_dir_acc_ci(55, 100)
+    _, lo_big, hi_big = bayesian_dir_acc_ci(550, 1000)
+    width_small = hi_small - lo_small
+    width_big = hi_big - lo_big
+    assert width_big < width_small
+    # And both should bracket the underlying truth.
+    assert lo_small < 0.55 < hi_small
+    assert lo_big < 0.55 < hi_big
+
+
+def test_bayesian_ci_alpha_changes_width():
+    """alpha=0.10 → 90 % CI, narrower than 95 %; alpha=0.01 → 99 %, wider."""
+    _, lo_95, hi_95 = bayesian_dir_acc_ci(58, 100, alpha=0.05)
+    _, lo_90, hi_90 = bayesian_dir_acc_ci(58, 100, alpha=0.10)
+    _, lo_99, hi_99 = bayesian_dir_acc_ci(58, 100, alpha=0.01)
+    assert (hi_90 - lo_90) < (hi_95 - lo_95) < (hi_99 - lo_99)
+
+
+def test_bayesian_ci_rejects_invalid_inputs():
+    with pytest.raises(ValueError):
+        bayesian_dir_acc_ci(58, 100, alpha=0.0)
+    with pytest.raises(ValueError):
+        bayesian_dir_acc_ci(58, 100, alpha=1.0)
+    with pytest.raises(ValueError):
+        bayesian_dir_acc_ci(58, 100, prior_alpha=0.0)
+    with pytest.raises(ValueError):
+        bayesian_dir_acc_ci(58, 100, prior_beta=-1.0)
+    with pytest.raises(ValueError):
+        bayesian_dir_acc_ci(101, 100)  # k > n
+    with pytest.raises(ValueError):
+        bayesian_dir_acc_ci(-1, 100)
+
+
+def test_bayesian_ci_jeffreys_prior_works():
+    """Jeffreys prior Beta(0.5, 0.5) is a popular alternative for
+    proportion estimation. Pin: function accepts non-uniform priors.
+    Posterior for k=58, n=100 is Beta(58.5, 42.5)."""
+    point, lo, hi = bayesian_dir_acc_ci(
+        58, 100, prior_alpha=0.5, prior_beta=0.5,
+    )
+    assert point == pytest.approx(58.5 / 101.0, abs=1e-6)
+    assert lo < point < hi
+    # Jeffreys prior is slightly less smoothing than uniform → CI very
+    # close to but not identical to uniform's.
+    _, lo_uniform, hi_uniform = bayesian_dir_acc_ci(58, 100)
+    assert abs(lo - lo_uniform) < 0.02
+    assert abs(hi - hi_uniform) < 0.02
+
+
+def test_bayesian_ci_agrees_with_bootstrap_at_large_n():
+    """Defence pin: for large n with neutral prior, the Bayesian CI
+    and bootstrap CI should agree to within a few hundredths.  This
+    test catches the case where someone refactors one and accidentally
+    invalidates the other."""
+    rng = np.random.default_rng(0)
+    n = 2000
+    y_true = rng.integers(0, 2, size=n)
+    y_pred = y_true.copy()
+    flip = rng.random(size=n) < 0.42  # ~58 % accuracy
+    y_pred[flip] = 1 - y_pred[flip]
+    n_correct = int((y_pred == y_true).sum())
+
+    _, boot_lo, boot_hi = bootstrap_dir_acc_ci(
+        y_true, y_pred, n_resamples=500, seed=42,
+    )
+    _, bayes_lo, bayes_hi = bayesian_dir_acc_ci(n_correct, n)
+
+    # At n=2000 the two intervals should agree within 2 percentage points.
+    assert abs(boot_lo - bayes_lo) < 0.02
+    assert abs(boot_hi - bayes_hi) < 0.02
 
 
 @pytest.mark.parametrize("horizon", [1, 2, 3])

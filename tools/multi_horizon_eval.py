@@ -100,6 +100,13 @@ class HorizonEvalRow:
     pnl_per_trade_bps: dict[str, float | None]
     # Defaults at end to preserve dataclass argument-order rules.
     feature_set: str = "microstructure"
+    # Bayesian credible interval companion to the Wilson CI above
+    # (release Q, 2026-04-29). Reported alongside Wilson because the
+    # frequentist (Wilson) and Bayesian (Beta-Binomial) intervals
+    # answer subtly different questions; defence-grade reviewers ask
+    # for both. Uniform Beta(1,1) prior.
+    dir_acc_bayesian_ci_low: float | None = None
+    dir_acc_bayesian_ci_high: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -120,6 +127,25 @@ def _binom_p_value_greater_half(k: int, n: int) -> float:
         return float("nan")
     from scipy.stats import binomtest
     return float(binomtest(k=k, n=n, p=0.5, alternative="greater").pvalue)
+
+
+def _bayesian_ci(
+    k: int, n: int, *, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Beta-Binomial 95 % credible interval with uniform Beta(1,1) prior.
+
+    Companion to ``_wilson_ci`` so the tool reports both frequentist
+    and Bayesian intervals — see release Q for the rationale.
+    Returns ``(NaN, NaN)`` when no data was observed.
+    """
+    if n <= 0:
+        return float("nan"), float("nan")
+    a = 1.0 + float(k)
+    b = 1.0 + float(n - k)
+    from scipy.stats import beta
+    lo = float(beta.ppf(alpha / 2.0, a, b))
+    hi = float(beta.ppf(1.0 - alpha / 2.0, a, b))
+    return lo, hi
 
 
 def _expected_pnl_bps(
@@ -334,6 +360,7 @@ def evaluate_one_horizon(
     n_total = int(len(yt))
     dir_acc = n_correct / n_total
     ci_lo, ci_hi = _wilson_ci(n_correct, n_total)
+    bayes_lo, bayes_hi = _bayesian_ci(n_correct, n_total)
     p_value = _binom_p_value_greater_half(n_correct, n_total)
     base_rate = float(max(yt.mean(), 1 - yt.mean()))
 
@@ -358,6 +385,8 @@ def evaluate_one_horizon(
         base_rate=base_rate,
         mean_abs_return_bps=mean_abs_return,
         pnl_per_trade_bps=pnl_tiers,
+        dir_acc_bayesian_ci_low=bayes_lo,
+        dir_acc_bayesian_ci_high=bayes_hi,
     )
 
 
@@ -494,6 +523,7 @@ def evaluate_joint_horizon(
     n_total = int(len(yt))
     dir_acc = n_correct / n_total
     ci_lo, ci_hi = _wilson_ci(n_correct, n_total)
+    bayes_lo, bayes_hi = _bayesian_ci(n_correct, n_total)
     p_value = _binom_p_value_greater_half(n_correct, n_total)
     base_rate = float(max(yt.mean(), 1 - yt.mean()))
 
@@ -518,6 +548,8 @@ def evaluate_joint_horizon(
         base_rate=base_rate,
         mean_abs_return_bps=mean_abs_return,
         pnl_per_trade_bps=pnl_tiers,
+        dir_acc_bayesian_ci_low=bayes_lo,
+        dir_acc_bayesian_ci_high=bayes_hi,
     )
 
 
