@@ -1098,45 +1098,6 @@
     </div>
   </section>
 
-  <!-- Regression metrics — MAE / RMSE / R² / IC from offline regressor -->
-  <section class="section">
-    <div class="section-head">
-      <div class="section-head-text">
-        <span class="section-label">Регрессионные метрики</span>
-        <h2>MAE, RMSE, R², IC — величина движения</h2>
-        <p class="section-sub">
-          Параллельно с classifier'ом (который выше) запускается
-          <strong>CatBoostRegressor</strong> на тех же фичах, но предсказывает
-          continuous величину движения в bps вместо up/down.
-          Это classical-style метрики качества регрессии — то что обычно
-          показывают в анализе ML моделей.
-        </p>
-      </div>
-    </div>
-    <div class="metrics-grid" id="regression-grid">
-      <div class="metric-cell metric-head">символ × горизонт</div>
-      <div class="metric-cell metric-head">MAE<br>(bp)</div>
-      <div class="metric-cell metric-head">RMSE<br>(bp)</div>
-      <div class="metric-cell metric-head">R²</div>
-      <div class="metric-cell metric-head">IC<br>(Pearson)</div>
-      <div class="metric-cell metric-head">IC<br>(Spearman)</div>
-      <div class="metric-cell metric-head">sign_acc</div>
-      <!-- rows filled by JS -->
-    </div>
-    <div id="regression-empty" class="empty-state" style="display:none">
-      Регрессионный eval ещё не запускался.
-      Будет автоматически добавлен в timer'ы trainer'а в следующей итерации.
-    </div>
-    <p style="font-size:0.78rem; color:var(--text-dim); margin-top:0.85rem; line-height:1.55;">
-      <strong>Как читать:</strong>
-      MAE / RMSE — средняя ошибка предсказания величины (меньше = лучше).
-      R² — доля объяснённой дисперсии (1.0 идеально, 0 = угадывание среднего,
-      <strong style="color:var(--red)">отрицательно = регрессор хуже среднего</strong>).
-      IC — корреляция между предсказанным и реальным движением (≥0.05 = есть signal).
-      sign_acc — % попаданий в направление; сравнимо с classifier'ом dir_acc выше.
-    </p>
-  </section>
-
   <!-- Roadmap: when other horizons + futures arrive -->
   <section class="section">
     <div class="section-head">
@@ -2033,14 +1994,12 @@
     refreshTradesAndStats();
     refreshModelMetrics();
     refreshFeeTiers();
-    refreshRegressionMetrics();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
     setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
     setInterval(refreshModelMetrics,   METRICS_REFRESH_MS);
     setInterval(refreshFeeTiers,       METRICS_REFRESH_MS);
-    setInterval(refreshRegressionMetrics, 10 * 60_000);  // changes only on manual rerun
     setInterval(refreshCountdowns,     1000);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
