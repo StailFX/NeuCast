@@ -1,0 +1,18 @@
+[Unit]
+Description=Periodic trigger for futures trainer (release S phase 3)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# Initially: every 4 hours so the first model lands quickly once
+# enough data accumulates (we need ~200 bars after neutral-band
+# drop = ~4-5h of futures data). After ~24h we may switch to
+# daily 04:00 UTC like the spot trainer — but during the first
+# few days more frequent retrains let us actually USE the models
+# as they become available.
+OnBootSec=60s
+OnUnitActiveSec=4h
+RandomizedDelaySec=5min
+Unit=neucast-futures-highfreq-trainer@%i.service
+
+[Install]
+WantedBy=timers.target

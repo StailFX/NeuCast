@@ -1,0 +1,45 @@
+[Unit]
+Description=NeuCast HF CatBoost Trainer (USDM Futures) for %I — oneshot, release S phase 3
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+# Instance name = lowercase symbol, e.g. ``btcusdt``. Mirrors the
+# spot trainer template's contract; differs only in --venue + the
+# output sub-directory.
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=OMP_NUM_THREADS=2
+
+# --venue futures pulls from highfreq_futures_ofi_1s. Output goes
+# to weights/highfreq/futures/<sym>_1m.cbm so spot vs futures
+# weights don't collide on the same (symbol, horizon).
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.trainer \
+    --symbol %I \
+    --venue futures \
+    --since-hours 72 \
+    --bar-minutes 1 \
+    --out /opt/neucast/weights/highfreq/futures/%i_1m.cbm \
+    --report /opt/neucast/weights/highfreq/futures/%i_1m_metrics.json \
+    --frozen-holdout-days 0
+
+# Same exit-code semantics as spot: 0 = at least one fold, 1 = no
+# folds yet (early-bootstrap or insufficient data) — both treated as
+# successful so the timer doesn't accumulate failed-state during
+# the data-accumulation phase.
+SuccessExitStatus=0 1
+
+MemoryMax=2500M
+MemoryHigh=2000M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=1800
+
+[Install]
+# Activated by neucast-futures-highfreq-trainer@<sym>.timer.
