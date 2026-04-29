@@ -1805,3 +1805,86 @@ async def get_training_history(
         "runs": runs,
         "ts": datetime.now(tz=timezone.utc).isoformat(),
     }))
+
+
+# ── Regression metrics endpoint (release T.8, 2026-04-30) ─────────────
+#
+# Reads the latest output of ``tools/regression_eval.py`` and returns
+# per-symbol MAE / RMSE / R² / IC_pearson / IC_spearman / sign_accuracy.
+#
+# This is the "prediction-page-style" metrics block the user asked for:
+# our 1-minute production model is a CLASSIFIER (predicts direction),
+# but the regression tool fits a CatBoostRegressor on continuous
+# return_bps target with the same walk-forward CV.  The resulting
+# regression metrics are the canonical MAPE/RMSE/R²-style numbers that
+# every classical ML eval surface reports.
+#
+# The tool writes ``weights/highfreq/regression_eval.json`` on each
+# manual run (or via a future systemd timer).  This endpoint just reads
+# that file — never recomputes (the eval takes 1-3 minutes per symbol).
+@router.get("/api/highfreq/regression_metrics")
+async def get_regression_metrics() -> JSONResponse:
+    """Latest CatBoostRegressor metrics from ``tools.regression_eval``.
+
+    Returns 200 always:
+    * file present + parseable → ok=True with rows[]
+    * file missing (tool never run) → ok=False, reason="no_eval_yet"
+    * file malformed → ok=False, reason="malformed"
+
+    Response shape::
+
+        {
+          "ok": true,
+          "generated_at": "2026-04-29T...",
+          "rows": [
+            {
+              "symbol": "BTCUSDT", "bar_minutes": 1, "n_predictions": 2460,
+              "mae_bps": 4.067, "rmse_bps": 5.657, "r2": -0.0849,
+              "ic_pearson": 0.0205, "ic_spearman": 0.0949,
+              "sign_accuracy": 0.5508
+            }, ...
+          ]
+        }
+    """
+    path = Path("weights/highfreq/regression_eval.json")
+    if not path.exists():
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_eval_yet",
+            "hint": "run `python -m tools.regression_eval` to generate",
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("regression_eval.json read failed: %s", exc)
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "malformed",
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    # Flatten the eval rows into a UI-friendly shape; drop the
+    # threshold curves (the page surfaces fee-tier P&L separately).
+    rows_out = []
+    for r in payload.get("rows", []):
+        rows_out.append({
+            "symbol": r.get("symbol"),
+            "bar_minutes": r.get("bar_minutes"),
+            "n_predictions": r.get("n_predictions"),
+            "n_folds": r.get("n_folds"),
+            "mae_bps": r.get("mae_bps"),
+            "rmse_bps": r.get("rmse_bps"),
+            "r2": r.get("r2"),
+            "ic_pearson": r.get("ic_pearson"),
+            "ic_spearman": r.get("ic_spearman"),
+            "sign_accuracy": r.get("sign_accuracy"),
+        })
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "generated_at": payload.get("generated_at"),
+        "config": payload.get("config", {}),
+        "rows": rows_out,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))

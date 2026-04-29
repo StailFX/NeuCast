@@ -1098,6 +1098,45 @@
     </div>
   </section>
 
+  <!-- Regression metrics — MAE / RMSE / R² / IC from offline regressor -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Регрессионные метрики</span>
+        <h2>MAE, RMSE, R², IC — величина движения</h2>
+        <p class="section-sub">
+          Параллельно с classifier'ом (который выше) запускается
+          <strong>CatBoostRegressor</strong> на тех же фичах, но предсказывает
+          continuous величину движения в bps вместо up/down.
+          Это classical-style метрики качества регрессии — то что обычно
+          показывают в анализе ML моделей.
+        </p>
+      </div>
+    </div>
+    <div class="metrics-grid" id="regression-grid">
+      <div class="metric-cell metric-head">символ × горизонт</div>
+      <div class="metric-cell metric-head">MAE<br>(bp)</div>
+      <div class="metric-cell metric-head">RMSE<br>(bp)</div>
+      <div class="metric-cell metric-head">R²</div>
+      <div class="metric-cell metric-head">IC<br>(Pearson)</div>
+      <div class="metric-cell metric-head">IC<br>(Spearman)</div>
+      <div class="metric-cell metric-head">sign_acc</div>
+      <!-- rows filled by JS -->
+    </div>
+    <div id="regression-empty" class="empty-state" style="display:none">
+      Регрессионный eval ещё не запускался.
+      Будет автоматически добавлен в timer'ы trainer'а в следующей итерации.
+    </div>
+    <p style="font-size:0.78rem; color:var(--text-dim); margin-top:0.85rem; line-height:1.55;">
+      <strong>Как читать:</strong>
+      MAE / RMSE — средняя ошибка предсказания величины (меньше = лучше).
+      R² — доля объяснённой дисперсии (1.0 идеально, 0 = угадывание среднего,
+      <strong style="color:var(--red)">отрицательно = регрессор хуже среднего</strong>).
+      IC — корреляция между предсказанным и реальным движением (≥0.05 = есть signal).
+      sign_acc — % попаданий в направление; сравнимо с classifier'ом dir_acc выше.
+    </p>
+  </section>
+
   <!-- Roadmap: when other horizons + futures arrive -->
   <section class="section">
     <div class="section-head">
@@ -1821,6 +1860,87 @@
       }
     }
 
+    // ─── Regression metrics: MAE / RMSE / R² / IC / Spearman ───
+    async function refreshRegressionMetrics() {
+      const grid = document.getElementById('regression-grid');
+      const emptyEl = document.getElementById('regression-empty');
+      if (!grid) return;
+      // Preserve header row.
+      const heads = Array.from(grid.querySelectorAll('.metric-head'))
+                         .map(el => el.outerHTML).join('');
+      try {
+        const res = await fetch('/api/highfreq/regression_metrics',
+                                { cache: 'no-store' });
+        if (!res.ok) {
+          grid.innerHTML = heads;
+          emptyEl.style.display = 'block';
+          return;
+        }
+        const data = await res.json();
+        if (!data.ok || !Array.isArray(data.rows) || !data.rows.length) {
+          grid.innerHTML = heads;
+          emptyEl.style.display = 'block';
+          return;
+        }
+        emptyEl.style.display = 'none';
+
+        const rowsHTML = data.rows
+          .filter(r => Number(r.n_predictions) > 0)  // skip empty horizons
+          .map(r => {
+            const sym = r.symbol;
+            const meta = SYMBOL_DISPLAY[sym] || { short: sym, icon: 'btc' };
+            const horizonLabel = r.bar_minutes === 60
+              ? '1 ч' : `${r.bar_minutes} мин`;
+            const mae = Number(r.mae_bps);
+            const rmse = Number(r.rmse_bps);
+            const r2 = Number(r.r2);
+            const ic = Number(r.ic_pearson);
+            const icS = Number(r.ic_spearman);
+            const sa = Number(r.sign_accuracy);
+
+            const r2Cls = isFinite(r2) ? (r2 > 0 ? 'good' : 'bad') : 'muted';
+            const icCls = isFinite(ic) ? (Math.abs(ic) > 0.05 ? 'good' : 'muted') : 'muted';
+            const icSCls = isFinite(icS) ? (Math.abs(icS) > 0.05 ? 'good' : 'muted') : 'muted';
+            const saCls = isFinite(sa) ? (sa >= 0.55 ? 'good' : sa < 0.5 ? 'bad' : 'muted') : 'muted';
+
+            return `
+              <div class="metric-cell symbol-cell" data-mobile-label="">
+                <div class="mini-icon ${meta.icon}">${meta.short}</div>
+                <span>${meta.name || meta.short} · <span style="color:var(--text-dim);font-weight:500">${horizonLabel}</span></span>
+              </div>
+              <div class="metric-cell" data-mobile-label="MAE">
+                <span class="metric-num muted">${isFinite(mae) ? mae.toFixed(2) : '—'}</span>
+              </div>
+              <div class="metric-cell" data-mobile-label="RMSE">
+                <span class="metric-num muted">${isFinite(rmse) ? rmse.toFixed(2) : '—'}</span>
+              </div>
+              <div class="metric-cell" data-mobile-label="R²">
+                <span class="metric-num ${r2Cls}">${isFinite(r2) ? r2.toFixed(4) : '—'}</span>
+              </div>
+              <div class="metric-cell" data-mobile-label="IC Pearson">
+                <span class="metric-num ${icCls}">${isFinite(ic) ? ic.toFixed(4) : '—'}</span>
+              </div>
+              <div class="metric-cell" data-mobile-label="IC Spearman">
+                <span class="metric-num ${icSCls}">${isFinite(icS) ? icS.toFixed(4) : '—'}</span>
+              </div>
+              <div class="metric-cell" data-mobile-label="sign_acc">
+                <span class="metric-num ${saCls}">${isFinite(sa) ? `${(sa*100).toFixed(1)}%` : '—'}</span>
+              </div>
+            `;
+          }).join('');
+
+        grid.innerHTML = heads + rowsHTML;
+        // If all horizons returned 0 predictions, show the empty hint.
+        if (!data.rows.some(r => Number(r.n_predictions) > 0)) {
+          emptyEl.style.display = 'block';
+        }
+      } catch (err) {
+        console.warn('regression_metrics fetch failed', err);
+        grid.innerHTML = heads;
+        emptyEl.style.display = 'block';
+      }
+    }
+
     // ─── Fee-tier P&L ───
     const TIER_DISPLAY = {
       retail:    { name: 'Spot retail',  fee: '7.5 bp / сторона', desc: 'без VIP-объёма' },
@@ -1913,12 +2033,14 @@
     refreshTradesAndStats();
     refreshModelMetrics();
     refreshFeeTiers();
+    refreshRegressionMetrics();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
     setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
     setInterval(refreshModelMetrics,   METRICS_REFRESH_MS);
     setInterval(refreshFeeTiers,       METRICS_REFRESH_MS);
+    setInterval(refreshRegressionMetrics, 10 * 60_000);  // changes only on manual rerun
     setInterval(refreshCountdowns,     1000);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
