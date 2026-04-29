@@ -451,37 +451,55 @@ async def get_health(
 # ── Forecast endpoint (Phase B scaffold) ──────────────────────────────────
 
 
-def _get_forecast_predictor(symbol: str = DEFAULT_SYMBOL) -> LivePredictor:
-    """DI-friendly per-symbol predictor accessor — overrideable in tests.
+def _get_forecast_predictor(
+    symbol: str = DEFAULT_SYMBOL,
+    horizon: int = 1,
+) -> LivePredictor:
+    """DI-friendly per-(symbol, horizon) predictor accessor — overrideable
+    in tests.
 
     FastAPI shares query params across the dependency tree, so the
-    ``?symbol=`` on the endpoint flows in here — each request gets the
-    cached predictor for that symbol via :func:`get_predictor`.
+    ``?symbol=`` and ``?horizon=`` on the endpoint flow in here — each
+    request gets the cached predictor for that (symbol, horizon) pair
+    via :func:`get_predictor`. Default horizon=1 preserves the original
+    contract: callers that don't specify get the 1m model.
     """
-    return get_predictor(symbol)
+    return get_predictor(symbol, horizon_minutes=horizon)
 
 
 @router.get("/api/highfreq/forecast")
 async def get_forecast(
     symbol: str = DEFAULT_SYMBOL,
+    horizon: int = 1,
     db: Session = Depends(_get_db),
     predictor: LivePredictor = Depends(_get_forecast_predictor),
 ) -> JSONResponse:
-    """Latest 1-minute directional forecast for ``symbol``.
+    """Latest directional forecast for ``symbol`` × ``horizon`` (release T.6).
+
+    Default ``horizon=1`` preserves the original 1-minute contract;
+    callers can pass ``?horizon=15`` (or 5/60) to score against a
+    long-horizon model when one has been trained.
+
+    The endpoint dispatches the live-inference helper based on the
+    predictor's recorded ``feature_set`` (microstructure for 1m,
+    long_horizon for ≥5m) so the feature-row column count matches the
+    model's expectation — same dispatch the paper-trader runner uses.
 
     Returns 200 with ``prob_up`` once the trainer has produced a
-    ``.cbm`` AND there's a complete recent 1-minute bar to score on.
-    Until then, returns 503 with a structured ``reason``:
+    ``.cbm`` AND there's a complete recent bar to score on.  Until
+    then, returns 503 with a structured ``reason``:
 
     * ``no_model_yet`` — trainer hasn't run yet / no weights file
     * ``database_unavailable`` — DB unreachable
-    * ``not_enough_recent_data`` — no complete 1-minute bar in the
-      recent window (cold-start, or reconnect just happened)
+    * ``not_enough_recent_data`` — no complete bar in the recent
+      window (cold-start, or reconnect just happened)
 
     The response always includes the predictor ``model`` block so
     clients can show "model age" / "calibrated?" badges even on 503.
     """
     symbol = symbol.upper()
+    if horizon <= 0:
+        horizon = 1
     status = predictor.status()
 
     # Branch 1: no model on disk → trainer hasn't shipped weights yet.
@@ -492,13 +510,24 @@ async def get_forecast(
                 "ok": False,
                 "reason": "no_model_yet",
                 "symbol": symbol,
+                "horizon_minutes": horizon,
                 "model": status.to_dict(),
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
             },
         )
 
     # Branch 2: model loaded but DB unreachable (e.g. ingest restart).
-    df_seconds = _fetch_recent_seconds(db, symbol)
+    # For long-horizon models we need MUCH more lookback (the long-
+    # horizon helper needs ≥20 complete bars to bootstrap EMA(20) /
+    # Bollinger(20) / RSI(14)).
+    fs = predictor.feature_set()
+    bm = predictor.bar_minutes()
+    if fs == "long_horizon" and bm > 1:
+        # 25 bars × bar_minutes × 60s + 60s headroom for in-flight drop.
+        lookback = 25 * bm * 60 + 60
+    else:
+        lookback = _FORECAST_LOOKBACK_SECONDS
+    df_seconds = _fetch_recent_seconds(db, symbol, lookback_seconds=lookback)
     if df_seconds is None:
         return JSONResponse(
             status_code=503,
@@ -506,15 +535,24 @@ async def get_forecast(
                 "ok": False,
                 "reason": "database_unavailable",
                 "symbol": symbol,
+                "horizon_minutes": horizon,
                 "model": status.to_dict(),
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
             },
         )
 
-    # Branch 3: not enough recent data for a complete bar (cold-start /
-    # reconnect window). build_latest_feature_row drops the in-flight
-    # current minute, so we need at least one previous COMPLETE minute.
-    feature_row = build_latest_feature_row(df_seconds)
+    # Branch 3: not enough recent data for a complete bar.
+    if fs == "long_horizon":
+        from app.highfreq.feature_pipeline_long_horizon import (
+            build_latest_inference_bar_long_horizon,
+        )
+        inference = build_latest_inference_bar_long_horizon(
+            df_seconds, bar_minutes=bm,
+        )
+        feature_row = inference[0] if inference is not None else None
+    else:
+        feature_row = build_latest_feature_row(df_seconds)
+
     if feature_row is None:
         return JSONResponse(
             status_code=503,
@@ -522,6 +560,7 @@ async def get_forecast(
                 "ok": False,
                 "reason": "not_enough_recent_data",
                 "symbol": symbol,
+                "horizon_minutes": horizon,
                 "model": status.to_dict(),
                 "rows_seen": int(len(df_seconds)),
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
@@ -530,14 +569,13 @@ async def get_forecast(
 
     prob_up = predictor.predict(feature_row)
     if prob_up is None:
-        # Defensive: status said has_model=True but predict returned None.
-        # Treat as transient — return 503 so the caller retries.
         return JSONResponse(
             status_code=503,
             content={
                 "ok": False,
                 "reason": "model_unavailable",
                 "symbol": symbol,
+                "horizon_minutes": horizon,
                 "model": status.to_dict(),
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
             },
@@ -558,7 +596,7 @@ async def get_forecast(
             "ok": True,
             "symbol": symbol,
             "ts": datetime.now(tz=timezone.utc).isoformat(),
-            "horizon_minutes": 1,
+            "horizon_minutes": horizon,
             "prob_up": float(prob_up),
             "signal": signal,
             "calibrated": bool(status.is_calibrated),

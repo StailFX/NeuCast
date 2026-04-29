@@ -699,7 +699,7 @@
       <div class="pill-group" id="horizon-pills">
         <button class="pill active" data-horizon="1">1 мин</button>
         <button class="pill disabled" data-horizon="5">5 мин</button>
-        <button class="pill disabled" data-horizon="15">15 мин</button>
+        <button class="pill" data-horizon="15">15 мин</button>
         <button class="pill disabled" data-horizon="60">1 час</button>
       </div>
     </div>
@@ -1076,6 +1076,10 @@
     const TRADES_REFRESH_MS   = 60_000;
     const METRICS_REFRESH_MS  = 5 * 60_000;
 
+    // Selected horizon (changes when user clicks a pill). 1m → 1, 15m → 15.
+    // Cards re-fetch with this horizon param.
+    let activeHorizon = 1;
+
     function fmtAge(seconds) {
       if (!isFinite(seconds) || seconds < 0) return '—';
       if (seconds < 60)   return `${Math.round(seconds)} с`;
@@ -1106,8 +1110,16 @@
     async function refreshCard(card) {
       const symbol = card.dataset.symbol;
       const get = (n) => card.querySelector(`[data-bind="${n}"]`);
+      // Card horizon pill text reflects the active horizon globally.
+      const horizonPill = get('horizon-pill');
+      if (horizonPill) {
+        horizonPill.textContent = activeHorizon === 60
+          ? '+1 час' : `+${activeHorizon} мин`;
+      }
       try {
-        const res = await fetch(`/api/highfreq/forecast?symbol=${symbol}`, { cache: 'no-store' });
+        const res = await fetch(
+          `/api/highfreq/forecast?symbol=${symbol}&horizon=${activeHorizon}`,
+          { cache: 'no-store' });
         if (res.status !== 200) {
           card.classList.add('loading'); card.classList.remove('up','down','neutral');
           get('arrow').className = 'arrow loading'; get('arrow').textContent = '…';
@@ -1389,8 +1401,23 @@
         .forEach(el => { el.textContent = `след. бар: ${secs}с`; });
     }
 
-    // ─── Filter pill UX (visual only — backends only ready for 1m/spot) ───
-    document.querySelectorAll('.pill').forEach(btn => {
+    // ─── Filter pill UX ───
+    // Horizon pills WORK now (release T.6): clicking 1m/15m re-fires
+    // refreshAllPredictions with the new horizon. Disabled pills (5m/60m)
+    // stay non-interactive until backend support lands.
+    document.querySelectorAll('#horizon-pills .pill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.classList.contains('disabled')) return;
+        const group = btn.parentElement;
+        group.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeHorizon = parseInt(btn.dataset.horizon, 10) || 1;
+        // Immediately re-fetch so user sees instant feedback.
+        refreshAllPredictions();
+      });
+    });
+    // Venue pills are visual-only for now (Spot active, Futures "скоро").
+    document.querySelectorAll('#venue-pills .pill').forEach(btn => {
       btn.addEventListener('click', () => {
         if (btn.classList.contains('disabled')) return;
         const group = btn.parentElement;
