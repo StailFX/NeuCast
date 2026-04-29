@@ -4,10 +4,25 @@ Parallel to :mod:`app.highfreq.l2_consumer` for the spot venue (ADR-019).
 Subscribes to three streams per symbol:
 
 * ``<symbol>@depth20@100ms`` — partial book snapshot (top-20 levels, 100 ms cadence).
-  Same shape as spot — we reuse :class:`L2Snapshot` from the spot consumer.
+  Same shape as spot but uses ``b``/``a`` (single-letter) for bids/asks rather
+  than spot's ``bids``/``asks`` — :func:`_parse_snapshot` accepts both forms.
+  Produces :class:`L2Snapshot` (reused from the spot consumer).
 * ``<symbol>@trade`` — every executed trade. Same shape — reuses :class:`Trade`.
 * ``<symbol>@markPrice@1s`` — mark price + funding rate update every 1 s.
   Futures-specific; produces :class:`MarkPriceUpdate` frames.
+
+  **Known issue (release S, 2026-04-29)**: empirically zero frames are
+  delivered on this Tokyo VPS↔Binance Futures route, even for isolated
+  ``/ws/btcusdt@markPrice@1s`` subscriptions. Depth + trade frames
+  flow normally on the same connection; markPrice silently doesn't.
+  Hypothesis: regional / IP-based stream filtering at Binance's edge.
+
+  We leave the subscription wired (zero load when no frames arrive)
+  and surface ``mark_frames_seen`` so a future operational check can
+  detect when the stream comes back. Funding rate for the trainer /
+  paper trader is sourced from the REST endpoint
+  (``/fapi/v1/premiumIndex``) on a 5-minute poll instead — funding
+  changes ~bps/minute, so 5-min granularity is operationally fine.
 
 Why a separate consumer (not a venue flag on the spot one)
 -----------------------------------------------------------
@@ -233,7 +248,13 @@ class FuturesL2Consumer:
                     await self.on_mark_price(mp)
             return
 
-        if "@depth" in stream or ("asks" in data and "bids" in data):
+        # USDM Futures @depth20@100ms uses ``b``/``a`` (single-letter)
+        # for bids/asks — DIFFERENT from spot which uses ``bids``/``asks``.
+        # Detect either form.
+        if "@depth" in stream or (
+            ("asks" in data and "bids" in data)
+            or ("a" in data and "b" in data)
+        ):
             snap = self._parse_snapshot(data, stream, local_recv_ms)
             if snap is not None:
                 self.snapshots_dispatched += 1
@@ -262,7 +283,13 @@ class FuturesL2Consumer:
     def _parse_snapshot(
         data: dict, stream: str, local_recv_ms: int,
     ) -> L2Snapshot | None:
-        # Same shape as spot — futures @depth20 returns identical fields.
+        """Parse a futures @depth20 frame.
+
+        USDM Futures uses ``b`` / ``a`` (single-letter) for bids/asks
+        rather than spot's ``bids`` / ``asks``. We accept either form
+        so this parser also tolerates a shape regression where Binance
+        normalises one venue toward the other (defensive).
+        """
         event_time_ms = int(data.get("E", local_recv_ms))
         if "@" in stream:
             symbol = stream.split("@", 1)[0].upper()
@@ -270,9 +297,12 @@ class FuturesL2Consumer:
             symbol = data.get("s", "").upper()
         if not symbol:
             return None
+        # Try long form first (spot convention) then short form (futures).
+        bids_raw = data.get("bids") if "bids" in data else data.get("b", [])
+        asks_raw = data.get("asks") if "asks" in data else data.get("a", [])
         try:
-            bids = tuple((float(p), float(q)) for p, q in data.get("bids", []))
-            asks = tuple((float(p), float(q)) for p, q in data.get("asks", []))
+            bids = tuple((float(p), float(q)) for p, q in bids_raw)
+            asks = tuple((float(p), float(q)) for p, q in asks_raw)
         except (TypeError, ValueError):
             return None
         if not bids or not asks:

@@ -182,6 +182,41 @@ def test_snapshot_parser_uses_stream_for_symbol():
     assert snap.asks[-1] == (65430.30, 0.5)
 
 
+def test_snapshot_parser_handles_futures_short_form_b_a():
+    """USDM Futures @depth20 uses single-letter ``b``/``a`` keys.
+    Spot uses ``bids``/``asks``. Pin: parser accepts the futures form,
+    otherwise we silently drop ALL depth frames and only ingest trades.
+    This was caught by the first live deploy on Tokyo (snaps=0
+    despite frames=9000+)."""
+    data = {
+        "e": "depthUpdate",
+        "E": 1711234567890,
+        "T": 1711234567880,
+        "s": "BTCUSDT",
+        "U": 1234,
+        "u": 1240,
+        "pu": 1233,
+        "b": [["65430.10", "1.5"], ["65430.00", "2.0"]],
+        "a": [["65430.20", "1.0"], ["65430.30", "0.5"]],
+    }
+    snap = FuturesL2Consumer._parse_snapshot(
+        data, stream="btcusdt@depth20@100ms", local_recv_ms=999,
+    )
+    assert snap is not None
+    assert snap.bids[0] == (65430.10, 1.5)
+    assert snap.asks[-1] == (65430.30, 0.5)
+
+
+def test_snapshot_parser_returns_none_when_no_bids_or_asks():
+    """Frame with neither ``bids``/``asks`` nor ``b``/``a`` returns
+    None — defensive against malformed envelopes."""
+    data = {"lastUpdateId": 1, "noise": "data"}
+    snap = FuturesL2Consumer._parse_snapshot(
+        data, stream="btcusdt@depth20@100ms", local_recv_ms=0,
+    )
+    assert snap is None
+
+
 def test_trade_parser_basic():
     data = {
         "e": "trade",

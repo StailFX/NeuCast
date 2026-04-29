@@ -1,0 +1,39 @@
+[Unit]
+Description=NeuCast HFT — USDM Futures L2 ingest (Release S, ADR-019)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+# Coexists with neucast-highfreq.service (spot ingest) — different
+# WebSocket host (fstream vs stream), different table, different
+# Prometheus port. Both can run side-by-side without conflict.
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+# Default symbols; override per-host in /etc/neucast/env if needed.
+Environment=HIGHFREQ_FUTURES_SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT
+# Different metrics port from spot (9090) — Prometheus scrapes both.
+Environment=HIGHFREQ_FUTURES_INGEST_METRICS_PORT=9100
+
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.futures_runner
+
+Restart=always
+RestartSec=10
+# Same memory budget as spot — depth20 frames at 100ms × 3 symbols
+# is roughly the same wire load whether spot or futures venue.
+MemoryMax=400M
+MemoryHigh=300M
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+
+# Graceful shutdown: SIGTERM lets the consumer stop cleanly + the
+# aggregator flush any pending Postgres writes before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
