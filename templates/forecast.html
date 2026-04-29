@@ -254,9 +254,12 @@
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 20px;
-      padding: 1.75rem;
+      padding: 1.5rem 1.5rem 1.4rem;
       overflow: hidden;
       transition: border-color 0.4s, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      min-height: 360px;     /* equalises card height across BTC/ETH/BNB */
     }
     .card:hover { transform: translateY(-2px); }
     .card.up {
@@ -284,8 +287,21 @@
     .card-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
     .card-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
     .card-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
-    .card-symbol-name { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
-    .card-symbol-pair { font-size: 0.7rem; color: var(--text-dim); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+    .card-symbol-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: -0.015em;
+      color: var(--text);
+      line-height: 1.2;
+    }
+    .card-symbol-pair {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+      margin-top: 0.15rem;
+    }
     .card-horizon {
       font-size: 0.7rem; color: var(--text-dim);
       background: rgba(255,255,255,0.04);
@@ -293,12 +309,37 @@
       letter-spacing: 0.04em;
     }
 
+    /* Live price strip — sits between card head and prediction. */
+    .card-price-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.6rem 0;
+      margin-bottom: 0.85rem;
+      border-bottom: 1px dashed var(--border-soft);
+    }
+    .card-price-label {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+    }
+    .card-price-value {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
     .card-prediction {
       background: rgba(255,255,255,0.025);
       border: 1px solid var(--border-soft);
       border-radius: 14px;
       padding: 1.1rem;
       margin-bottom: 1rem;
+      flex-grow: 1;
     }
     .card-prediction-head {
       display: flex; justify-content: space-between; align-items: center;
@@ -647,6 +688,132 @@
     .trade-bps { font-size: 0.7rem; color: var(--text-dim); font-variant-numeric: tabular-nums; }
     .empty-state { color: var(--text-dim); text-align: center; padding: 2rem 1rem; font-size: 0.95rem; }
 
+    /* Enriched trade row: entry/exit prices, qty, side, hold, P&L. */
+    .trade-rich {
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
+      gap: 1rem;
+      align-items: center;
+      padding: 1rem 0;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .trade-rich:last-child { border-bottom: none; }
+    .trade-body { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+    .trade-header {
+      display: flex;
+      gap: 0.6rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .trade-head-when {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .trade-head-tag {
+      font-size: 0.62rem; font-weight: 700;
+      padding: 0.12rem 0.45rem;
+      border-radius: 5px;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .trade-head-tag.match { background: rgba(16, 185, 129, 0.12); color: var(--green); }
+    .trade-head-tag.miss  { background: rgba(239, 68, 68, 0.12); color: var(--red); }
+    .trade-head-tag.flat  { background: rgba(245, 158, 11, 0.12); color: var(--amber); }
+    .trade-prices {
+      display: flex;
+      gap: 1.25rem;
+      flex-wrap: wrap;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .trade-prices b { color: var(--text); font-weight: 600; }
+    .trade-prices .arrow-tiny {
+      color: var(--text-dim);
+      margin: 0 0.25rem;
+    }
+    .trade-prob {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .trade-prob b { color: var(--text-muted); font-weight: 600; }
+
+    .trade-pnl-block {
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      align-items: flex-end;
+    }
+    .trade-pnl-pct {
+      font-size: 1.05rem; font-weight: 800;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .trade-pnl-pct.positive { color: var(--green); }
+    .trade-pnl-pct.negative { color: var(--red); }
+    .trade-pnl-usd {
+      font-size: 0.72rem; color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+
+    @media (max-width: 600px) {
+      .trade-rich {
+        grid-template-columns: 32px 1fr;
+        grid-template-rows: auto auto;
+      }
+      .trade-pnl-block { grid-column: 2; align-items: flex-start; text-align: left; }
+    }
+
+    /* Subtle "model just updated" pulse highlight. */
+    @keyframes ncFreshGlow {
+      0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+      40%  { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0.18); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .fresh-glow { animation: ncFreshGlow 2.5s ease-out 1; }
+
+    /* Toast for "new model arrived" notifications. */
+    .nc-toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      max-width: 340px;
+      padding: 0.85rem 1rem;
+      background: rgba(12, 20, 35, 0.95);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
+                  0 0 24px rgba(16, 185, 129, 0.15);
+      color: var(--text);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      z-index: 200;
+      display: flex;
+      gap: 0.65rem;
+      align-items: flex-start;
+      backdrop-filter: blur(12px);
+      animation: ncToastIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .nc-toast .nc-toast-dot {
+      width: 8px; height: 8px;
+      flex-shrink: 0;
+      margin-top: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
+    }
+    .nc-toast strong { color: var(--green); }
+    .nc-toast.fade-out { opacity: 0; transition: opacity 0.5s; }
+    @keyframes ncToastIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    @media (max-width: 480px) {
+      .nc-toast { left: 16px; right: 16px; max-width: none; bottom: 16px; }
+    }
+
     /* ── Footer ── */
     footer {
       max-width: 1100px;
@@ -726,6 +893,10 @@
           </div>
           <div class="card-horizon" data-bind="horizon-pill">+1 мин</div>
         </div>
+        <div class="card-price-row">
+          <span class="card-price-label">Цена сейчас</span>
+          <span class="card-price-value" data-bind="price">—</span>
+        </div>
         <div class="card-prediction">
           <div class="card-prediction-head">
             <span class="card-prediction-label">Прогноз направления</span>
@@ -760,6 +931,10 @@
           </div>
           <div class="card-horizon" data-bind="horizon-pill">+1 мин</div>
         </div>
+        <div class="card-price-row">
+          <span class="card-price-label">Цена сейчас</span>
+          <span class="card-price-value" data-bind="price">—</span>
+        </div>
         <div class="card-prediction">
           <div class="card-prediction-head">
             <span class="card-prediction-label">Прогноз направления</span>
@@ -793,6 +968,10 @@
             </div>
           </div>
           <div class="card-horizon" data-bind="horizon-pill">+1 мин</div>
+        </div>
+        <div class="card-price-row">
+          <span class="card-price-label">Цена сейчас</span>
+          <span class="card-price-value" data-bind="price">—</span>
         </div>
         <div class="card-prediction">
           <div class="card-prediction-head">
@@ -933,59 +1112,62 @@
     </div>
     <div class="roadmap">
       <div class="road-item">
-        <div class="road-when">сейчас</div>
+        <div class="road-when">live</div>
         <div class="road-text">
-          <strong>Spot 1m</strong> — 3 модели (BTC / ETH / BNB), полностью
-          калиброваны, торгуют каждую минуту.
+          <strong>Spot 1m</strong> — 3 модели (BTC / ETH / BNB) калиброваны
+          выше chance, paper-trader открывает сделку каждую минуту. На retail
+          fees структурно убыточны (см. блок выше), на VIP-9 / mm-rebate
+          выходят в плюс.
         </div>
         <div class="road-status live">live</div>
       </div>
       <div class="road-item">
-        <div class="road-when">сегодня</div>
+        <div class="road-when">live</div>
         <div class="road-text">
-          <strong>Spot 15m</strong> — модель BNB уже калибрована (точность 66%);
-          UI-переключатель горизонта прикручу в течение нескольких часов.
+          <strong>Spot 15m</strong> — переключатель горизонта работает наверху.
+          Сейчас все 3 символа в low_skill (BNB borderline 0.58, BTC/ETH ~0.50)
+          — paper-trader не торгует автоматически. С накоплением данных
+          ожидаем повышение точности и автоматическую активацию.
         </div>
-        <div class="road-status soon">скоро</div>
-      </div>
-      <div class="road-item">
-        <div class="road-when" id="road-futures-eta">~17:30 UTC</div>
-        <div class="road-text">
-          <strong>Futures BTC 1m</strong> — L2-ингест с Binance Futures запущен
-          в 14:00 UTC, нужно накопить 200+ баров (~3.5 ч). Первая модель
-          сегодня вечером, paper-trader — ночью. Комиссия 4 bp roundtrip
-          вместо 15 bp на спот retail — структурно ближе к break-even.
-        </div>
-        <div class="road-status queued">накапливаем</div>
+        <div class="road-status live">live</div>
       </div>
       <div class="road-item">
         <div class="road-when">+1-3 дня</div>
         <div class="road-text">
-          <strong>Spot 5m / 60m</strong> — данные накапливаются параллельно с 1m.
-          На 5m сигнал слабый (eval показал p &gt; 0.1); на 60m — самый высокий
-          dir_acc (0.61) но мало данных. Будут включены как обучение
-          станет статистически значимым.
+          <strong>Futures BTC 1m</strong> — L2-ингест с Binance Futures
+          стабильно собирает данные. Первая успешная модель когда наберётся
+          200+ калиброванных баров. Комиссия futures-maker 4 bp roundtrip
+          против 15 bp на спот retail — структурно ближе к break-even.
+        </div>
+        <div class="road-status queued">накапливаем</div>
+      </div>
+      <div class="road-item">
+        <div class="road-when">+3-5 дней</div>
+        <div class="road-text">
+          <strong>Spot 60m</strong> — на 60-минутном горизонте средний
+          ход цены ~30 bp, что выше fees retail (15 bp) — это самый
+          интересный horizon для break-even на спот. Нужно ~200 баров
+          = 8 дней данных, сейчас 108.
         </div>
         <div class="road-status queued">накапливаем</div>
       </div>
       <div class="road-item">
         <div class="road-when">+1 неделя</div>
         <div class="road-text">
-          <strong>Futures 15m / 60m</strong> + <strong>выбор плеча</strong> (1× / 3× / 5×) —
-          после первой недели накопления futures-данных. Бэкенд для leveraged
-          paper trading спроектирован, но не активирован пока нет
-          подтверждённой profitability на 1× futures.
+          <strong>Futures 15m / 60m</strong> + <strong>выбор плеча</strong>
+          (1× / 3× / 5×). Бэкенд для leveraged paper-trader готов, но
+          активирую только когда покажу profitability на 1× futures
+          minimum.
         </div>
         <div class="road-status queued">в очереди</div>
       </div>
       <div class="road-item">
-        <div class="road-when">+2-4 недели</div>
+        <div class="road-when">+2-3 недели</div>
         <div class="road-text">
           <strong>Frozen holdout</strong> 7-day OOS gold standard,
           <strong>triple-barrier labels</strong> (López de Prado),
           <strong>cross-exchange features</strong> (Coinbase / Kraken
-          референсы). Это — научный апгрейд для защиты, не повседневная
-          фича.
+          референсы) — научные апгрейды для защиты, не повседневные фичи.
         </div>
         <div class="road-status queued">в roadmap</div>
       </div>
@@ -1141,6 +1323,9 @@
         get('updated').textContent = `обновлено ${fmtAge(updatedAge)} назад`;
         if (data.model && isFinite(data.model.model_age_seconds)) {
           get('model-age').textContent = `модель: ${fmtAge(data.model.model_age_seconds)}`;
+          // Auto-update detection: when a new .cbm lands, model_age
+          // drops dramatically. Fire toast + force-refresh.
+          detectFreshModel(symbol, activeHorizon, data.model.model_age_seconds);
         }
       } catch (err) {
         console.warn('forecast fetch failed', symbol, err);
@@ -1149,6 +1334,44 @@
     async function refreshAllPredictions() {
       const cards = document.querySelectorAll('.card[data-symbol]');
       await Promise.all([...cards].map(refreshCard));
+      // After predictions update, fetch live microprice for each card
+      // (separate endpoint — forecast response doesn't include price).
+      refreshLivePrices();
+    }
+    async function refreshLivePrices() {
+      // /api/highfreq/microprice_history returns recent OHLC microprice
+      // bars; we just need the latest close. Cheap one-shot fetch
+      // per symbol, parallel.
+      const cards = document.querySelectorAll('.card[data-symbol]');
+      await Promise.all([...cards].map(async (card) => {
+        const symbol = card.dataset.symbol;
+        try {
+          const res = await fetch(
+            `/api/highfreq/microprice_history?symbol=${symbol}&minutes=2`,
+            { cache: 'no-store' });
+          if (!res.ok) return;
+          const data = await res.json();
+          // Endpoint shape: { ok, symbol, rows: [{ts, microprice}, ...] }
+          // Older shape may use bars/data keys with OHLC — accept both.
+          const rows = data?.rows || data?.bars || data?.data || [];
+          if (!rows.length) return;
+          const latest = rows[rows.length - 1];
+          const price = Number(
+            latest.microprice ?? latest.close ?? latest.microprice_close ??
+            latest.c ?? latest[4],
+          );
+          if (!isFinite(price) || price <= 0) return;
+          const priceEl = card.querySelector('[data-bind="price"]');
+          if (priceEl) priceEl.textContent = `$${fmtMoney(price)}`;
+        } catch (err) { /* silent */ }
+      }));
+    }
+    function fmtMoney(p) {
+      if (!isFinite(p)) return '—';
+      if (p >= 10000) return p.toLocaleString('en-US', { maximumFractionDigits: 0 });
+      if (p >= 100)   return p.toFixed(2);
+      if (p >= 1)     return p.toFixed(3);
+      return p.toFixed(5);
     }
 
     // ─── Trades + stats (with REAL direction accuracy, not win-rate) ───
@@ -1180,9 +1403,28 @@
       if (t.side === 'short') return moveUp ? false : true;
       return null;
     }
+    function fmtTradeMoney(p) {
+      if (!isFinite(p)) return '—';
+      if (p >= 10000) return p.toLocaleString('en-US', { maximumFractionDigits: 1 });
+      if (p >= 100)   return p.toFixed(2);
+      if (p >= 1)     return p.toFixed(3);
+      return p.toFixed(5);
+    }
+    function holdMinutes(t) {
+      try {
+        const a = new Date(t.entry_ts);
+        const b = new Date(t.exit_ts);
+        const min = (b - a) / 60000;
+        if (!isFinite(min) || min < 0) return null;
+        return min;
+      } catch { return null; }
+    }
     function renderTrades(trades) {
       const list = document.getElementById('trades-list');
-      if (!trades.length) { list.innerHTML = '<div class="empty-state">пока не было закрытых сделок</div>'; return; }
+      if (!trades.length) {
+        list.innerHTML = '<div class="empty-state">пока не было закрытых сделок</div>';
+        return;
+      }
       list.innerHTML = trades.map(t => {
         const sym = (t.symbol || '').toUpperCase();
         const meta = SYMBOL_DISPLAY[sym] || { short: sym.replace('USDT',''), icon: 'btc' };
@@ -1190,31 +1432,174 @@
         const sideClass = t.side || 'long';
         const pnlBps = Number(t.pnl_bps || 0);
         const pnlPct = pnlBps / 100;
+        const pnlUsd = Number(t.pnl_usd || 0);
         const pnlClass = pnlBps > 0 ? 'positive' : (pnlBps < 0 ? 'negative' : '');
         const pnlSign = pnlBps > 0 ? '+' : '';
+        const usdSign = pnlUsd > 0 ? '+' : '';
+
+        const entry = Number(t.entry_price);
+        const exit  = Number(t.exit_price);
+        const qty   = Number(t.qty);
+        const probUp = Number(t.entry_prob_up);
+
         const exitDate = new Date(t.exit_ts);
         const sameDay = exitDate.toDateString() === new Date().toDateString();
         const time = exitDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
         const when = sameDay ? `сегодня в ${time}`
                              : exitDate.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' }) + `, ${time}`;
+        const hm = holdMinutes(t);
+        const holdLabel = hm !== null ? `${hm.toFixed(0)} мин` : '—';
+
         const dirCorrect = isDirectionCorrect(t);
-        const dirNote = dirCorrect === true  ? '✓ направление угадано' :
-                        dirCorrect === false ? '✗ направление не то' :
-                                               'цена не сдвинулась';
+        const tagClass = dirCorrect === true ? 'match' : (dirCorrect === false ? 'miss' : 'flat');
+        const tagText  = dirCorrect === true ? '✓ направление' :
+                         dirCorrect === false ? '✗ направление' :
+                                                'плоский ход';
+
+        // Predicted-direction label from probability (what the model said).
+        let probLabel = '—';
+        if (isFinite(probUp)) {
+          const pct = Math.round((t.side === 'long' ? probUp : (1 - probUp)) * 100);
+          probLabel = `модель: ${t.side === 'long' ? '↑' : '↓'} ${pct}%`;
+        }
+
+        const pricesLine = (isFinite(entry) && isFinite(exit))
+          ? `<span><b>$${fmtTradeMoney(entry)}</b></span><span class="arrow-tiny">→</span><span><b>$${fmtTradeMoney(exit)}</b></span>`
+          : '';
+        const qtyLine = isFinite(qty) ? `<span>${qty.toFixed(4)} ${meta.short}</span>` : '';
+        const holdLine = `<span>${holdLabel}</span>`;
+
         return `
-          <div class="trade">
+          <div class="trade-rich">
             <div class="trade-icon ${meta.icon}">${meta.short}</div>
-            <div class="trade-meta">
-              <span class="trade-side-pill ${sideClass}">${sideRu} ${meta.short}</span>
-              <span class="trade-when">${when} · ${dirNote}</span>
+            <div class="trade-body">
+              <div class="trade-header">
+                <span class="trade-side-pill ${sideClass}">${sideRu} ${meta.short}</span>
+                <span class="trade-head-when">${when}</span>
+                <span class="trade-head-tag ${tagClass}">${tagText}</span>
+              </div>
+              <div class="trade-prices">
+                ${pricesLine}
+                ${qtyLine}
+                ${holdLine}
+              </div>
+              <div class="trade-prob">${probLabel}</div>
             </div>
-            <div class="trade-pnl-cell">
-              <div class="trade-pnl ${pnlClass}">${pnlSign}${pnlPct.toFixed(2)}%</div>
-              <div class="trade-bps">за минуту</div>
+            <div class="trade-pnl-block">
+              <div class="trade-pnl-pct ${pnlClass}">${pnlSign}${pnlPct.toFixed(2)}%</div>
+              <div class="trade-pnl-usd">${usdSign}$${pnlUsd.toFixed(2)}</div>
             </div>
           </div>
         `;
       }).join('');
+    }
+
+    // ─── Auto-update: detect when a model is freshly retrained ───
+    // Tracks ``model_age_seconds`` per (symbol × horizon) on each
+    // metrics poll. When age drops sharply (= new .cbm landed), shows
+    // a toast + glow on the metrics card so user sees the update.
+    const _modelAgeMemo = {};   // "BTCUSDT_1m" → previous age in s
+    const KNOWN_HORIZONS = [1, 5, 15, 60];
+    const _availableHorizons = new Set([1]);  // start with 1m known.
+
+    function showToast(text, durationMs = 6000) {
+      // Avoid stacking multiple toasts.
+      const existing = document.querySelector('.nc-toast');
+      if (existing) existing.remove();
+      const el = document.createElement('div');
+      el.className = 'nc-toast';
+      el.innerHTML = `<div class="nc-toast-dot"></div><div>${text}</div>`;
+      document.body.appendChild(el);
+      setTimeout(() => { el.classList.add('fade-out'); }, durationMs - 500);
+      setTimeout(() => { el.remove(); }, durationMs);
+    }
+
+    function flashAdminCards() {
+      document.querySelectorAll('.admin-metric').forEach(el => {
+        el.classList.remove('fresh-glow');
+        // re-trigger animation
+        void el.offsetWidth;
+        el.classList.add('fresh-glow');
+      });
+    }
+
+    async function pollHorizonAvailability() {
+      // For each KNOWN_HORIZONS, probe BTC (proxy for "is this
+      // horizon trained at all"). If the response carries a valid
+      // dir_acc_mean, we treat the horizon as available.
+      const updates = await Promise.all(KNOWN_HORIZONS.map(async (h) => {
+        try {
+          const res = await fetch(
+            `/api/highfreq/training_report?symbol=BTCUSDT&lite=1&_h=${h}`,
+            { cache: 'no-store' });
+          if (!res.ok) return [h, false];
+          const data = await res.json();
+          // training_report ignores the horizon path right now (always
+          // returns 1m metrics). For non-1m we instead probe via
+          // /api/highfreq/forecast?horizon=H — if has_model is true,
+          // the model exists.
+          if (h === 1) return [h, isFinite(Number(data?.report?.dir_acc_mean))];
+          return [h, true];  // optimistic; refined below
+        } catch { return [h, false]; }
+      }));
+      // Refine non-1m via forecast endpoint (faster than training_report).
+      for (const h of [5, 15, 60]) {
+        try {
+          const res = await fetch(
+            `/api/highfreq/forecast?symbol=BTCUSDT&horizon=${h}`,
+            { cache: 'no-store' });
+          if (res.ok) {
+            const data = await res.json();
+            const hasModel = !!(data?.model?.has_model);
+            // Find and update.
+            const idx = updates.findIndex(([hh]) => hh === h);
+            if (idx >= 0) updates[idx][1] = hasModel;
+          } else if (res.status === 503) {
+            const data = await res.json().catch(() => ({}));
+            const hasModel = data?.reason !== 'no_model_yet';
+            const idx = updates.findIndex(([hh]) => hh === h);
+            if (idx >= 0) updates[idx][1] = hasModel;
+          }
+        } catch { /* keep previous */ }
+      }
+      // Apply: enable/disable pills based on availability.
+      for (const [h, available] of updates) {
+        const pill = document.querySelector(
+          `#horizon-pills .pill[data-horizon="${h}"]`,
+        );
+        if (!pill) continue;
+        const wasDisabled = pill.classList.contains('disabled');
+        if (available && wasDisabled) {
+          pill.classList.remove('disabled');
+          showToast(`✨ Горизонт <strong>${h === 60 ? '1 час' : h + ' мин'}</strong> доступен — модель обучилась.`);
+        } else if (!available && !wasDisabled && h !== 1) {
+          pill.classList.add('disabled');
+        }
+      }
+    }
+
+    function detectFreshModel(symbol, horizon, modelAgeSeconds) {
+      if (!isFinite(modelAgeSeconds)) return;
+      const key = `${symbol}_${horizon}`;
+      const prev = _modelAgeMemo[key];
+      _modelAgeMemo[key] = modelAgeSeconds;
+      // First sample — nothing to compare yet.
+      if (prev === undefined) return;
+      // If age dropped by more than a minute (and is now small),
+      // a new .cbm landed. Show a friendly toast + glow.
+      if (modelAgeSeconds < prev - 60 && modelAgeSeconds < 120) {
+        const horizonLabel = horizon === 60 ? '1 ч' : `${horizon} мин`;
+        const symbolLabel = SYMBOL_DISPLAY[symbol]?.short || symbol;
+        showToast(
+          `✨ Новая модель <strong>${symbolLabel} ${horizonLabel}</strong> — ` +
+          `точность и метрики обновлены.`
+        );
+        flashAdminCards();
+        // Force a full data refresh.
+        refreshAllPredictions();
+        refreshTradesAndStats();
+        refreshFeeTiers();
+      }
     }
     function renderStats(allTrades) {
       const cutoff = Date.now() - 24 * 3600 * 1000;
@@ -1337,6 +1722,103 @@
       }).join('');
 
       grid.innerHTML = headerHTML + rowsHTML;
+
+      // ── Detailed admin metrics: aggregate the report values across
+      // the 3 symbols (use BTC's headline + a short "ETH X.XX, BNB Y.YY"
+      // detail line so all three are surfaced compactly).
+      function setAdmin(id, valueText, subText, cls='muted') {
+        const v = document.getElementById(id);
+        if (!v) return;
+        v.textContent = valueText;
+        v.className = `admin-metric-value ${cls}`;
+        if (subText !== undefined && subText !== null) {
+          const card = v.parentElement;
+          const sub = card?.querySelector('.admin-metric-sub');
+          if (sub) sub.textContent = subText;
+        }
+      }
+      const validReports = reports
+        .map((p, i) => p?.report ? { sym: SYMBOLS[i], r: p.report } : null)
+        .filter(Boolean);
+      if (validReports.length) {
+        const summary = (key, fmt = (x) => Number(x).toFixed(4)) => {
+          const parts = validReports
+            .map(({ sym, r }) => {
+              const v = Number(r[key]);
+              if (!isFinite(v)) return null;
+              return `${SYMBOL_DISPLAY[sym].short} ${fmt(v)}`;
+            })
+            .filter(Boolean);
+          return parts.join(' · ') || '—';
+        };
+        const headline = (key, fmt = (x) => Number(x).toFixed(4)) => {
+          // Use BTC if available else first valid.
+          const pick = validReports.find(x => x.sym === 'BTCUSDT') || validReports[0];
+          const v = Number(pick.r[key]);
+          if (!isFinite(v)) return '—';
+          return fmt(v);
+        };
+
+        // Brier score — lower is better; <0.25 is "beats coinflip".
+        const brierBtc = Number(validReports[0]?.r?.calibrator_brier);
+        setAdmin(
+          'admin-brier',
+          headline('calibrator_brier', x => x.toFixed(3)),
+          summary('calibrator_brier', x => x.toFixed(3)),
+          isFinite(brierBtc) && brierBtc < 0.25 ? 'green' : 'muted',
+        );
+
+        // ECE — lower is better; <0.05 is well-calibrated.
+        const eceBtc = Number(validReports[0]?.r?.calibrator_ece);
+        setAdmin(
+          'admin-ece',
+          headline('calibrator_ece', x => x.toFixed(3)),
+          summary('calibrator_ece', x => x.toFixed(3)),
+          isFinite(eceBtc) && eceBtc < 0.05 ? 'green' : 'muted',
+        );
+
+        // log-loss — lower is better; <0.693 (ln 2) beats coinflip.
+        const llBtc = Number(validReports[0]?.r?.log_loss_mean);
+        setAdmin(
+          'admin-logloss',
+          headline('log_loss_mean', x => x.toFixed(3)),
+          summary('log_loss_mean', x => x.toFixed(3)),
+          isFinite(llBtc) && llBtc < 0.693 ? 'green' : 'muted',
+        );
+
+        // Base rate — % majority class. ~0.5 = symmetric market.
+        setAdmin(
+          'admin-baserate',
+          headline('base_rate', x => `${(x*100).toFixed(1)}%`),
+          summary('base_rate', x => `${(x*100).toFixed(1)}%`),
+          'muted',
+        );
+
+        // Bayesian CI — Beta-Binomial posterior for headline (BTC).
+        const bLow = Number(validReports[0]?.r?.dir_acc_bayesian_ci_low);
+        const bHigh = Number(validReports[0]?.r?.dir_acc_bayesian_ci_high);
+        const bayesText = (isFinite(bLow) && isFinite(bHigh))
+          ? `[${(bLow*100).toFixed(1)}%, ${(bHigh*100).toFixed(1)}%]`
+          : '—';
+        setAdmin(
+          'admin-bayes',
+          bayesText,
+          'BTC headline; см. Wilson выше',
+          (isFinite(bLow) && bLow > 0.5) ? 'green' : 'muted',
+        );
+
+        // n predictions — total OOS sample. >2000 = tight CI.
+        const nBtc = Number(validReports[0]?.r?.n_minutes_after_neutral_drop);
+        const totalN = validReports.reduce(
+          (acc, x) => acc + (Number(x.r.n_minutes_after_neutral_drop) || 0), 0
+        );
+        setAdmin(
+          'admin-npred',
+          isFinite(nBtc) ? String(nBtc) : '—',
+          `всего ${totalN} (BTC + ETH + BNB)`,
+          totalN > 5000 ? 'green' : 'muted',
+        );
+      }
     }
 
     // ─── Fee-tier P&L ───
@@ -1432,11 +1914,15 @@
     refreshModelMetrics();
     refreshFeeTiers();
     refreshCountdowns();
+    pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
     setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
     setInterval(refreshModelMetrics,   METRICS_REFRESH_MS);
     setInterval(refreshFeeTiers,       METRICS_REFRESH_MS);
     setInterval(refreshCountdowns,     1000);
+    // Check every 2 minutes for newly-trained horizons (5m / 60m) so
+    // the user doesn't have to reload the page when a model lands.
+    setInterval(pollHorizonAvailability, 120_000);
   </script>
 </body>
 </html>
