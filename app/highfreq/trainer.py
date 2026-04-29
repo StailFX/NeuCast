@@ -407,6 +407,11 @@ class TrainingReport:
     #: Cutoff time: bars with ``minute >= holdout_cutoff_iso`` were
     #: held out. ``None`` when disabled or no data was available.
     holdout_cutoff_iso: str | None = None
+    #: Calibration diagnostics (release M.δ). ``None`` when no folds
+    #: produced — there are no OOS probabilities to fit a calibrator
+    #: on. Lower is better for both metrics.
+    calibrator_brier: float | None = None
+    calibrator_ece: float | None = None
 
     def to_json(self) -> str:
         """JSON-serialise the report. NaN/Inf are emitted as ``null`` so
@@ -501,12 +506,55 @@ def run_training(
         dir_acc_mean = ll_mean = ci_lo = ci_hi = dir_acc_p_value = float("nan")
 
     weights_path: str | None = None
+    calibrator_brier: float | None = None
+    calibrator_ece: float | None = None
     if out_path is not None and len(X) >= cfg.min_train_samples:
         clf = fit_final_model(X, y, config=cfg)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         clf.save_model(str(out_path), format="cbm")
         weights_path = str(out_path)
         logger.info("saved final model to %s", out_path)
+
+        # Probability calibration (release M.δ, 2026-04-29). Fit Platt
+        # scaler on the pooled OOS predictions from walk-forward CV
+        # — this is the most honest calibration data we have, since
+        # those probabilities were produced on data the model never
+        # saw at fit time. Save alongside the .cbm; predictor loads
+        # both. Computed reliability metrics surface in the report
+        # for the defence-grade reliability diagram.
+        if folds and len(preds) > 0:
+            try:
+                from app.highfreq.calibration import (
+                    calibrator_path_for,
+                    compute_reliability_curve,
+                    fit_platt_calibrator,
+                    save_calibrator,
+                )
+                cal = fit_platt_calibrator(
+                    preds["proba"].to_numpy(),
+                    preds["y_true"].to_numpy(),
+                )
+                cal_path = calibrator_path_for(out_path)
+                save_calibrator(cal, cal_path)
+                logger.info("saved calibrator to %s", cal_path)
+                # Pre-calibration reliability for reporting.
+                rc = compute_reliability_curve(
+                    preds["proba"].to_numpy(),
+                    preds["y_true"].to_numpy(),
+                    n_bins=10,
+                )
+                calibrator_brier = float(rc.brier_score)
+                calibrator_ece = float(rc.ece)
+                logger.info(
+                    "raw model reliability: brier=%.4f ece=%.4f (lower is better)",
+                    calibrator_brier, calibrator_ece,
+                )
+            except Exception:
+                logger.warning(
+                    "calibration fit/save failed (model still saved); "
+                    "predictor will fall back to raw probabilities",
+                    exc_info=True,
+                )
 
     report = TrainingReport(
         symbol=symbol,
@@ -525,6 +573,8 @@ def run_training(
         frozen_holdout_days=int(cfg.frozen_holdout_days),
         n_minutes_in_holdout=n_in_holdout,
         holdout_cutoff_iso=holdout_cutoff_iso,
+        calibrator_brier=calibrator_brier,
+        calibrator_ece=calibrator_ece,
         folds=[asdict(f) for f in folds],
         # Cautious default: claim "we have skill" only when the 95 % CI
         # lower bound is strictly above chance. NaN (no data) keeps the

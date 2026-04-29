@@ -174,6 +174,11 @@ class LivePredictor:
         self._weights_mtime: float | None = None
         self._metrics: dict[str, Any] | None = None
         self._metrics_mtime: float | None = None
+        # Probability calibrator (Platt scaler) co-loaded with the .cbm.
+        # ``None`` when the trainer didn't produce one (legacy model)
+        # or when load failed — predict() falls back to raw probability
+        # in that case.
+        self._calibrator: Any | None = None
         self._reload_lock = threading.Lock()
 
     # ──────────────────────────────────────────────────────────────────
@@ -201,8 +206,20 @@ class LivePredictor:
         proba = self._model.predict_proba(x.reshape(1, -1))
         # Defensive: unusual classifiers may return shape (1,) instead of (1, 2).
         if proba.ndim == 2 and proba.shape[1] >= 2:
-            return float(proba[0, 1])
-        return float(np.asarray(proba).ravel()[-1])
+            raw_p = float(proba[0, 1])
+        else:
+            raw_p = float(np.asarray(proba).ravel()[-1])
+
+        # Apply Platt calibrator if available. No-op fallback when
+        # absent — the trainer may have shipped a model without a
+        # calibrator (legacy or fit failure), in which case the
+        # predictor returns raw probability and the trader's
+        # threshold operates on those.
+        if self._calibrator is not None:
+            from app.highfreq.calibration import apply_calibrator
+            cal_arr = apply_calibrator(self._calibrator, raw_p)
+            return float(cal_arr[0])
+        return raw_p
 
     def feature_importance(self) -> list[dict[str, Any]] | None:
         """Per-feature importance from the loaded CatBoost model.
@@ -382,6 +399,29 @@ class LivePredictor:
                 stat.st_mtime,
                 max(0.0, time.time() - stat.st_mtime),
             )
+
+            # Co-load the Platt calibrator if it sits next to the .cbm.
+            # Fail-soft: missing or unloadable calibrator → raw output.
+            try:
+                from app.highfreq.calibration import (
+                    calibrator_path_for, load_calibrator,
+                )
+                cal_path = calibrator_path_for(self.weights_path)
+                self._calibrator = load_calibrator(cal_path)
+                if self._calibrator is not None:
+                    logger.info(
+                        "LivePredictor: loaded calibrator from %s", cal_path,
+                    )
+                else:
+                    logger.info(
+                        "LivePredictor: no calibrator at %s — using raw proba",
+                        cal_path,
+                    )
+            except Exception:
+                logger.exception(
+                    "LivePredictor: calibrator load failed — using raw proba"
+                )
+                self._calibrator = None
 
     def _maybe_reload_metrics(self) -> None:
         """Reload metrics JSON when the file mtime advances. No lock needed —

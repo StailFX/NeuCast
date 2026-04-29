@@ -349,6 +349,152 @@ def evaluate_one_horizon(
     )
 
 
+def evaluate_joint_horizon(
+    df_secs_by_symbol: dict[str, pd.DataFrame],
+    *,
+    bar_minutes: int,
+    initial_train_bars: int,
+    test_fold_bars: int,
+    step_bars: int,
+    neutral_band_bps: float,
+    catboost_iterations: int = 200,
+    catboost_depth: int = 5,
+    catboost_learning_rate: float = 0.05,
+    random_seed: int = 42,
+) -> HorizonEvalRow:
+    """Train ONE model on pooled BTC+ETH+BNB data with symbol-id features.
+
+    Walk-forward CV operates on the chronologically-sorted pooled
+    dataset. Each fold trains on past pooled bars and tests on the
+    next slice — the test set may contain multiple symbols.
+    """
+    from app.highfreq.feature_pipeline_joint import (
+        JOINT_FEATURE_COLUMNS,
+        make_joint_supervised,
+    )
+    from app.highfreq.feature_pipeline import aggregate_to_minute
+
+    n_seconds_loaded = sum(len(df) for df in df_secs_by_symbol.values())
+
+    # Aggregate pooled for the diagnostic n_bars_after_aggregation.
+    pooled_secs = pd.concat(df_secs_by_symbol.values(), ignore_index=True, sort=False)
+    minute_df = aggregate_to_minute(pooled_secs, bar_minutes=bar_minutes)
+    n_bars_agg = int(len(minute_df))
+
+    X, y, meta = make_joint_supervised(
+        df_secs_by_symbol,
+        neutral_band_bps=neutral_band_bps,
+        bar_minutes=bar_minutes,
+    )
+    n_bars_kept = int(len(X))
+
+    # mean |return| in bps over post-aggregation bars (across all symbols).
+    if not minute_df.empty:
+        sym_df = minute_df.sort_values(["symbol", "minute"]).copy()
+        sym_df["mp_close_next"] = sym_df.groupby("symbol")["microprice_close"].shift(-1)
+        sym_df["return_bps"] = (
+            (sym_df["mp_close_next"] - sym_df["microprice_close"])
+            / sym_df["microprice_close"] * 1e4
+        )
+        mean_abs_return = (
+            float(sym_df["return_bps"].abs().mean())
+            if sym_df["return_bps"].notna().any() else None
+        )
+    else:
+        mean_abs_return = None
+
+    if n_bars_kept < initial_train_bars + test_fold_bars:
+        return HorizonEvalRow(
+            symbol="JOINT", bar_minutes=bar_minutes, feature_set="joint",
+            n_seconds_loaded=n_seconds_loaded,
+            n_bars_after_aggregation=n_bars_agg,
+            n_bars_after_neutral_drop=n_bars_kept,
+            n_folds=0,
+            dir_acc=None, dir_acc_ci_low=None, dir_acc_ci_high=None,
+            dir_acc_p_value=None,
+            base_rate=float(max(y.mean(), 1 - y.mean())) if len(y) else None,
+            mean_abs_return_bps=mean_abs_return,
+            pnl_per_trade_bps={k: None for k in FEE_TIERS_BPS},
+        )
+
+    from catboost import CatBoostClassifier
+
+    folds_y_true: list[int] = []
+    folds_y_pred: list[int] = []
+    n_folds = 0
+    train_end = initial_train_bars
+    while train_end + test_fold_bars <= n_bars_kept:
+        X_tr = X.iloc[:train_end].to_numpy()
+        y_tr = y.iloc[:train_end].to_numpy()
+        X_te = X.iloc[train_end:train_end + test_fold_bars].to_numpy()
+        y_te = y.iloc[train_end:train_end + test_fold_bars].to_numpy()
+        if len(set(y_tr.tolist())) < 2:
+            train_end += step_bars
+            continue
+        clf = CatBoostClassifier(
+            iterations=catboost_iterations,
+            depth=catboost_depth,
+            learning_rate=catboost_learning_rate,
+            loss_function="Logloss",
+            thread_count=2,
+            random_seed=random_seed,
+            verbose=False,
+            allow_writing_files=False,
+        )
+        clf.fit(X_tr, y_tr)
+        y_hat = (clf.predict_proba(X_te)[:, 1] > 0.5).astype(int)
+        folds_y_true.extend(y_te.tolist())
+        folds_y_pred.extend(y_hat.tolist())
+        n_folds += 1
+        train_end += step_bars
+
+    if not folds_y_true:
+        return HorizonEvalRow(
+            symbol="JOINT", bar_minutes=bar_minutes, feature_set="joint",
+            n_seconds_loaded=n_seconds_loaded,
+            n_bars_after_aggregation=n_bars_agg,
+            n_bars_after_neutral_drop=n_bars_kept,
+            n_folds=0,
+            dir_acc=None, dir_acc_ci_low=None, dir_acc_ci_high=None,
+            dir_acc_p_value=None,
+            base_rate=float(max(y.mean(), 1 - y.mean())) if len(y) else None,
+            mean_abs_return_bps=mean_abs_return,
+            pnl_per_trade_bps={k: None for k in FEE_TIERS_BPS},
+        )
+
+    yt = np.array(folds_y_true)
+    yp = np.array(folds_y_pred)
+    n_correct = int((yt == yp).sum())
+    n_total = int(len(yt))
+    dir_acc = n_correct / n_total
+    ci_lo, ci_hi = _wilson_ci(n_correct, n_total)
+    p_value = _binom_p_value_greater_half(n_correct, n_total)
+    base_rate = float(max(yt.mean(), 1 - yt.mean()))
+
+    pnl_tiers = {
+        tier: _expected_pnl_bps(
+            dir_acc=dir_acc, mean_abs_return_bps=mean_abs_return,
+            fee_bps_per_side=fee_bps,
+        )
+        for tier, fee_bps in FEE_TIERS_BPS.items()
+    }
+
+    return HorizonEvalRow(
+        symbol="JOINT", bar_minutes=bar_minutes, feature_set="joint",
+        n_seconds_loaded=n_seconds_loaded,
+        n_bars_after_aggregation=n_bars_agg,
+        n_bars_after_neutral_drop=n_bars_kept,
+        n_folds=n_folds,
+        dir_acc=dir_acc,
+        dir_acc_ci_low=ci_lo,
+        dir_acc_ci_high=ci_hi,
+        dir_acc_p_value=p_value,
+        base_rate=base_rate,
+        mean_abs_return_bps=mean_abs_return,
+        pnl_per_trade_bps=pnl_tiers,
+    )
+
+
 def _verdict(pnl_bps: float | None) -> str:
     if pnl_bps is None:
         return "—"
@@ -398,11 +544,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="bar sizes in minutes to compare")
     p.add_argument("--feature-sets", nargs="+",
                    default=["microstructure"],
-                   choices=["microstructure", "long_horizon", "cross_asset"],
+                   choices=["microstructure", "long_horizon", "cross_asset", "joint"],
                    help="which feature pipelines to evaluate. Pass multiple "
                         "to compare side-by-side. cross_asset uses BTC as "
                         "reference for ETH/BNB; for BTC itself it falls back "
-                        "to base + lagged features only.")
+                        "to base + lagged features only. joint trains ONE "
+                        "model on all 3 symbols pooled with symbol-id features "
+                        "— evaluated against held-out chronological tail of "
+                        "the pooled data.")
     p.add_argument("--since-hours", type=float, default=96.0)
     p.add_argument("--neutral-band-bps", type=float, default=None,
                    help="override default. Auto-scales as sqrt(bar_minutes) × 1bp "
@@ -438,6 +587,51 @@ def main(argv: list[str] | None = None) -> int:
         btc_df_secs = load_seconds(dsn, symbol="BTCUSDT", since_hours=args.since_hours)
         logger.info("loaded %d BTC rows for cross-asset reference", len(btc_df_secs))
 
+    # If 'joint' is requested, special-case: load all symbols' seconds
+    # ONCE, train a single pooled model, and short-circuit the per-
+    # symbol loop for the joint feature_set.
+    if "joint" in args.feature_sets:
+        logger.info("=" * 60)
+        logger.info("loading all symbols for joint training")
+        joint_secs = {
+            sym: load_seconds(dsn, symbol=sym, since_hours=args.since_hours)
+            for sym in args.symbols
+        }
+        for sym, df in joint_secs.items():
+            logger.info("  %s: %d seconds", sym, len(df))
+        for h in args.horizons:
+            initial_train_bars = max(60, int(24 * 60 / h))
+            test_fold_bars = max(5, int(60 / h))
+            step_bars = test_fold_bars
+            neutral = args.neutral_band_bps if args.neutral_band_bps is not None \
+                else 1.0 * math.sqrt(h)
+            logger.info(
+                "joint @ %dm neutral=%.2fbp init_train=%d test=%d",
+                h, neutral, initial_train_bars, test_fold_bars,
+            )
+            try:
+                row = evaluate_joint_horizon(
+                    joint_secs, bar_minutes=h,
+                    initial_train_bars=initial_train_bars,
+                    test_fold_bars=test_fold_bars,
+                    step_bars=step_bars,
+                    neutral_band_bps=neutral,
+                )
+                rows.append(row)
+                if row.dir_acc is None:
+                    logger.info(
+                        "joint @ %dm: insufficient data (n=%d)",
+                        h, row.n_bars_after_neutral_drop,
+                    )
+                else:
+                    logger.info(
+                        "joint @ %dm: dir_acc=%.4f [%.3f, %.3f] p=%.2e folds=%d",
+                        h, row.dir_acc, row.dir_acc_ci_low,
+                        row.dir_acc_ci_high, row.dir_acc_p_value, row.n_folds,
+                    )
+            except Exception:
+                logger.exception("joint eval failed at %dm", h)
+
     for symbol in args.symbols:
         logger.info("=" * 60)
         logger.info("loading %s seconds (since_hours=%g)", symbol, args.since_hours)
@@ -457,6 +651,10 @@ def main(argv: list[str] | None = None) -> int:
                 # original 1bp; at 60m it's 1*sqrt(60) ≈ 7.7bp.
                 neutral = 1.0 * math.sqrt(h)
             for fset in args.feature_sets:
+                if fset == "joint":
+                    # Joint is symbol-agnostic; handled in the special-case
+                    # block above. Skip here so we don't double-evaluate.
+                    continue
                 logger.info(
                     "  horizon=%dm fset=%s neutral=%.2fbp init_train=%d test=%d",
                     h, fset, neutral, initial_train_bars, test_fold_bars,
