@@ -10,13 +10,11 @@
 
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
 
   <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-800.woff2">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
 
   <style>
-    /* ── Self-hosted Inter (same as landing) ── */
     @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
       src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }
     @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
@@ -29,7 +27,6 @@
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    /* Same design tokens as landing.html — single source of truth. */
     :root {
       --green: #10b981;
       --green-dark: #059669;
@@ -41,6 +38,7 @@
       --bg: #060a13;
       --bg-card: rgba(12, 20, 35, 0.95);
       --bg-card-soft: rgba(12, 20, 35, 0.85);
+      --bg-card-elev: rgba(20, 28, 45, 0.95);
       --border: rgba(51, 65, 85, 0.35);
       --border-soft: rgba(51, 65, 85, 0.2);
       --text: #f1f5f9;
@@ -49,7 +47,6 @@
     }
 
     html { scroll-behavior: smooth; }
-
     body {
       font-family: 'Inter', 'Inter-fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
@@ -58,7 +55,7 @@
       min-height: 100vh;
     }
 
-    /* ── Background grid + orbs (copied from landing for style continuity) ── */
+    /* Background grid + orbs */
     body::before {
       content: '';
       position: fixed;
@@ -70,30 +67,17 @@
       z-index: 0;
       pointer-events: none;
     }
-    .orb {
-      position: fixed;
-      border-radius: 50%;
-      filter: blur(40px);
-      pointer-events: none;
-      z-index: 0;
-      transform: translateZ(0);
-      backface-visibility: hidden;
-      contain: layout style paint;
-    }
+    .orb { position: fixed; border-radius: 50%; filter: blur(40px); pointer-events: none;
+           z-index: 0; transform: translateZ(0); contain: layout style paint; }
     .orb-1 { width: 420px; height: 420px; background: rgba(16, 185, 129, 0.07); top: -120px; left: -80px; }
     .orb-2 { width: 360px; height: 360px; background: rgba(59, 130, 246, 0.06); top: 40%; right: -100px; }
     .orb-3 { width: 320px; height: 320px; background: rgba(167, 139, 250, 0.05); bottom: -80px; left: 30%; }
     @media (max-width: 767px) { .orb-3 { display: none; } }
 
-    /* ── Navbar (same as landing) ── */
+    /* Navbar */
     .nav {
-      position: fixed;
-      top: 0;
-      width: 100%;
-      z-index: 100;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      position: fixed; top: 0; width: 100%; z-index: 100;
+      display: flex; justify-content: space-between; align-items: center;
       padding: 1rem 3rem;
       background: rgba(6, 10, 19, 0.85);
       border-bottom: 1px solid var(--border);
@@ -103,9 +87,12 @@
         .nav { backdrop-filter: blur(24px); background: rgba(6, 10, 19, 0.6); }
       }
     }
-    .nav-brand {
-      display: flex; align-items: center; gap: 0.75rem; text-decoration: none;
+    @media (max-width: 700px) {
+      .nav { padding: 0.85rem 1.25rem; }
+      .nav-name { font-size: 1.05rem; }
+      .nav-btn { padding: 0.45rem 0.9rem; font-size: 0.78rem; }
     }
+    .nav-brand { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; }
     .nav-logo {
       width: 38px; height: 38px;
       background: linear-gradient(135deg, var(--green), var(--blue));
@@ -114,23 +101,18 @@
       box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
     }
     .nav-logo svg { width: 18px; height: 18px; fill: white; }
-    .nav-name { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
-    .nav-links { display: flex; gap: 0.75rem; align-items: center; }
+    .nav-name { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
+    .nav-links { display: flex; gap: 0.5rem; align-items: center; }
     .nav-btn {
-      padding: 0.55rem 1.3rem;
-      font-size: 0.85rem;
-      font-weight: 500;
+      padding: 0.55rem 1.1rem;
+      font-size: 0.85rem; font-weight: 500;
       font-family: inherit;
       border-radius: 10px;
       text-decoration: none;
       transition: all 0.25s;
       border: 1px solid transparent;
     }
-    .nav-btn-ghost {
-      color: var(--text-dim);
-      border-color: var(--border);
-      background: transparent;
-    }
+    .nav-btn-ghost { color: var(--text-dim); border-color: var(--border); }
     .nav-btn-ghost:hover { color: var(--text); border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.05); }
     .nav-btn-primary {
       color: #fff;
@@ -140,77 +122,122 @@
     }
     .nav-btn-primary:hover { box-shadow: 0 4px 24px rgba(16, 185, 129, 0.35); transform: translateY(-1px); }
 
-    /* ── Hero ── */
+    /* Hero */
     .hero {
-      position: relative;
-      z-index: 1;
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 9rem 2rem 3rem;
+      position: relative; z-index: 1;
+      max-width: 1100px; margin: 0 auto;
+      padding: 8rem 2rem 2rem;
       text-align: center;
     }
     .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.6rem;
+      display: inline-flex; align-items: center; gap: 0.6rem;
       padding: 0.45rem 1.15rem;
-      font-size: 0.78rem;
-      font-weight: 600;
+      font-size: 0.78rem; font-weight: 600;
       color: var(--green);
       background: rgba(16, 185, 129, 0.08);
       border: 1px solid rgba(16, 185, 129, 0.2);
       border-radius: 50px;
-      margin-bottom: 1.75rem;
+      margin-bottom: 1.5rem;
       letter-spacing: 0.02em;
     }
     .hero-badge .dot {
       width: 7px; height: 7px;
-      background: var(--green);
-      border-radius: 50%;
+      background: var(--green); border-radius: 50%;
       animation: pulse 2s ease-in-out infinite;
       box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
     }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.85); }
-    }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
     h1 {
       font-size: clamp(2.2rem, 5vw, 3.6rem);
-      font-weight: 800;
-      line-height: 1.1;
+      font-weight: 800; line-height: 1.1;
       letter-spacing: -0.04em;
-      margin-bottom: 1.25rem;
+      margin-bottom: 1rem;
       color: var(--text);
     }
     h1 .gradient {
       background: linear-gradient(135deg, #34d399, #60a5fa, #a78bfa);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
       background-clip: text;
     }
     .hero-sub {
-      font-size: 1.1rem;
+      font-size: 1.05rem;
       color: var(--text-muted);
       line-height: 1.7;
       max-width: 640px;
-      margin: 0 auto 2rem;
+      margin: 0 auto 1.5rem;
     }
-    .hero-meta {
+
+    /* ── Filter bar (horizon + venue selectors) ── */
+    .filter-bar {
+      max-width: 1100px;
+      margin: 0 auto 2.5rem;
+      padding: 0 2rem;
+      position: relative; z-index: 1;
       display: flex;
-      gap: 1.25rem;
-      justify-content: center;
+      gap: 1.5rem;
       flex-wrap: wrap;
-      font-size: 0.85rem;
-      color: var(--text-dim);
+      justify-content: center;
     }
-    .hero-meta .dot { color: var(--text-dim); margin: 0 0.5rem; opacity: 0.5; }
+    .filter-group {
+      display: flex; flex-direction: column; gap: 0.45rem;
+      align-items: center;
+    }
+    .filter-label {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+    }
+    .pill-group {
+      display: flex;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.3rem;
+      gap: 0.25rem;
+    }
+    .pill {
+      padding: 0.45rem 0.95rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+      position: relative;
+    }
+    .pill:hover { color: var(--text); }
+    .pill.active {
+      color: #fff;
+      background: linear-gradient(135deg, var(--green), var(--green-dark));
+      box-shadow: 0 2px 8px rgba(16, 185, 129, 0.25);
+    }
+    .pill.disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      position: relative;
+    }
+    .pill.disabled::after {
+      content: 'скоро';
+      position: absolute;
+      top: -8px; right: -4px;
+      font-size: 0.55rem;
+      background: var(--amber);
+      color: #000;
+      padding: 0.05rem 0.3rem;
+      border-radius: 4px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+    }
 
     /* ── Cards grid ── */
     .container {
-      position: relative;
-      z-index: 1;
-      max-width: 1100px;
-      margin: 0 auto;
+      position: relative; z-index: 1;
+      max-width: 1100px; margin: 0 auto;
       padding: 0 2rem;
     }
     .cards {
@@ -228,398 +255,247 @@
       border-radius: 20px;
       padding: 1.75rem;
       overflow: hidden;
-      transition: border-color 0.4s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: border-color 0.4s, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    .card::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      border-radius: 20px;
-      padding: 1px;
-      opacity: 0;
-      transition: opacity 0.4s;
-      pointer-events: none;
-      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask-composite: xor;
-      mask-composite: exclude;
-    }
+    .card:hover { transform: translateY(-2px); }
     .card.up {
-      border-color: rgba(16, 185, 129, 0.35);
-      box-shadow: 0 12px 48px rgba(16, 185, 129, 0.08);
-    }
-    .card.up::before {
-      background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), transparent 60%);
-      opacity: 1;
+      border-color: rgba(16, 185, 129, 0.4);
+      box-shadow: 0 12px 48px rgba(16, 185, 129, 0.12);
     }
     .card.down {
-      border-color: rgba(239, 68, 68, 0.35);
-      box-shadow: 0 12px 48px rgba(239, 68, 68, 0.08);
+      border-color: rgba(239, 68, 68, 0.4);
+      box-shadow: 0 12px 48px rgba(239, 68, 68, 0.12);
     }
-    .card.down::before {
-      background: linear-gradient(135deg, rgba(239, 68, 68, 0.3), transparent 60%);
-      opacity: 1;
-    }
-    .card.neutral {
-      border-color: rgba(245, 158, 11, 0.3);
-    }
-    .card.loading {
-      opacity: 0.55;
-    }
+    .card.neutral { border-color: rgba(245, 158, 11, 0.3); }
+    .card.loading { opacity: 0.55; }
 
     .card-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
+      display: flex; justify-content: space-between; align-items: flex-start;
       margin-bottom: 1rem;
     }
-    .card-symbol {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
+    .card-symbol { display: flex; align-items: center; gap: 0.6rem; }
     .card-icon {
       width: 36px; height: 36px;
       border-radius: 10px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 0.85rem;
-      font-weight: 800;
-      color: #fff;
+      font-size: 0.78rem; font-weight: 800; color: #fff;
     }
     .card-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
     .card-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
     .card-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
-    .card-symbol-name {
-      font-size: 1.05rem;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-    }
-    .card-symbol-pair {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      font-weight: 500;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
+    .card-symbol-name { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
+    .card-symbol-pair { font-size: 0.7rem; color: var(--text-dim); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
     .card-horizon {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      background: rgba(255, 255, 255, 0.04);
-      padding: 0.3rem 0.65rem;
-      border-radius: 8px;
+      font-size: 0.7rem; color: var(--text-dim);
+      background: rgba(255,255,255,0.04);
+      padding: 0.3rem 0.65rem; border-radius: 8px;
       letter-spacing: 0.04em;
-      white-space: nowrap;
-    }
-
-    .card-price {
-      font-size: 2.2rem;
-      font-weight: 800;
-      letter-spacing: -0.03em;
-      font-variant-numeric: tabular-nums;
-      line-height: 1;
-      margin-bottom: 0.4rem;
-    }
-    .card-price-sub {
-      font-size: 0.78rem;
-      color: var(--text-dim);
-      margin-bottom: 1.25rem;
-      font-variant-numeric: tabular-nums;
     }
 
     .card-prediction {
-      background: rgba(255, 255, 255, 0.025);
+      background: rgba(255,255,255,0.025);
       border: 1px solid var(--border-soft);
       border-radius: 14px;
       padding: 1.1rem;
       margin-bottom: 1rem;
     }
     .card-prediction-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 0.75rem;
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 0.85rem;
     }
-    .card-prediction-label {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-weight: 600;
-    }
-    .card-prediction-time {
-      font-size: 0.72rem;
-      color: var(--text-muted);
-      font-variant-numeric: tabular-nums;
-    }
-    .verdict-row {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
+    .card-prediction-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+    .card-prediction-time { font-size: 0.72rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .verdict-row { display: flex; align-items: center; gap: 1rem; }
     .arrow {
-      width: 56px;
-      height: 56px;
-      flex-shrink: 0;
+      width: 56px; height: 56px; flex-shrink: 0;
       border-radius: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 2.3rem;
-      font-weight: 800;
-      line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2.3rem; font-weight: 800; line-height: 1;
     }
-    .arrow.up { color: var(--green); background: rgba(16, 185, 129, 0.1); }
-    .arrow.down { color: var(--red); background: rgba(239, 68, 68, 0.1); }
-    .arrow.neutral { color: var(--amber); background: rgba(245, 158, 11, 0.1); }
+    .arrow.up { color: var(--green); background: rgba(16, 185, 129, 0.12); }
+    .arrow.down { color: var(--red); background: rgba(239, 68, 68, 0.12); }
+    .arrow.neutral { color: var(--amber); background: rgba(245, 158, 11, 0.12); }
     .arrow.loading { color: var(--text-dim); background: rgba(255,255,255,0.03); font-size: 1.4rem; }
-    .verdict {
-      flex: 1;
-      min-width: 0;
-    }
+    .verdict { flex: 1; min-width: 0; }
     .verdict-text {
-      font-size: 1.4rem;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-      line-height: 1.15;
+      font-size: 1.4rem; font-weight: 700;
+      letter-spacing: -0.01em; line-height: 1.15;
       margin-bottom: 0.4rem;
     }
     .verdict-text.up { color: var(--green); }
     .verdict-text.down { color: var(--red); }
     .verdict-text.neutral { color: var(--amber); }
     .verdict-text.loading { color: var(--text-dim); font-size: 0.95rem; font-weight: 500; }
-    .confidence-bar {
-      height: 5px;
-      background: rgba(255, 255, 255, 0.05);
-      border-radius: 3px;
-      overflow: hidden;
-      margin-bottom: 0.4rem;
-    }
-    .confidence-fill {
-      height: 100%;
-      transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s;
-      border-radius: 3px;
-    }
+    .confidence-bar { height: 5px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; margin-bottom: 0.4rem; }
+    .confidence-fill { height: 100%; transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s; border-radius: 3px; }
     .confidence-fill.up { background: linear-gradient(90deg, var(--green), #34d399); }
     .confidence-fill.down { background: linear-gradient(90deg, var(--red), #fb7185); }
     .confidence-fill.neutral { background: linear-gradient(90deg, var(--amber), #fbbf24); }
-    .confidence-text {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      font-variant-numeric: tabular-nums;
-    }
+    .confidence-text { font-size: 0.75rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
     .card-meta-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 0.75rem;
-      font-size: 0.72rem;
-      color: var(--text-dim);
+      display: flex; justify-content: space-between; gap: 0.75rem;
+      font-size: 0.72rem; color: var(--text-dim);
       padding-top: 0.85rem;
       border-top: 1px solid var(--border-soft);
     }
-    .card-meta-row span { display: inline-flex; align-items: center; gap: 0.35rem; }
 
-    /* ── Section base ── */
-    .section {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 3rem 2rem;
-      position: relative;
-      z-index: 1;
-    }
-    .section-label {
-      display: inline-block;
-      font-size: 0.72rem;
-      font-weight: 700;
-      color: var(--green);
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      margin-bottom: 0.75rem;
-    }
-    .section h2 {
-      font-size: clamp(1.6rem, 3vw, 2rem);
-      font-weight: 700;
-      letter-spacing: -0.025em;
-      margin-bottom: 0.75rem;
-    }
-    .section-sub {
-      color: var(--text-muted);
-      max-width: 580px;
-      line-height: 1.6;
-      margin-bottom: 2rem;
-    }
-
-    /* ── How-it-works grid ── */
-    .how-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1rem;
-    }
-    @media (max-width: 800px) { .how-grid { grid-template-columns: 1fr; } }
-    .how-card {
-      background: var(--bg-card-soft);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1.5rem;
-    }
-    .how-icon {
-      width: 44px; height: 44px;
-      border-radius: 12px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1.2rem;
-      font-weight: 700;
-      margin-bottom: 1rem;
-    }
-    .how-icon.green { background: rgba(16, 185, 129, 0.12); color: var(--green); }
-    .how-icon.blue  { background: rgba(59, 130, 246, 0.12); color: var(--blue); }
-    .how-icon.amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); }
-    .how-card h3 {
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 0.4rem;
-    }
-    .how-card p {
-      color: var(--text-muted);
-      font-size: 0.9rem;
-      line-height: 1.55;
-    }
-
-    /* ── Stats strip ── */
+    /* ── Stats strip — bigger & more visual ── */
     .stats {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 18px;
-      padding: 1.6rem 1.25rem;
-      margin-bottom: 2rem;
+      padding: 1.75rem 1.5rem;
+      margin-bottom: 1.5rem;
+      gap: 1rem;
     }
     @media (max-width: 700px) { .stats { grid-template-columns: repeat(2, 1fr); padding: 1.25rem 0.75rem; } }
     .stat {
-      text-align: center;
-      position: relative;
+      text-align: center; position: relative;
       padding: 0 0.5rem;
     }
     @media (min-width: 701px) {
       .stat:not(:last-child)::after {
         content: '';
-        position: absolute;
-        right: 0; top: 15%; height: 70%;
-        width: 1px;
-        background: var(--border);
+        position: absolute; right: 0; top: 18%; height: 64%;
+        width: 1px; background: var(--border);
       }
     }
     .stat-value {
-      font-size: 1.85rem;
-      font-weight: 800;
-      letter-spacing: -0.025em;
-      line-height: 1;
+      font-size: clamp(1.6rem, 3.2vw, 2.2rem);
+      font-weight: 800; letter-spacing: -0.025em; line-height: 1;
       font-variant-numeric: tabular-nums;
     }
-    .stat-value.green    { color: var(--green); }
-    .stat-value.red      { color: var(--red); }
-    .stat-value.amber    { color: var(--amber); }
-    .stat-value.muted    { color: var(--text-muted); }
+    .stat-value.green { color: var(--green); }
+    .stat-value.red { color: var(--red); }
+    .stat-value.amber { color: var(--amber); }
+    .stat-value.muted { color: var(--text-muted); }
     .stat-label {
-      font-size: 0.7rem;
-      color: var(--text-muted);
-      margin-top: 0.4rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      font-weight: 500;
+      font-size: 0.72rem; color: var(--text-muted); margin-top: 0.5rem;
+      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
     }
-    .stat-helper {
-      font-size: 0.68rem;
-      color: var(--text-dim);
-      margin-top: 0.2rem;
-    }
+    .stat-helper { font-size: 0.68rem; color: var(--text-dim); margin-top: 0.25rem; }
 
-    /* ── Recent trades ── */
-    .trades-card {
+    /* ── Section base ── */
+    .section {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2rem;
+      position: relative; z-index: 1;
+    }
+    .section-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem; }
+    .section-head-text { flex: 1; min-width: 240px; }
+    .section-label {
+      display: inline-block;
+      font-size: 0.72rem; font-weight: 700;
+      color: var(--green);
+      text-transform: uppercase; letter-spacing: 0.12em;
+      margin-bottom: 0.5rem;
+    }
+    .section h2 {
+      font-size: clamp(1.5rem, 2.8vw, 1.9rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.5rem;
+    }
+    .section-sub { color: var(--text-muted); max-width: 600px; line-height: 1.6; font-size: 0.95rem; }
+
+    /* ── Per-symbol model metrics table ── */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(5, 1fr);
+      gap: 0;
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 18px;
-      padding: 1.6rem;
+      overflow: hidden;
     }
-    .trades-list {
-      display: flex;
-      flex-direction: column;
+    @media (max-width: 750px) {
+      .metrics-grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .metric-cell.metric-head { display: none; }
+      .metric-cell.symbol-cell {
+        grid-column: 1 / -1;
+        background: rgba(255,255,255,0.04) !important;
+        font-size: 1rem;
+        padding: 0.85rem 1rem !important;
+      }
+      .metric-cell:not(.symbol-cell):not(.metric-head)::before {
+        content: attr(data-mobile-label) ': ';
+        color: var(--text-dim);
+        font-weight: 500;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-right: 0.4rem;
+        display: inline-block;
+      }
     }
-    .trade {
-      display: grid;
-      grid-template-columns: 36px 1fr auto auto;
-      gap: 0.75rem;
-      align-items: center;
-      padding: 0.85rem 0;
+    .metric-cell {
+      padding: 0.95rem 1rem;
+      font-size: 0.9rem;
       border-bottom: 1px solid var(--border-soft);
     }
-    .trade:last-child { border-bottom: none; }
-    .trade-icon {
-      width: 32px; height: 32px;
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 0.7rem;
-      font-weight: 800;
-      color: #fff;
-    }
-    .trade-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
-    .trade-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
-    .trade-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
-    .trade-meta {
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 0.15rem;
-    }
-    .trade-side {
-      font-size: 0.92rem;
-      font-weight: 600;
-    }
-    .trade-side.long { color: var(--green); }
-    .trade-side.short { color: var(--red); }
-    .trade-when {
-      font-size: 0.72rem;
+    .metric-cell.metric-head {
+      font-size: 0.7rem; font-weight: 700;
       color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      background: rgba(255,255,255,0.03);
     }
-    .trade-side-pill {
-      font-size: 0.62rem;
-      font-weight: 700;
-      padding: 0.15rem 0.5rem;
-      border-radius: 5px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      align-self: flex-start;
-      margin-bottom: 0.2rem;
-      display: inline-block;
+    .metric-cell.symbol-cell { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; }
+    .metric-cell .mini-icon {
+      width: 26px; height: 26px;
+      border-radius: 7px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 0.62rem; font-weight: 800; color: #fff;
     }
-    .trade-side-pill.long  { background: rgba(16, 185, 129, 0.1); color: var(--green); }
-    .trade-side-pill.short { background: rgba(239, 68, 68, 0.1); color: var(--red); }
+    .metric-cell .mini-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .metric-cell .mini-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .metric-cell .mini-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .metric-num { font-variant-numeric: tabular-nums; font-weight: 600; }
+    .metric-num.good { color: var(--green); }
+    .metric-num.bad  { color: var(--red); }
+    .metric-num.muted { color: var(--text-dim); }
+    .metric-row-loading .metric-cell { color: var(--text-dim); }
 
-    .trade-pnl {
-      text-align: right;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      font-size: 0.95rem;
+    /* ── Fee tier comparison ── */
+    .fee-tiers {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
     }
-    .trade-pnl.positive { color: var(--green); }
-    .trade-pnl.negative { color: var(--red); }
-    .trade-bps {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      font-variant-numeric: tabular-nums;
-    }
-    .empty-state {
-      color: var(--text-dim);
+    .tier-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.25rem 1.1rem;
       text-align: center;
-      padding: 2rem 1rem;
-      font-size: 0.95rem;
+      transition: border-color 0.3s;
     }
+    .tier-card.profitable {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.05), var(--bg-card));
+    }
+    .tier-card.loss {
+      border-color: rgba(239, 68, 68, 0.25);
+    }
+    .tier-name { font-size: 0.78rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 0.3rem; }
+    .tier-fee { font-size: 0.7rem; color: var(--text-dim); margin-bottom: 0.7rem; }
+    .tier-pnl { font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .tier-pnl.green { color: var(--green); }
+    .tier-pnl.red { color: var(--red); }
+    .tier-pnl.muted { color: var(--text-muted); }
+    .tier-sub { font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem; }
 
-    /* ── Honesty section: why trades go negative on retail fees ── */
+    /* ── Honesty block ── */
     .honesty {
       background: rgba(245, 158, 11, 0.04);
       border: 1px solid rgba(245, 158, 11, 0.2);
       border-radius: 16px;
       padding: 1.5rem 1.6rem;
-      margin-bottom: 2rem;
       display: grid;
       grid-template-columns: auto 1fr;
       gap: 1.1rem;
@@ -631,52 +507,78 @@
       background: rgba(245, 158, 11, 0.15);
       color: var(--amber);
       display: flex; align-items: center; justify-content: center;
-      font-size: 1.1rem;
-      font-weight: 800;
+      font-size: 1.1rem; font-weight: 800;
       flex-shrink: 0;
     }
-    .honesty h3 {
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 0.5rem;
-      color: var(--text);
-    }
-    .honesty p {
-      color: var(--text-muted);
-      font-size: 0.9rem;
-      line-height: 1.6;
-    }
+    .honesty h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .honesty p { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; }
     .honesty p + p { margin-top: 0.5rem; }
     .honesty code {
-      background: rgba(255, 255, 255, 0.06);
-      padding: 0.1rem 0.4rem;
-      border-radius: 4px;
+      background: rgba(255,255,255,0.06);
+      padding: 0.1rem 0.4rem; border-radius: 4px;
       font-size: 0.85rem;
     }
+
+    /* ── Trades feed ── */
+    .trades-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.25rem 1.5rem;
+    }
+    .trade {
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
+      gap: 0.85rem;
+      align-items: center;
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .trade:last-child { border-bottom: none; }
+    .trade-icon {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem; font-weight: 800; color: #fff;
+    }
+    .trade-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .trade-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .trade-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .trade-meta { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+    .trade-side-pill {
+      font-size: 0.62rem; font-weight: 700;
+      padding: 0.15rem 0.5rem; border-radius: 5px;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      align-self: flex-start; display: inline-block;
+    }
+    .trade-side-pill.long { background: rgba(16, 185, 129, 0.12); color: var(--green); }
+    .trade-side-pill.short { background: rgba(239, 68, 68, 0.12); color: var(--red); }
+    .trade-when { font-size: 0.75rem; color: var(--text-dim); }
+    .trade-pnl-cell { text-align: right; }
+    .trade-pnl { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
+    .trade-pnl.positive { color: var(--green); }
+    .trade-pnl.negative { color: var(--red); }
+    .trade-bps { font-size: 0.7rem; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+    .empty-state { color: var(--text-dim); text-align: center; padding: 2rem 1rem; font-size: 0.95rem; }
 
     /* ── Footer ── */
     footer {
       max-width: 1100px;
-      margin: 4rem auto 0;
+      margin: 3rem auto 0;
       padding: 2rem;
       border-top: 1px solid var(--border);
       color: var(--text-dim);
-      font-size: 0.8rem;
-      line-height: 1.7;
+      font-size: 0.8rem; line-height: 1.7;
       text-align: center;
-      position: relative;
-      z-index: 1;
+      position: relative; z-index: 1;
     }
     footer p { margin: 0.3rem 0; }
-    footer a { color: var(--text-muted); }
+    footer a { color: var(--text-muted); text-decoration: none; }
+    footer a:hover { color: var(--text); }
     footer .footer-links {
-      display: flex;
-      gap: 1.25rem;
-      justify-content: center;
-      margin-top: 0.75rem;
+      display: flex; gap: 1.25rem; justify-content: center; margin-top: 0.75rem; flex-wrap: wrap;
     }
 
-    /* ── Reduced motion ── */
     @media (prefers-reduced-motion: reduce) {
       .hero-badge .dot { animation: none; }
       .card { transition: none; }
@@ -685,12 +587,10 @@
   </style>
 </head>
 <body>
-  <!-- background orbs (purely decorative) -->
   <div class="orb orb-1"></div>
   <div class="orb orb-2"></div>
   <div class="orb orb-3"></div>
 
-  <!-- nav (matches landing) -->
   <nav class="nav">
     <a href="/" class="nav-brand">
       <div class="nav-logo">
@@ -705,7 +605,6 @@
     </div>
   </nav>
 
-  <!-- hero -->
   <section class="hero">
     <div class="hero-badge">
       <span class="dot"></span>
@@ -714,23 +613,35 @@
     <h1>Куда пойдут <span class="gradient">BTC, ETH и BNB</span><br>через минуту?</h1>
     <p class="hero-sub">
       Модель машинного обучения смотрит на стакан биржи в реальном времени
-      и каждую минуту прогнозирует направление цены на следующую минуту.
-      Учебный sim-проект — реальные сделки не открываются.
+      и каждую минуту прогнозирует направление. Учебный sim-проект,
+      реальные сделки не открываются.
     </p>
-    <div class="hero-meta" id="hero-meta">
-      <span>горизонт: <strong>1&nbsp;минута</strong></span>
-      <span class="dot">•</span>
-      <span>модель тренируется каждые <strong>4&nbsp;часа</strong></span>
-      <span class="dot">•</span>
-      <span id="hero-meta-acc">точность загружается…</span>
-    </div>
   </section>
 
-  <!-- 3 prediction cards -->
+  <!-- Filter bar: horizon + venue -->
+  <div class="filter-bar">
+    <div class="filter-group">
+      <span class="filter-label">Горизонт прогноза</span>
+      <div class="pill-group" id="horizon-pills">
+        <button class="pill active" data-horizon="1">1 мин</button>
+        <button class="pill disabled" data-horizon="5">5 мин</button>
+        <button class="pill disabled" data-horizon="15">15 мин</button>
+        <button class="pill disabled" data-horizon="60">1 час</button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">Площадка</span>
+      <div class="pill-group" id="venue-pills">
+        <button class="pill active" data-venue="spot">Spot</button>
+        <button class="pill disabled" data-venue="futures">Фьючерсы</button>
+      </div>
+    </div>
+  </div>
+
   <div class="container">
     <div class="cards" id="cards">
       <!-- BTC -->
-      <div class="card loading" data-symbol="BTCUSDT" data-icon="btc" data-name="Bitcoin">
+      <div class="card loading" data-symbol="BTCUSDT">
         <div class="card-head">
           <div class="card-symbol">
             <div class="card-icon btc">BTC</div>
@@ -739,10 +650,8 @@
               <div class="card-symbol-pair">BTC / USDT</div>
             </div>
           </div>
-          <div class="card-horizon">+1 минута</div>
+          <div class="card-horizon" data-bind="horizon-pill">+1 мин</div>
         </div>
-        <div class="card-price" data-bind="price">—</div>
-        <div class="card-price-sub" data-bind="price-sub">обновляется…</div>
         <div class="card-prediction">
           <div class="card-prediction-head">
             <span class="card-prediction-label">Прогноз направления</span>
@@ -766,7 +675,7 @@
       </div>
 
       <!-- ETH -->
-      <div class="card loading" data-symbol="ETHUSDT" data-icon="eth" data-name="Ethereum">
+      <div class="card loading" data-symbol="ETHUSDT">
         <div class="card-head">
           <div class="card-symbol">
             <div class="card-icon eth">ETH</div>
@@ -775,10 +684,8 @@
               <div class="card-symbol-pair">ETH / USDT</div>
             </div>
           </div>
-          <div class="card-horizon">+1 минута</div>
+          <div class="card-horizon" data-bind="horizon-pill">+1 мин</div>
         </div>
-        <div class="card-price" data-bind="price">—</div>
-        <div class="card-price-sub" data-bind="price-sub">обновляется…</div>
         <div class="card-prediction">
           <div class="card-prediction-head">
             <span class="card-prediction-label">Прогноз направления</span>
@@ -802,7 +709,7 @@
       </div>
 
       <!-- BNB -->
-      <div class="card loading" data-symbol="BNBUSDT" data-icon="bnb" data-name="BNB">
+      <div class="card loading" data-symbol="BNBUSDT">
         <div class="card-head">
           <div class="card-symbol">
             <div class="card-icon bnb">BNB</div>
@@ -811,10 +718,8 @@
               <div class="card-symbol-pair">BNB / USDT</div>
             </div>
           </div>
-          <div class="card-horizon">+1 минута</div>
+          <div class="card-horizon" data-bind="horizon-pill">+1 мин</div>
         </div>
-        <div class="card-price" data-bind="price">—</div>
-        <div class="card-price-sub" data-bind="price-sub">обновляется…</div>
         <div class="card-prediction">
           <div class="card-prediction-head">
             <span class="card-prediction-label">Прогноз направления</span>
@@ -839,23 +744,23 @@
     </div>
   </div>
 
-  <!-- 24h stats strip -->
+  <!-- Stats strip — fixed metric labels -->
   <div class="container">
     <div class="stats" id="stats">
       <div class="stat">
         <div class="stat-value muted" id="stat-trades">—</div>
         <div class="stat-label">сделок за 24 ч</div>
-        <div class="stat-helper" id="stat-trades-helper">по всем 3 символам</div>
+        <div class="stat-helper">по всем 3 символам</div>
       </div>
       <div class="stat">
-        <div class="stat-value muted" id="stat-winrate">—</div>
+        <div class="stat-value muted" id="stat-diracc">—</div>
         <div class="stat-label">точность направления</div>
-        <div class="stat-helper">% попаданий в сторону</div>
+        <div class="stat-helper">% угаданных направлений</div>
       </div>
       <div class="stat">
         <div class="stat-value muted" id="stat-pnl">—</div>
         <div class="stat-label">средний результат</div>
-        <div class="stat-helper">P&amp;L после комиссии</div>
+        <div class="stat-helper">после комиссии Spot retail</div>
       </div>
       <div class="stat">
         <div class="stat-value muted" id="stat-skill">—</div>
@@ -865,46 +770,47 @@
     </div>
   </div>
 
-  <!-- How it works -->
+  <!-- Per-symbol model metrics (matching /highfreq deep-dive) -->
   <section class="section">
-    <span class="section-label">Как это устроено</span>
-    <h2>Что модель умеет, а что — нет</h2>
-    <p class="section-sub">
-      Я открыто показываю и сильные, и слабые стороны. Это не «trading-сигнал»,
-      а исследовательский dashboard.
-    </p>
-    <div class="how-grid">
-      <div class="how-card">
-        <div class="how-icon green">↗</div>
-        <h3>Прогноз на 1 минуту</h3>
-        <p>
-          Каждую минуту модель смотрит на 18 признаков L2-стакана
-          (OFI, spread, depth-imbalance, microprice…) и говорит:
-          цена в следующую минуту, скорее всего, пойдёт вверх или вниз.
-        </p>
-      </div>
-      <div class="how-card">
-        <div class="how-icon blue">⟳</div>
-        <h3>Тренировка раз в 4 часа</h3>
-        <p>
-          CatBoost-классификатор переобучается с нуля каждые 4 часа на
-          последних ~3 днях ингеста. Walk-forward CV без data leakage,
-          embargo-границы по López de Prado.
-        </p>
-      </div>
-      <div class="how-card">
-        <div class="how-icon amber">≡</div>
-        <h3>Sim-only сделки</h3>
-        <p>
-          Симулятор открывает позицию, держит ровно 1 минуту, закрывает.
-          Спот-комиссия Binance: 7.5 bp с каждой стороны (15 bp roundtrip).
-          Реальных сделок на бирже не открывается.
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Метрики модели</span>
+        <h2>Качество прогнозов по символам</h2>
+        <p class="section-sub">
+          Каждая модель тренируется отдельно на своём символе.
+          Все цифры — из последнего walk-forward CV с embargo (без data leakage).
         </p>
       </div>
     </div>
+    <div class="metrics-grid" id="metrics-grid">
+      <div class="metric-cell metric-head">символ</div>
+      <div class="metric-cell metric-head">точность<br>направления</div>
+      <div class="metric-cell metric-head">95% доверит.<br>интервал</div>
+      <div class="metric-cell metric-head">p-value</div>
+      <div class="metric-cell metric-head">данные<br>(прогнозов)</div>
+      <div class="metric-cell metric-head">обучена</div>
+      <!-- rows filled by JS -->
+    </div>
   </section>
 
-  <!-- Honesty block: why P&L is often negative on retail fees -->
+  <!-- Fee tier P&L comparison -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">P&amp;L при разных комиссиях</span>
+        <h2>Тот же сигнал, разные fee-tiers</h2>
+        <p class="section-sub">
+          Одна и та же серия сделок, пересчитанная под разные тарифные тиры Binance.
+          Видно почему retail-Spot структурно в минусе, а на VIP9 / Futures-maker — выходит в плюс.
+        </p>
+      </div>
+    </div>
+    <div class="fee-tiers" id="fee-tiers">
+      <!-- filled by JS -->
+    </div>
+  </section>
+
+  <!-- Honesty block -->
   <div class="container">
     <div class="honesty">
       <div class="honesty-icon">i</div>
@@ -912,16 +818,16 @@
         <h3>Почему сделки часто в минусе?</h3>
         <p>
           На горизонте 1 минута средний ход цены ~2-4 базисных пункта (bp).
-          Round-trip спот-комиссия Binance — 15 bp. Это значит даже при
-          идеальном попадании в направление модель структурно проигрывает
+          Round-trip спот-комиссия Binance retail — 15 bp. Это значит даже при
+          точном попадании в направление модель структурно проигрывает
           fee-burden'у.
         </p>
         <p>
           Главная цель проекта — не «делать деньги в симе», а доказать что
-          модель <strong>статистически отличает up от down лучше монетки</strong>.
-          Это уже работает: точность направления ~57%, p-value &lt; 10⁻⁹.
-          Прибыль появляется на горизонте 15+ минут или на USDM Futures
-          (комиссия 4 bp roundtrip) — это следующая фаза.
+          модель <strong>статистически отличает up от down лучше монетки</strong>
+          (это уже работает: точность ~57%, p-value &lt; 10⁻⁹). Прибыль появляется
+          либо на горизонте 15+ минут, либо на USDM Futures (комиссия 4 bp roundtrip),
+          либо на VIP9 fee tier — это и видно в блоке выше.
         </p>
       </div>
     </div>
@@ -929,13 +835,18 @@
 
   <!-- Recent trades -->
   <section class="section">
-    <span class="section-label">Свежие данные</span>
-    <h2>Последние сделки</h2>
-    <p class="section-sub">
-      Последние 10 закрытых sim-сделок по всем трём символам, отсортированы по времени закрытия.
-    </p>
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Свежие данные</span>
+        <h2>Последние сделки</h2>
+        <p class="section-sub">
+          Последние 10 закрытых sim-сделок по всем трём символам.
+          Sим-модель: открыла позицию по сигналу, держала 1 минуту, закрыла.
+        </p>
+      </div>
+    </div>
     <div class="trades-card">
-      <div class="trades-list" id="trades-list">
+      <div id="trades-list">
         <div class="empty-state">загружаем историю…</div>
       </div>
     </div>
@@ -953,34 +864,27 @@
 
   <script>
     // ──────────────────────────────────────────────────────────────
-    // Forecast page client logic.
+    // /forecast page client logic — release T.2
     //
-    //  • Predictions  — every 30 s (forecast endpoint, per symbol)
-    //  • Trades+stats — every 60 s (paper_trades endpoint)
-    //  • Hero accuracy badge — every 5 min (training_report; slow-changing)
-    //  • Countdown to next bar — every second (pure client clock,
-    //    aligns with UTC minute boundary like the trainer's bars)
+    // Adds vs T.1:
+    //  • Real direction-accuracy stat (sign(side) match with sign(price move))
+    //    instead of conflating it with win-rate (which subtracts fees and
+    //    punishes correct directions on small moves).
+    //  • Per-symbol model metrics table (mirrors /highfreq's deep dive).
+    //  • Fee-tier P&L block (retail / vip5 / vip9 / futures-maker / mm-rebate).
+    //  • Horizon + venue filter pills (1m active, others "скоро").
     // ──────────────────────────────────────────────────────────────
 
     const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
     const SYMBOL_DISPLAY = {
-      BTCUSDT: { short: 'BTC', name: 'Bitcoin' },
-      ETHUSDT: { short: 'ETH', name: 'Ethereum' },
-      BNBUSDT: { short: 'BNB', name: 'BNB' },
+      BTCUSDT: { short: 'BTC', name: 'Bitcoin', icon: 'btc' },
+      ETHUSDT: { short: 'ETH', name: 'Ethereum', icon: 'eth' },
+      BNBUSDT: { short: 'BNB', name: 'BNB', icon: 'bnb' },
     };
-    const PREDICT_REFRESH_MS = 30_000;
-    const TRADES_REFRESH_MS  = 60_000;
-    const ACCURACY_REFRESH_MS = 5 * 60_000;
+    const PREDICT_REFRESH_MS  = 30_000;
+    const TRADES_REFRESH_MS   = 60_000;
+    const METRICS_REFRESH_MS  = 5 * 60_000;
 
-    // ─── helpers ───
-    function fmtPrice(p) {
-      if (p === null || p === undefined || !isFinite(p)) return '—';
-      const n = Number(p);
-      if (n >= 1000) return n.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
-      if (n >= 100)  return n.toFixed(2);
-      if (n >= 1)    return n.toFixed(3);
-      return n.toFixed(5);
-    }
     function fmtAge(seconds) {
       if (!isFinite(seconds) || seconds < 0) return '—';
       if (seconds < 60)   return `${Math.round(seconds)} с`;
@@ -988,58 +892,50 @@
       if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} ч`;
       return `${Math.round(seconds / 86400)} дн`;
     }
+    function fmtPValue(p) {
+      if (!isFinite(p)) return '—';
+      if (p < 1e-9) return '< 10⁻⁹';
+      if (p < 1e-6) return '< 10⁻⁶';
+      if (p < 1e-3) return '< 0.001';
+      if (p < 0.01) return p.toFixed(4);
+      return p.toFixed(3);
+    }
+    function fmtPct(x, digits=1) {
+      if (!isFinite(x)) return '—';
+      return `${(x * 100).toFixed(digits)}%`;
+    }
     function verdictFor(signal, probUp) {
-      if (signal === 'up') {
-        return { cls: 'up', arrow: '↑', label: 'вверх', confidence: Math.round(probUp * 100) };
-      }
-      if (signal === 'down') {
-        return { cls: 'down', arrow: '↓', label: 'вниз', confidence: Math.round((1 - probUp) * 100) };
-      }
+      if (signal === 'up')   return { cls: 'up',   arrow: '↑', label: 'вверх', confidence: Math.round(probUp * 100) };
+      if (signal === 'down') return { cls: 'down', arrow: '↓', label: 'вниз',  confidence: Math.round((1 - probUp) * 100) };
       return { cls: 'neutral', arrow: '→', label: 'без чёткого направления',
                confidence: Math.round(Math.max(probUp, 1 - probUp) * 100) };
     }
 
-    // ─── prediction cards ───
+    // ─── Predictions ───
     async function refreshCard(card) {
       const symbol = card.dataset.symbol;
-      const get = (name) => card.querySelector(`[data-bind="${name}"]`);
-
+      const get = (n) => card.querySelector(`[data-bind="${n}"]`);
       try {
-        const res = await fetch(`/api/highfreq/forecast?symbol=${symbol}`,
-                                { cache: 'no-store' });
+        const res = await fetch(`/api/highfreq/forecast?symbol=${symbol}`, { cache: 'no-store' });
         if (res.status !== 200) {
-          // 503 — model not ready / cold-start. Friendly state, no jargon.
-          card.classList.add('loading');
-          card.classList.remove('up', 'down', 'neutral');
-          get('arrow').className = 'arrow loading';
-          get('arrow').textContent = '…';
-          get('verdict').className = 'verdict-text loading';
-          get('verdict').textContent = 'модель готовит прогноз';
+          card.classList.add('loading'); card.classList.remove('up','down','neutral');
+          get('arrow').className = 'arrow loading'; get('arrow').textContent = '…';
+          get('verdict').className = 'verdict-text loading'; get('verdict').textContent = 'модель готовит прогноз';
           get('conf-fill').style.width = '0%';
           get('conf-text').textContent = 'ждём первый прогноз…';
           return;
         }
         const data = await res.json();
-        if (!data.ok) {
-          get('verdict').textContent = 'модель готовит прогноз';
-          return;
-        }
+        if (!data.ok) { get('verdict').textContent = 'модель готовит прогноз'; return; }
 
         const v = verdictFor(data.signal, data.prob_up);
-        card.classList.remove('loading', 'up', 'down', 'neutral');
-        card.classList.add(v.cls);
-
-        get('arrow').className = `arrow ${v.cls}`;
-        get('arrow').textContent = v.arrow;
-        get('verdict').className = `verdict-text ${v.cls}`;
-        get('verdict').textContent = v.label;
-        get('conf-fill').className = `confidence-fill ${v.cls}`;
-        get('conf-fill').style.width = `${v.confidence}%`;
+        card.classList.remove('loading','up','down','neutral'); card.classList.add(v.cls);
+        get('arrow').className = `arrow ${v.cls}`; get('arrow').textContent = v.arrow;
+        get('verdict').className = `verdict-text ${v.cls}`; get('verdict').textContent = v.label;
+        get('conf-fill').className = `confidence-fill ${v.cls}`; get('conf-fill').style.width = `${v.confidence}%`;
         get('conf-text').textContent = `уверенность ${v.confidence}%`;
-
         const updatedAge = (Date.now() - new Date(data.ts).getTime()) / 1000;
         get('updated').textContent = `обновлено ${fmtAge(updatedAge)} назад`;
-
         if (data.model && isFinite(data.model.model_age_seconds)) {
           get('model-age').textContent = `модель: ${fmtAge(data.model.model_age_seconds)}`;
         }
@@ -1052,49 +948,41 @@
       await Promise.all([...cards].map(refreshCard));
     }
 
-    // ─── trades + stats ───
+    // ─── Trades + stats (with REAL direction accuracy, not win-rate) ───
     async function refreshTradesAndStats() {
       try {
         const responses = await Promise.all(SYMBOLS.map(s =>
-          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=20`,
-                { cache: 'no-store' })
+          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=50`, { cache: 'no-store' })
             .then(r => r.ok ? r.json() : { trades: [] })
             .catch(() => ({ trades: [] }))
         ));
-
-        const allTrades = responses.flatMap(payload => payload.trades || [])
-          .filter(t => t.exit_ts);
-
-        // Sort by exit_ts desc, take top 10 for display.
-        const recent = [...allTrades]
+        const allTrades = responses.flatMap(p => p.trades || []).filter(t => t.exit_ts);
+        const recent10 = [...allTrades]
           .sort((a, b) => new Date(b.exit_ts) - new Date(a.exit_ts))
           .slice(0, 10);
-
-        renderTrades(recent);
+        renderTrades(recent10);
         renderStats(allTrades);
       } catch (err) {
         console.warn('trades fetch failed', err);
       }
     }
-
-    function symbolToIcon(symbol) {
-      const map = { BTCUSDT: 'btc', ETHUSDT: 'eth', BNBUSDT: 'bnb' };
-      return map[symbol] || 'btc';
+    function isDirectionCorrect(t) {
+      // True direction-accuracy: did the model's chosen side match the
+      // realised price move? Independent of fees / win-rate.
+      const entry = Number(t.entry_price);
+      const exit  = Number(t.exit_price);
+      if (!isFinite(entry) || !isFinite(exit) || entry === exit) return null; // tie / bad data
+      const moveUp = exit > entry;
+      if (t.side === 'long')  return moveUp ? true : false;
+      if (t.side === 'short') return moveUp ? false : true;
+      return null;
     }
-    function shortLabel(symbol) {
-      return (SYMBOL_DISPLAY[symbol]?.short) || symbol.replace('USDT', '');
-    }
-
     function renderTrades(trades) {
       const list = document.getElementById('trades-list');
-      if (!trades.length) {
-        list.innerHTML = '<div class="empty-state">пока не было закрытых сделок</div>';
-        return;
-      }
+      if (!trades.length) { list.innerHTML = '<div class="empty-state">пока не было закрытых сделок</div>'; return; }
       list.innerHTML = trades.map(t => {
         const sym = (t.symbol || '').toUpperCase();
-        const iconCls = symbolToIcon(sym);
-        const short = shortLabel(sym);
+        const meta = SYMBOL_DISPLAY[sym] || { short: sym.replace('USDT',''), icon: 'btc' };
         const sideRu = t.side === 'long' ? 'покупка' : 'продажа';
         const sideClass = t.side || 'long';
         const pnlBps = Number(t.pnl_bps || 0);
@@ -1102,36 +990,32 @@
         const pnlClass = pnlBps > 0 ? 'positive' : (pnlBps < 0 ? 'negative' : '');
         const pnlSign = pnlBps > 0 ? '+' : '';
         const exitDate = new Date(t.exit_ts);
-        const when = exitDate.toLocaleTimeString('ru-RU',
-          { hour: '2-digit', minute: '2-digit' });
-        const today = new Date();
-        const sameDay = exitDate.toDateString() === today.toDateString();
-        const dateLabel = sameDay
-          ? `сегодня в ${when}`
-          : exitDate.toLocaleDateString('ru-RU',
-              { day: '2-digit', month: 'short' }) + `, ${when}`;
+        const sameDay = exitDate.toDateString() === new Date().toDateString();
+        const time = exitDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        const when = sameDay ? `сегодня в ${time}`
+                             : exitDate.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' }) + `, ${time}`;
+        const dirCorrect = isDirectionCorrect(t);
+        const dirNote = dirCorrect === true  ? '✓ направление угадано' :
+                        dirCorrect === false ? '✗ направление не то' :
+                                               'цена не сдвинулась';
         return `
           <div class="trade">
-            <div class="trade-icon ${iconCls}">${short}</div>
+            <div class="trade-icon ${meta.icon}">${meta.short}</div>
             <div class="trade-meta">
-              <span class="trade-side-pill ${sideClass}">${sideRu}</span>
-              <span class="trade-when">${dateLabel}</span>
+              <span class="trade-side-pill ${sideClass}">${sideRu} ${meta.short}</span>
+              <span class="trade-when">${when} · ${dirNote}</span>
             </div>
-            <div></div>
-            <div class="trade-pnl ${pnlClass}">
-              ${pnlSign}${pnlPct.toFixed(2)}%
+            <div class="trade-pnl-cell">
+              <div class="trade-pnl ${pnlClass}">${pnlSign}${pnlPct.toFixed(2)}%</div>
               <div class="trade-bps">за минуту</div>
             </div>
           </div>
         `;
       }).join('');
     }
-
     function renderStats(allTrades) {
       const cutoff = Date.now() - 24 * 3600 * 1000;
-      const recent = allTrades.filter(t =>
-        t.exit_ts && new Date(t.exit_ts).getTime() >= cutoff
-      );
+      const recent = allTrades.filter(t => t.exit_ts && new Date(t.exit_ts).getTime() >= cutoff);
       const setEl = (id, value, cls) => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -1141,90 +1025,199 @@
       };
       if (!recent.length) {
         setEl('stat-trades', '0', 'muted');
-        setEl('stat-winrate', '—', 'muted');
-        setEl('stat-pnl', '—', 'muted');
+        setEl('stat-diracc', '—', 'muted');
+        setEl('stat-pnl',    '—', 'muted');
         return;
       }
-      const wins = recent.filter(t => Number(t.pnl_bps || 0) > 0).length;
-      const winRate = (wins / recent.length) * 100;
-      const meanPnlBps = recent.reduce((acc, t) =>
-        acc + Number(t.pnl_bps || 0), 0) / recent.length;
+      // Direction accuracy: side matches realised move sign. Neutral
+      // (entry == exit) trades are dropped from the denominator since
+      // there's no direction to score.
+      const scored = recent.map(t => isDirectionCorrect(t)).filter(v => v !== null);
+      const dirCorrect = scored.filter(v => v === true).length;
+      const dirAcc = scored.length ? dirCorrect / scored.length : null;
+      const meanPnlBps = recent.reduce((acc, t) => acc + Number(t.pnl_bps || 0), 0) / recent.length;
       const meanPct = meanPnlBps / 100;
 
       setEl('stat-trades', String(recent.length), 'muted');
       setEl(
-        'stat-winrate',
-        `${winRate.toFixed(0)}%`,
-        winRate >= 50 ? 'green' : (winRate < 45 ? 'red' : 'amber'),
+        'stat-diracc',
+        dirAcc === null ? '—' : `${(dirAcc * 100).toFixed(0)}%`,
+        dirAcc === null ? 'muted' :
+          (dirAcc >= 0.55 ? 'green' : dirAcc < 0.45 ? 'red' : 'amber'),
       );
       const pnlClass = meanPnlBps > 0 ? 'green' : (meanPnlBps < 0 ? 'red' : 'amber');
       const sign = meanPnlBps > 0 ? '+' : '';
       setEl('stat-pnl', `${sign}${meanPct.toFixed(2)}%`, pnlClass);
     }
 
-    // ─── hero / skill badge: pull from training_report on a slow loop ───
-    async function refreshSkill() {
-      try {
-        // Use BTC's report as the "headline" skill — it has the longest
-        // accumulated history and tightest CI of the three symbols.
-        const res = await fetch('/api/highfreq/training_report?symbol=BTCUSDT',
-                                { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-        const report = data?.report;
-        if (!report) return;
+    // ─── Per-symbol model metrics table ───
+    async function refreshModelMetrics() {
+      const grid = document.getElementById('metrics-grid');
+      // Keep header row, replace body.
+      const headerHTML = grid.innerHTML.split('<!-- rows filled by JS -->')[0]
+                       || Array.from(grid.querySelectorAll('.metric-head'))
+                              .map(el => el.outerHTML).join('');
 
-        const dirAcc = Number(report.dir_acc_mean);
-        const pVal = Number(report.dir_acc_p_value);
-        const nFolds = Number(report.n_folds);
+      const reports = await Promise.all(SYMBOLS.map(s =>
+        fetch(`/api/highfreq/training_report?symbol=${s}`, { cache: 'no-store' })
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+      ));
 
-        // Hero meta: friendly accuracy "57.0% точность за 7 дней"
-        if (isFinite(dirAcc)) {
-          const pctStr = (dirAcc * 100).toFixed(1) + '%';
-          const accEl = document.getElementById('hero-meta-acc');
-          if (accEl) {
-            accEl.innerHTML = `точность: <strong>${pctStr}</strong> на тесте`;
-          }
-          // Stat-strip skill cell — vs random baseline.
-          const skillEl = document.getElementById('stat-skill');
-          const helperEl = document.getElementById('stat-skill-helper');
-          if (skillEl) {
-            const aboveChance = (dirAcc - 0.5) * 100;
-            const sign = aboveChance > 0 ? '+' : '';
-            skillEl.textContent = `${sign}${aboveChance.toFixed(1)} п.п.`;
-            skillEl.className = 'stat-value';
-            skillEl.classList.add(aboveChance > 0 ? 'green' : 'red');
-          }
-          if (helperEl && isFinite(pVal)) {
-            const pStr = pVal < 1e-9 ? '< 10⁻⁹' :
-                         pVal < 1e-6 ? '< 10⁻⁶' :
-                         pVal < 1e-3 ? '< 0.001' :
-                         pVal.toFixed(3);
-            helperEl.textContent = `p-value ${pStr}`;
-          }
+      // Headline accuracy for hero stat (BTC has the most data).
+      const btcReport = reports[0]?.report;
+      if (btcReport) {
+        const dirAcc = Number(btcReport.dir_acc_mean);
+        const skillEl = document.getElementById('stat-skill');
+        const skillHelper = document.getElementById('stat-skill-helper');
+        if (isFinite(dirAcc) && skillEl) {
+          const aboveChance = (dirAcc - 0.5) * 100;
+          const sign = aboveChance > 0 ? '+' : '';
+          skillEl.textContent = `${sign}${aboveChance.toFixed(1)} п.п.`;
+          skillEl.className = 'stat-value';
+          skillEl.classList.add(aboveChance > 0 ? 'green' : 'red');
+          if (skillHelper) skillHelper.textContent = `BTC: p ${fmtPValue(Number(btcReport.dir_acc_p_value))}`;
         }
-      } catch (err) {
-        console.warn('skill fetch failed', err);
       }
+
+      // Body rows: one per symbol.
+      const rowsHTML = SYMBOLS.map((sym, i) => {
+        const meta = SYMBOL_DISPLAY[sym];
+        const r = reports[i]?.report;
+        if (!r || !isFinite(Number(r.dir_acc_mean))) {
+          return `
+            <div class="metric-cell symbol-cell">
+              <div class="mini-icon ${meta.icon}">${meta.short}</div>
+              <span>${meta.name}</span>
+            </div>
+            <div class="metric-cell metric-row-loading" data-mobile-label="точность">обучается…</div>
+            <div class="metric-cell metric-row-loading" data-mobile-label="CI">—</div>
+            <div class="metric-cell metric-row-loading" data-mobile-label="p-value">—</div>
+            <div class="metric-cell metric-row-loading" data-mobile-label="данные">—</div>
+            <div class="metric-cell metric-row-loading" data-mobile-label="обучена">—</div>
+          `;
+        }
+        const dirAcc = Number(r.dir_acc_mean);
+        const ciLow  = Number(r.dir_acc_ci_low);
+        const ciHigh = Number(r.dir_acc_ci_high);
+        const pVal   = Number(r.dir_acc_p_value);
+        const nFolds = Number(r.n_folds);
+        const nMin   = Number(r.n_minutes_after_neutral_drop);
+        const elapsed = Number(r.elapsed_seconds);
+        // We don't have last-trained timestamp directly in report, but
+        // we have elapsed which is small; instead show "n folds × bars"
+        // and leave model age to live data via predictor model_age.
+        const dirCls = dirAcc > 0.55 ? 'good' : (dirAcc < 0.5 ? 'bad' : 'muted');
+        const ciStr = isFinite(ciLow) ? `[${(ciLow*100).toFixed(1)}%, ${(ciHigh*100).toFixed(1)}%]` : '—';
+        const pCls  = (isFinite(pVal) && pVal < 0.05) ? 'good' : 'muted';
+        return `
+          <div class="metric-cell symbol-cell">
+            <div class="mini-icon ${meta.icon}">${meta.short}</div>
+            <span>${meta.name}</span>
+          </div>
+          <div class="metric-cell" data-mobile-label="точность">
+            <span class="metric-num ${dirCls}">${fmtPct(dirAcc)}</span>
+          </div>
+          <div class="metric-cell" data-mobile-label="CI">
+            <span class="metric-num muted" style="font-size:0.85rem;">${ciStr}</span>
+          </div>
+          <div class="metric-cell" data-mobile-label="p-value">
+            <span class="metric-num ${pCls}">${fmtPValue(pVal)}</span>
+          </div>
+          <div class="metric-cell" data-mobile-label="данные">
+            <span class="metric-num muted">${nMin || '—'}</span>
+          </div>
+          <div class="metric-cell" data-mobile-label="обучена">
+            <span class="metric-num muted">${nFolds} folds</span>
+          </div>
+        `;
+      }).join('');
+
+      grid.innerHTML = headerHTML + rowsHTML;
     }
 
-    // ─── countdown to next minute boundary ───
-    function refreshCountdowns() {
-      const now = new Date();
-      const secsToNext = 60 - now.getUTCSeconds();
-      const txt = `след. бар: ${secsToNext}с`;
-      document.querySelectorAll('[data-bind="next-bar"]')
-        .forEach(el => { el.textContent = txt; });
+    // ─── Fee-tier P&L ───
+    const TIER_DISPLAY = {
+      retail:    { name: 'Spot retail',  fee: '7.5 bp / сторона', desc: 'без VIP-объёма' },
+      vip5:      { name: 'Spot VIP-5',   fee: '1.0 bp / сторона', desc: '$50M+ оборот/мес' },
+      vip9:      { name: 'Spot VIP-9',   fee: '0 bp / сторона',   desc: '$1B+ оборот, institutional' },
+      mm_rebate: { name: 'Market-maker', fee: '−0.4 bp / сторона', desc: 'rebate за liquidity' },
+    };
+    async function refreshFeeTiers() {
+      // Aggregate across all 3 symbols — sum trades, recompute means.
+      const responses = await Promise.all(SYMBOLS.map(s =>
+        fetch(`/api/highfreq/pnl_by_fee_tier?symbol=${s}`, { cache: 'no-store' })
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null)
+      ));
+      // Sum n_trades + weighted-mean realized_pnl per tier.
+      const aggregated = {};  // tier_name → { n: int, sum_bps: float }
+      let totalTrades = 0;
+      for (const payload of responses) {
+        if (!payload?.tiers) continue;
+        const n = Number(payload.n_trades || 0);
+        totalTrades += n;
+        for (const t of payload.tiers) {
+          if (!aggregated[t.tier_name]) aggregated[t.tier_name] = { n: 0, sum_bps: 0 };
+          aggregated[t.tier_name].n += n;
+          aggregated[t.tier_name].sum_bps += (Number(t.mean_pnl_bps_per_trade) || 0) * n;
+        }
+      }
+
+      const target = document.getElementById('fee-tiers');
+      if (totalTrades === 0) {
+        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">пока не было сделок для пересчёта по тирам</div>';
+        return;
+      }
+      // Order tiers retail → vip5 → vip9 → mm_rebate
+      const order = ['retail', 'vip5', 'vip9', 'mm_rebate'];
+      target.innerHTML = order.filter(k => aggregated[k]).map(k => {
+        const a = aggregated[k];
+        const meanBps = a.n ? (a.sum_bps / a.n) : 0;
+        const meanPct = meanBps / 100;
+        const positive = meanBps > 0;
+        const cls = positive ? 'profitable' : (meanBps < -1 ? 'loss' : '');
+        const pnlCls = positive ? 'green' : (meanBps < 0 ? 'red' : 'muted');
+        const sign = positive ? '+' : '';
+        const display = TIER_DISPLAY[k] || { name: k, fee: '—', desc: '' };
+        return `
+          <div class="tier-card ${cls}">
+            <div class="tier-name">${display.name}</div>
+            <div class="tier-fee">${display.fee}</div>
+            <div class="tier-pnl ${pnlCls}">${sign}${meanPct.toFixed(2)}%</div>
+            <div class="tier-sub">${display.desc}</div>
+          </div>
+        `;
+      }).join('');
     }
+
+    // ─── Countdown ───
+    function refreshCountdowns() {
+      const secs = 60 - new Date().getUTCSeconds();
+      document.querySelectorAll('[data-bind="next-bar"]')
+        .forEach(el => { el.textContent = `след. бар: ${secs}с`; });
+    }
+
+    // ─── Filter pill UX (visual only — backends only ready for 1m/spot) ───
+    document.querySelectorAll('.pill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.classList.contains('disabled')) return;
+        const group = btn.parentElement;
+        group.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
 
     // ─── Kick off ───
     refreshAllPredictions();
     refreshTradesAndStats();
-    refreshSkill();
+    refreshModelMetrics();
+    refreshFeeTiers();
     refreshCountdowns();
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
     setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
-    setInterval(refreshSkill,          ACCURACY_REFRESH_MS);
+    setInterval(refreshModelMetrics,   METRICS_REFRESH_MS);
+    setInterval(refreshFeeTiers,       METRICS_REFRESH_MS);
     setInterval(refreshCountdowns,     1000);
   </script>
 </body>

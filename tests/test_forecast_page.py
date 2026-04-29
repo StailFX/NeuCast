@@ -59,14 +59,52 @@ def test_forecast_page_carries_three_symbol_cards():
 
 def test_forecast_page_has_trades_list_and_stats_anchors():
     """The polling loop populates ``#trades-list``, ``#stat-trades``,
-    ``#stat-winrate``, ``#stat-pnl``. Pin the IDs so a markup refactor
-    can't silently break the JS bindings."""
+    ``#stat-diracc``, ``#stat-pnl``, ``#stat-skill``. Pin the IDs so a
+    markup refactor can't silently break the JS bindings.
+
+    Renamed from ``stat-winrate`` → ``stat-diracc`` in T.2 because the
+    metric semantics changed: it now reports direction-accuracy
+    (sign(side) match with sign(move)), not win-rate (which conflates
+    the same outcome with the fee burden)."""
     client = TestClient(_make_app())
     html = client.get("/forecast").text
     assert 'id="trades-list"' in html
     assert 'id="stat-trades"' in html
-    assert 'id="stat-winrate"' in html
+    assert 'id="stat-diracc"' in html
     assert 'id="stat-pnl"' in html
+    assert 'id="stat-skill"' in html
+
+
+def test_forecast_page_has_filter_pills():
+    """Horizon + venue selector pills (release T.2). 1m/Spot are
+    active, others marked ``disabled`` until backend support lands."""
+    client = TestClient(_make_app())
+    html = client.get("/forecast").text
+    assert 'id="horizon-pills"' in html
+    assert 'id="venue-pills"' in html
+    assert 'data-horizon="1"' in html
+    assert 'data-horizon="15"' in html
+    assert 'data-horizon="60"' in html
+    assert 'data-venue="spot"' in html
+    assert 'data-venue="futures"' in html
+
+
+def test_forecast_page_has_fee_tier_and_metrics_sections():
+    """Pin the new sections that surface model metrics + fee-tier P&L."""
+    client = TestClient(_make_app())
+    html = client.get("/forecast").text
+    assert 'id="metrics-grid"' in html
+    assert 'id="fee-tiers"' in html
+
+
+def test_forecast_page_uses_pnl_by_fee_tier_endpoint():
+    """The fee-tier panel pulls from /api/highfreq/pnl_by_fee_tier and
+    the metrics table from /api/highfreq/training_report. Pin both
+    string references."""
+    client = TestClient(_make_app())
+    html = client.get("/forecast").text
+    assert "/api/highfreq/pnl_by_fee_tier" in html
+    assert "/api/highfreq/training_report" in html
 
 
 def test_forecast_page_is_indexable():
