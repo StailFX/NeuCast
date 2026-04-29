@@ -159,6 +159,8 @@ def evaluate_one_horizon(
     catboost_depth: int = 5,
     catboost_learning_rate: float = 0.05,
     random_seed: int = 42,
+    sample_weight_half_life: int = 0,  # 0 = disabled (release O default for eval)
+    embargo_bars: int = 0,              # 0 = no embargo
 ) -> HorizonEvalRow:
     """Aggregate, build supervised, walk-forward CV. Returns one row.
 
@@ -277,12 +279,15 @@ def evaluate_one_horizon(
     n_folds = 0
     train_end = initial_train_bars
     while train_end + test_fold_bars <= n_bars_kept:
-        X_tr = X.iloc[:train_end].to_numpy()
-        y_tr = y.iloc[:train_end].to_numpy()
+        # Embargo: drop the last ``embargo_bars`` from train fold to
+        # avoid target-leakage with test fold (release O.7C).
+        train_eff_end = max(0, train_end - max(0, embargo_bars))
+        X_tr = X.iloc[:train_eff_end].to_numpy()
+        y_tr = y.iloc[:train_eff_end].to_numpy()
         X_te = X.iloc[train_end:train_end + test_fold_bars].to_numpy()
         y_te = y.iloc[train_end:train_end + test_fold_bars].to_numpy()
         # Skip degenerate folds where one class isn't present in train.
-        if len(set(y_tr.tolist())) < 2:
+        if len(X_tr) < 100 or len(set(y_tr.tolist())) < 2:
             train_end += step_bars
             continue
         clf = CatBoostClassifier(
@@ -295,7 +300,14 @@ def evaluate_one_horizon(
             verbose=False,
             allow_writing_files=False,
         )
-        clf.fit(X_tr, y_tr)
+        # Sample weighting: recent bars matter more (release O.3D).
+        if sample_weight_half_life > 0:
+            n_tr = len(X_tr)
+            age = np.arange(n_tr - 1, -1, -1, dtype=float)
+            sw = np.power(2.0, -age / float(sample_weight_half_life))
+            clf.fit(X_tr, y_tr, sample_weight=sw)
+        else:
+            clf.fit(X_tr, y_tr)
         y_hat = (clf.predict_proba(X_te)[:, 1] > 0.5).astype(int)
         folds_y_true.extend(y_te.tolist())
         folds_y_pred.extend(y_hat.tolist())
@@ -362,6 +374,8 @@ def evaluate_joint_horizon(
     catboost_depth: int = 5,
     catboost_learning_rate: float = 0.05,
     random_seed: int = 42,
+    sample_weight_half_life: int = 0,
+    embargo_bars: int = 0,
 ) -> HorizonEvalRow:
     """Train ONE model on pooled BTC+ETH+BNB data with symbol-id features.
 
@@ -429,11 +443,12 @@ def evaluate_joint_horizon(
     n_folds = 0
     train_end = initial_train_bars
     while train_end + test_fold_bars <= n_bars_kept:
-        X_tr = X.iloc[:train_end].to_numpy()
-        y_tr = y.iloc[:train_end].to_numpy()
+        train_eff_end = max(0, train_end - max(0, embargo_bars))
+        X_tr = X.iloc[:train_eff_end].to_numpy()
+        y_tr = y.iloc[:train_eff_end].to_numpy()
         X_te = X.iloc[train_end:train_end + test_fold_bars].to_numpy()
         y_te = y.iloc[train_end:train_end + test_fold_bars].to_numpy()
-        if len(set(y_tr.tolist())) < 2:
+        if len(X_tr) < 100 or len(set(y_tr.tolist())) < 2:
             train_end += step_bars
             continue
         clf = CatBoostClassifier(
@@ -446,7 +461,13 @@ def evaluate_joint_horizon(
             verbose=False,
             allow_writing_files=False,
         )
-        clf.fit(X_tr, y_tr)
+        if sample_weight_half_life > 0:
+            n_tr = len(X_tr)
+            age = np.arange(n_tr - 1, -1, -1, dtype=float)
+            sw = np.power(2.0, -age / float(sample_weight_half_life))
+            clf.fit(X_tr, y_tr, sample_weight=sw)
+        else:
+            clf.fit(X_tr, y_tr)
         y_hat = (clf.predict_proba(X_te)[:, 1] > 0.5).astype(int)
         folds_y_true.extend(y_te.tolist())
         folds_y_pred.extend(y_hat.tolist())
@@ -558,6 +579,14 @@ def main(argv: list[str] | None = None) -> int:
                         "joint pooling with classical TA features (OHLC, "
                         "EMA, RSI, BB) — better suited for 5m/15m+.")
     p.add_argument("--since-hours", type=float, default=96.0)
+    p.add_argument("--sample-weight-half-life", type=int, default=0,
+                   help="Exponential decay half-life in bars for sample "
+                        "weighting (recent > old). 0 disables. "
+                        "Default 0; production trainer uses 720 (= 12h at 1m).")
+    p.add_argument("--embargo-bars", type=int, default=0,
+                   help="Drop this many bars at the train→test boundary "
+                        "to prevent target-leakage. 0 disables. Production "
+                        "trainer uses 1.")
     p.add_argument("--neutral-band-bps", type=float, default=None,
                    help="override default. Auto-scales as sqrt(bar_minutes) × 1bp "
                         "if not given — preserves the same z-score across horizons.")
@@ -686,6 +715,8 @@ def main(argv: list[str] | None = None) -> int:
                         test_fold_bars=test_fold_bars,
                         step_bars=step_bars,
                         neutral_band_bps=neutral,
+                        sample_weight_half_life=args.sample_weight_half_life,
+                        embargo_bars=args.embargo_bars,
                     )
                 except Exception:
                     logger.exception(

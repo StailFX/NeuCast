@@ -1,23 +1,165 @@
 [
   {
-    "name": "FOMC decision",
+    "name": "US NFP (Non-Farm Payrolls) — May",
+    "ts": "2026-05-02T12:30:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "FOMC decision — May",
     "ts": "2026-05-01T18:00:00+00:00",
     "halt_before_min": 15,
     "halt_after_min": 60,
     "category": "macro"
   },
   {
-    "name": "US CPI print",
+    "name": "US CPI print — May",
     "ts": "2026-05-13T12:30:00+00:00",
     "halt_before_min": 15,
     "halt_after_min": 45,
     "category": "macro"
   },
   {
-    "name": "US Non-Farm Payrolls",
-    "ts": "2026-05-02T12:30:00+00:00",
+    "name": "US PPI print — May",
+    "ts": "2026-05-14T12:30:00+00:00",
     "halt_before_min": 10,
     "halt_after_min": 30,
     "category": "macro"
+  },
+  {
+    "name": "US PCE inflation — May",
+    "ts": "2026-05-30T12:30:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "US NFP (Non-Farm Payrolls) — June",
+    "ts": "2026-06-06T12:30:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "FOMC decision — June",
+    "ts": "2026-06-17T18:00:00+00:00",
+    "halt_before_min": 15,
+    "halt_after_min": 60,
+    "category": "macro"
+  },
+  {
+    "name": "US CPI print — June",
+    "ts": "2026-06-11T12:30:00+00:00",
+    "halt_before_min": 15,
+    "halt_after_min": 45,
+    "category": "macro"
+  },
+  {
+    "name": "US Retail Sales — May",
+    "ts": "2026-05-15T12:30:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "US Retail Sales — June",
+    "ts": "2026-06-17T12:30:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "FOMC minutes — May",
+    "ts": "2026-05-21T18:00:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "ECB decision — June",
+    "ts": "2026-06-04T12:15:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "BOJ decision — May",
+    "ts": "2026-05-13T03:30:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "BOJ decision — June",
+    "ts": "2026-06-19T03:30:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "Bank of England — May",
+    "ts": "2026-05-08T11:00:00+00:00",
+    "halt_before_min": 10,
+    "halt_after_min": 30,
+    "category": "macro"
+  },
+  {
+    "name": "US ADP Employment — May",
+    "ts": "2026-05-01T12:15:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "US ADP Employment — June",
+    "ts": "2026-06-04T12:15:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "US Consumer Confidence — May",
+    "ts": "2026-05-26T14:00:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "US ISM Manufacturing PMI — May",
+    "ts": "2026-05-01T14:00:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "US ISM Services PMI — May",
+    "ts": "2026-05-05T14:00:00+00:00",
+    "halt_before_min": 5,
+    "halt_after_min": 15,
+    "category": "macro"
+  },
+  {
+    "name": "Crypto: Binance quarterly BNB burn",
+    "ts": "2026-04-30T08:00:00+00:00",
+    "halt_before_min": 30,
+    "halt_after_min": 120,
+    "category": "crypto",
+    "symbols": ["BNBUSDT"]
+  },
+  {
+    "name": "Bitcoin halving anniversary (~April 2024)",
+    "ts": "2026-04-19T00:00:00+00:00",
+    "halt_before_min": 0,
+    "halt_after_min": 0,
+    "category": "informational"
+  },
+  {
+    "name": "ETH dev call — protocol upgrade discussion",
+    "ts": "2026-05-15T14:00:00+00:00",
+    "halt_before_min": 30,
+    "halt_after_min": 60,
+    "category": "fork",
+    "symbols": ["ETHUSDT"]
   }
 ]

@@ -128,6 +128,29 @@ class WalkForwardConfig:
     #: ~7 × 24 × 60 ≈ 10k bars after neutral-band drop, plenty for
     #: a tight Wilson CI.
     frozen_holdout_days: int = 7
+    #: Half-life (in BARS) for exponential sample weighting. The
+    #: trainer assigns each training bar a weight ``2 ** (-age / hl)``
+    #: where ``age`` is bars-from-most-recent. This gives recent bars
+    #: more influence than old ones — hedges against concept drift
+    #: in market regime. Set to 0 to disable (uniform weighting,
+    #: original behaviour). Default 720 bars (= ~12 hours at 1-min
+    #: granularity, or proportionally less at longer horizons): the
+    #: most recent 12 h of data dominates the fit, but bars going
+    #: back 24-48 h still contribute meaningfully.
+    sample_weight_half_life_bars: int = 720
+    #: Embargo (López de Prado): drop the last ``embargo_bars`` rows
+    #: from the train fold before fitting. Prevents subtle leakage
+    #: where the train fold's last bar's target overlaps with the test
+    #: fold (since target is forward-shifted by ``horizon``). With
+    #: horizon=1 the leak is at most 1 bar of theoretical overlap, but
+    #: best academic practice is to embargo it explicitly.
+    embargo_bars: int = 1
+    #: Purge (López de Prado): also drop bars near the train→test
+    #: boundary on the TRAIN side that could have target-leakage with
+    #: the test fold's first ``horizon`` bars. With horizon=1 +
+    #: embargo=1 the purge is 0 (already covered by embargo). Reserve
+    #: for future multi-horizon targets.
+    purge_bars: int = 0
 
 
 @dataclass
@@ -192,7 +215,13 @@ def walk_forward_evaluate(
     while train_end + cfg.test_fold_minutes <= len(X):
         test_end = train_end + cfg.test_fold_minutes
 
-        X_tr, y_tr = X.iloc[:train_end], y.iloc[:train_end]
+        # Apply embargo + purge (López de Prado). Embargo: drop the
+        # last ``embargo_bars`` of the train fold so the model can't
+        # peek at info that overlaps with test fold via forward target.
+        # Purge (target-leak guard): drop additional train bars within
+        # ``purge_bars`` of the boundary.
+        train_eff_end = max(0, train_end - cfg.embargo_bars - cfg.purge_bars)
+        X_tr, y_tr = X.iloc[:train_eff_end], y.iloc[:train_eff_end]
         X_te, y_te = X.iloc[train_end:test_end], y.iloc[train_end:test_end]
 
         if len(X_tr) < cfg.min_train_samples:
@@ -209,7 +238,15 @@ def walk_forward_evaluate(
             verbose=False,
             allow_writing_files=False,
         )
-        clf.fit(X_tr.values, y_tr.values)
+        # Sample weighting (release O 2026-04-29): exponential decay
+        # so most-recent bars influence the fit more than old ones.
+        # Hedges against concept drift in market regime. Disabled
+        # (uniform weights) when half_life <= 0.
+        sample_weights = _exponential_sample_weights(
+            n=len(X_tr),
+            half_life=cfg.sample_weight_half_life_bars,
+        )
+        clf.fit(X_tr.values, y_tr.values, sample_weight=sample_weights)
         proba = clf.predict_proba(X_te.values)[:, 1]
         y_hat = (proba >= 0.5).astype(np.int8)
         dir_acc = float((y_hat == y_te.values).mean())
@@ -219,7 +256,9 @@ def walk_forward_evaluate(
         folds.append(FoldReport(
             fold_idx=fold_idx,
             train_start=minutes.iloc[0],
-            train_end=minutes.iloc[train_end - 1],
+            # Use the effective train_end (after embargo+purge) so the
+            # reported timestamp reflects what the model actually saw.
+            train_end=minutes.iloc[max(0, train_eff_end - 1)],
             test_start=minutes.iloc[train_end],
             test_end=minutes.iloc[test_end - 1],
             n_train=int(len(X_tr)),
@@ -314,6 +353,26 @@ def binom_test_p_greater_half(n_correct: int, n_total: int) -> float:
 # Final-model fit + persistence
 # ────────────────────────────────────────────────────────────────────────────
 
+def _exponential_sample_weights(
+    *, n: int, half_life: int,
+) -> np.ndarray | None:
+    """Build a numpy array of length ``n`` with exponential decay
+    weights so the last sample (most recent) has weight 1 and a
+    sample ``half_life`` bars older has weight 0.5.
+
+    Returns ``None`` when ``half_life <= 0`` (signals "use uniform
+    weights" to CatBoost).
+
+    Pure helper — no side effects. Tested separately.
+    """
+    if n <= 0 or half_life is None or half_life <= 0:
+        return None
+    # Position 0 is the OLDEST bar, n-1 is the MOST RECENT.
+    # age[i] = (n-1) - i  → age=0 for newest, age=n-1 for oldest.
+    age = np.arange(n - 1, -1, -1, dtype=float)
+    return np.power(2.0, -age / float(half_life))
+
+
 def fit_final_model(
     X: pd.DataFrame, y: pd.Series, *, config: WalkForwardConfig | None = None,
 ):
@@ -335,7 +394,10 @@ def fit_final_model(
         verbose=False,
         allow_writing_files=False,
     )
-    clf.fit(X.values, y.values)
+    sample_weights = _exponential_sample_weights(
+        n=len(X), half_life=cfg.sample_weight_half_life_bars,
+    )
+    clf.fit(X.values, y.values, sample_weight=sample_weights)
     return clf
 
 
