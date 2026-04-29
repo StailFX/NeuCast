@@ -395,6 +395,36 @@ async def highfreq_page(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/forecast", response_class=HTMLResponse)
+async def forecast_page(request: Request) -> HTMLResponse:
+    """Render the user-facing ``/forecast`` page (release T, 2026-04-29).
+
+    Sister page to ``/highfreq`` but stripped down for non-technical
+    visitors:
+
+    * Three big direction cards (BTC / ETH / BNB) — UP / DOWN / SIDEWAYS
+      with confidence percentage, no jargon.
+    * Last 10 paper trades across all symbols, formatted as plain
+      "купил BTC в 14:30, +0.04% за минуту".
+    * 24 h summary stats (trade count, win-rate, mean P&L %).
+
+    No mention of bootstrap CIs, p-values, neutral-band drops, fold
+    counts, etc. — that's all on ``/highfreq`` for the operator.
+
+    The page is server-rendered as a static shell; all data comes
+    from existing JSON endpoints (``/api/highfreq/forecast``,
+    ``/api/highfreq/paper_trades``) via two polling loops.
+    Index-able by search engines (the marketing landing already does
+    so for the project as a whole; this is the live-data follow-up
+    that converts curious clicks).
+    """
+    return templates.TemplateResponse(
+        request,
+        "forecast.html",
+        {},  # no template variables — page is pure client-side data
+    )
+
+
 @router.get("/api/highfreq/status")
 async def get_status(
     symbol: str = DEFAULT_SYMBOL,

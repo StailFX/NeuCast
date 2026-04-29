@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Прогноз на минуту — NeuCast</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+
+  <meta name="description" content="Куда пойдёт BTC, ETH и BNB через минуту? Живой прогноз направления крипто-курсов.">
+  <meta name="robots" content="index, follow">
+
+  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
+
+  <style>
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
+      src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap;
+      src: url('/static/fonts/inter-latin-600.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
+      src: url('/static/fonts/inter-latin-700.woff2') format('woff2'); }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --green: #10b981;
+      --red: #ef4444;
+      --amber: #f59e0b;
+      --bg: #060a13;
+      --bg-card: rgba(12, 20, 35, 0.85);
+      --border: rgba(51, 65, 85, 0.35);
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* Subtle grid background — same as landing for visual consistency. */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+      background-size: 80px 80px;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 1rem;
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text);
+      text-decoration: none;
+    }
+    .logo span { color: var(--green); }
+    nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-left: 1.5rem;
+    }
+    nav a:hover { color: var(--text); }
+
+    /* ── Hero ── */
+    .hero {
+      text-align: center;
+      margin: 2rem 0 3rem;
+    }
+    .hero h1 {
+      font-size: clamp(1.75rem, 4vw, 2.5rem);
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.02em;
+    }
+    .hero p {
+      color: var(--text-muted);
+      max-width: 500px;
+      margin: 0 auto;
+      font-size: 1rem;
+    }
+    .live-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+      margin-right: 0.5rem;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.3); }
+    }
+
+    /* ── Prediction cards ── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 3rem;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      backdrop-filter: blur(10px);
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .card.up { border-color: rgba(16, 185, 129, 0.4); }
+    .card.down { border-color: rgba(239, 68, 68, 0.4); }
+    .card.neutral { border-color: rgba(245, 158, 11, 0.3); }
+    .card.loading { opacity: 0.6; }
+
+    .card-symbol {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 1rem;
+    }
+    .card-symbol strong {
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+    .card-price {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .card-direction {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin: 1.25rem 0;
+    }
+    .arrow {
+      font-size: 3rem;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .arrow.up { color: var(--green); }
+    .arrow.down { color: var(--red); }
+    .arrow.neutral { color: var(--amber); }
+    .direction-text {
+      flex: 1;
+    }
+    .direction-text .label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .direction-text .verdict {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+    .verdict.up { color: var(--green); }
+    .verdict.down { color: var(--red); }
+    .verdict.neutral { color: var(--amber); }
+    .confidence-bar {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 0.5rem 0 0.4rem;
+    }
+    .confidence-fill {
+      height: 100%;
+      transition: width 0.5s ease;
+      border-radius: 3px;
+    }
+    .confidence-fill.up { background: var(--green); }
+    .confidence-fill.down { background: var(--red); }
+    .confidence-fill.neutral { background: var(--amber); }
+    .confidence-text {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .card-foot {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .pending-msg {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      padding: 1.5rem 0;
+      text-align: center;
+    }
+
+    /* ── Stats strip ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .stat {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 0.25rem;
+    }
+    .stat-value.positive { color: var(--green); }
+    .stat-value.negative { color: var(--red); }
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── Recent activity table ── */
+    section.activity {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    section.activity h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text-muted);
+    }
+    .trades-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .trade {
+      display: grid;
+      grid-template-columns: 60px 50px 1fr auto;
+      gap: 1rem;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+      align-items: center;
+      font-size: 0.95rem;
+    }
+    .trade:last-child { border-bottom: none; }
+    .trade-symbol {
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    .trade-side {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .trade-side.long { color: var(--green); }
+    .trade-side.short { color: var(--red); }
+    .trade-when {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .trade-pnl {
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    .trade-pnl.positive { color: var(--green); }
+    .trade-pnl.negative { color: var(--red); }
+
+    .empty-state {
+      color: var(--text-muted);
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.95rem;
+    }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 0.8rem;
+      text-align: center;
+      line-height: 1.6;
+    }
+    footer p { margin: 0.25rem 0; }
+    footer a { color: var(--text-muted); }
+
+    /* Mobile tweaks */
+    @media (max-width: 600px) {
+      .container { padding: 1.25rem 1rem; }
+      .hero { margin: 1rem 0 2rem; }
+      .trade {
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+      }
+      .trade-symbol, .trade-side { grid-row: 1; }
+      .trade-when { grid-row: 2; grid-column: 1; }
+      .trade-pnl { grid-row: 1 / span 2; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <a href="/" class="logo">Neu<span>Cast</span></a>
+      <nav>
+        <a href="/">Главная</a>
+        <a href="https://t.me/" target="_blank" rel="noopener">Telegram</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <h1><span class="live-dot"></span>Прогноз курса на минуту</h1>
+      <p>
+        Модель смотрит на стакан биржи Binance в реальном времени и говорит
+        куда скорее всего пойдёт цена в следующую минуту. Учебный проект,
+        sim-only — не торговый совет.
+      </p>
+    </section>
+
+    <!-- 3 prediction cards (BTC / ETH / BNB) -->
+    <div class="cards" id="cards">
+      <div class="card loading" data-symbol="BTCUSDT">
+        <div class="card-symbol">
+          <strong>BTC</strong>
+          <span class="card-price" data-bind="price">—</span>
+        </div>
+        <div class="pending-msg" data-bind="pending">загружаем…</div>
+        <div class="card-direction" data-bind="direction" style="display:none"></div>
+      </div>
+      <div class="card loading" data-symbol="ETHUSDT">
+        <div class="card-symbol">
+          <strong>ETH</strong>
+          <span class="card-price" data-bind="price">—</span>
+        </div>
+        <div class="pending-msg" data-bind="pending">загружаем…</div>
+        <div class="card-direction" data-bind="direction" style="display:none"></div>
+      </div>
+      <div class="card loading" data-symbol="BNBUSDT">
+        <div class="card-symbol">
+          <strong>BNB</strong>
+          <span class="card-price" data-bind="price">—</span>
+        </div>
+        <div class="pending-msg" data-bind="pending">загружаем…</div>
+        <div class="card-direction" data-bind="direction" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Quick stats over the last 24 h -->
+    <div class="stats" id="stats">
+      <div class="stat">
+        <div class="stat-value" id="stat-trades">—</div>
+        <div class="stat-label">сделок за 24 ч</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="stat-winrate">—</div>
+        <div class="stat-label">в плюс</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="stat-pnl">—</div>
+        <div class="stat-label">средний результат</div>
+      </div>
+    </div>
+
+    <!-- Recent activity feed -->
+    <section class="activity">
+      <h2>Последние сделки</h2>
+      <div class="trades-list" id="trades-list">
+        <div class="empty-state">загружаем историю…</div>
+      </div>
+    </section>
+
+    <footer>
+      <p>NeuCast — учебный проект машинного обучения на high-frequency данных.</p>
+      <p>
+        Все сделки на этой странице — <strong>симуляция</strong>, реальных позиций нет.
+        Не является инвестиционным советом.
+      </p>
+    </footer>
+  </div>
+
+  <script>
+    // ──────────────────────────────────────────────────────────────
+    // /forecast page client logic.
+    //
+    // Two polling loops:
+    //   * Predictions (3 symbols)  — every 30 s
+    //   * Recent trades + stats    — every 60 s
+    //
+    // The page degrades gracefully when the API returns 503: cards
+    // keep their "loading" state with a friendly message instead of
+    // showing technical error text.
+    // ──────────────────────────────────────────────────────────────
+
+    const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+    const PREDICT_REFRESH_MS = 30_000;
+    const TRADES_REFRESH_MS  = 60_000;
+
+    // Translate the API's signal + prob_up into a friendly verdict.
+    function verdictFor(signal, probUp) {
+      if (signal === 'up') {
+        const pct = Math.round(probUp * 100);
+        return { cls: 'up', arrow: '↑', label: 'вверх', confidence: pct };
+      }
+      if (signal === 'down') {
+        const pct = Math.round((1 - probUp) * 100);
+        return { cls: 'down', arrow: '↓', label: 'вниз', confidence: pct };
+      }
+      // neutral — show as horizontal arrow + confidence in stronger side.
+      const pct = Math.round(Math.max(probUp, 1 - probUp) * 100);
+      return { cls: 'neutral', arrow: '→', label: 'в стороне', confidence: pct };
+    }
+
+    function fmtPrice(p) {
+      if (p === null || p === undefined || !isFinite(p)) return '—';
+      // Use thousands separator + 0-2 decimals for readability.
+      const n = Number(p);
+      if (n >= 1000) return n.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+      if (n >= 100)  return n.toFixed(2);
+      return n.toFixed(3);
+    }
+
+    function fmtAge(ageSeconds) {
+      if (!isFinite(ageSeconds) || ageSeconds < 0) return '—';
+      if (ageSeconds < 90)   return `${Math.round(ageSeconds)} сек назад`;
+      if (ageSeconds < 3600) return `${Math.round(ageSeconds / 60)} мин назад`;
+      return `${(ageSeconds / 3600).toFixed(1)} ч назад`;
+    }
+
+    async function refreshCard(card) {
+      const symbol = card.dataset.symbol;
+      const pendingEl   = card.querySelector('[data-bind="pending"]');
+      const priceEl     = card.querySelector('[data-bind="price"]');
+      const directionEl = card.querySelector('[data-bind="direction"]');
+
+      try {
+        const res = await fetch(`/api/highfreq/forecast?symbol=${symbol}`,
+                                { cache: 'no-store' });
+        if (res.status !== 200) {
+          // 503 → friendly "пока готовится" without exposing the reason.
+          card.classList.add('loading');
+          card.classList.remove('up', 'down', 'neutral');
+          pendingEl.style.display = 'block';
+          pendingEl.textContent = 'модель готовит прогноз…';
+          directionEl.style.display = 'none';
+          return;
+        }
+        const data = await res.json();
+        if (!data.ok) {
+          pendingEl.textContent = 'модель готовит прогноз…';
+          return;
+        }
+        const v = verdictFor(data.signal, data.prob_up);
+
+        // Card class drives the colored border.
+        card.classList.remove('loading', 'up', 'down', 'neutral');
+        card.classList.add(v.cls);
+
+        // Hide pending, show direction.
+        pendingEl.style.display = 'none';
+        directionEl.style.display = 'flex';
+        directionEl.innerHTML = `
+          <span class="arrow ${v.cls}">${v.arrow}</span>
+          <div class="direction-text">
+            <div class="label">прогноз на минуту</div>
+            <div class="verdict ${v.cls}">${v.label}</div>
+            <div class="confidence-bar">
+              <div class="confidence-fill ${v.cls}" style="width:${v.confidence}%"></div>
+            </div>
+            <div class="confidence-text">уверенность ${v.confidence}%</div>
+          </div>
+        `;
+
+        // Optional price + last-update display from the 'model' block.
+        // model_age_seconds tells us how stale the .cbm is (we display it
+        // as "model" age, not the prediction age — predictions refresh
+        // every minute regardless).
+        if (data.model && isFinite(data.model.model_age_seconds)) {
+          // No price endpoint here yet — leave price blank for v1.
+          priceEl.textContent = '';
+        }
+      } catch (err) {
+        // Network blip — leave whatever state was last successful.
+        console.warn('forecast fetch failed', symbol, err);
+      }
+    }
+
+    async function refreshAllPredictions() {
+      const cards = document.querySelectorAll('.card[data-symbol]');
+      // Fan out — three concurrent fetches.
+      await Promise.all([...cards].map(refreshCard));
+    }
+
+    async function refreshTradesAndStats() {
+      try {
+        // Pull recent trades for ALL three symbols. Limit small, server-side.
+        const all = await Promise.all(SYMBOLS.map(s =>
+          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=10`,
+                { cache: 'no-store' })
+            .then(r => r.ok ? r.json() : { trades: [] })
+            .catch(() => ({ trades: [] }))
+        ));
+
+        // Merge + sort by exit_ts desc, take top 10.
+        const merged = all.flatMap(payload => payload.trades || [])
+          .filter(t => t.exit_ts)
+          .sort((a, b) => new Date(b.exit_ts) - new Date(a.exit_ts))
+          .slice(0, 10);
+
+        renderTrades(merged);
+        renderStats(all.flatMap(payload => payload.trades || []));
+      } catch (err) {
+        console.warn('trades fetch failed', err);
+      }
+    }
+
+    function renderTrades(trades) {
+      const list = document.getElementById('trades-list');
+      if (!trades.length) {
+        list.innerHTML = '<div class="empty-state">пока не было сделок</div>';
+        return;
+      }
+      list.innerHTML = trades.map(t => {
+        const symShort = (t.symbol || '').replace('USDT', '');
+        const sideRu = t.side === 'long' ? 'покупка' : 'продажа';
+        const sideClass = t.side || 'long';
+        const pnlBps = Number(t.pnl_bps || 0);
+        const pnlPct = pnlBps / 100; // bps → %
+        const pnlClass = pnlBps > 0 ? 'positive' : (pnlBps < 0 ? 'negative' : '');
+        const pnlSign = pnlBps > 0 ? '+' : '';
+        const exitDate = new Date(t.exit_ts);
+        const when = exitDate.toLocaleTimeString('ru-RU',
+          { hour: '2-digit', minute: '2-digit' });
+        return `
+          <div class="trade">
+            <span class="trade-symbol">${symShort}</span>
+            <span class="trade-side ${sideClass}">${sideRu}</span>
+            <span class="trade-when">в ${when}</span>
+            <span class="trade-pnl ${pnlClass}">${pnlSign}${pnlPct.toFixed(2)}%</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderStats(allTrades) {
+      // Filter to last 24 h.
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      const recent = allTrades.filter(t =>
+        t.exit_ts && new Date(t.exit_ts).getTime() >= cutoff
+      );
+
+      const setEl = (id, value, cls) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = value;
+        el.classList.remove('positive', 'negative');
+        if (cls) el.classList.add(cls);
+      };
+
+      if (!recent.length) {
+        setEl('stat-trades', '0');
+        setEl('stat-winrate', '—');
+        setEl('stat-pnl', '—');
+        return;
+      }
+      const wins = recent.filter(t => Number(t.pnl_bps || 0) > 0).length;
+      const winRate = (wins / recent.length) * 100;
+      const meanPnlBps = recent.reduce((acc, t) =>
+        acc + Number(t.pnl_bps || 0), 0) / recent.length;
+      const meanPct = meanPnlBps / 100;
+
+      setEl('stat-trades', String(recent.length));
+      setEl(
+        'stat-winrate',
+        `${winRate.toFixed(0)}%`,
+        winRate >= 50 ? 'positive' : (winRate < 50 ? 'negative' : ''),
+      );
+      const pnlClass = meanPnlBps > 0 ? 'positive' : (meanPnlBps < 0 ? 'negative' : '');
+      const sign = meanPnlBps > 0 ? '+' : '';
+      setEl('stat-pnl', `${sign}${meanPct.toFixed(2)}%`, pnlClass);
+    }
+
+    // Kick off on load + start the two polling loops.
+    refreshAllPredictions();
+    refreshTradesAndStats();
+    setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
+    setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
+  </script>
+</body>
+</html>
