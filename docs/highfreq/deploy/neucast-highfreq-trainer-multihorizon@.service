@@ -1,0 +1,36 @@
+[Unit]
+Description=NeuCast HF CatBoost Trainer (multi-horizon) for %I — oneshot, release R 2026-04-29
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+# Instance name format: <symbol>-h<horizon>m (e.g. "btcusdt-h15m",
+# "btcusdt-h60m"). The wrapper script parses %I into --symbol +
+# --bar-minutes and writes weights to ``<sym>_<horizon>m.cbm`` so the
+# predictor's weights_path_for_symbol naming convention picks them
+# up automatically. Wrapper is a separate file (not inline bash here)
+# because systemd's ${} parameter expansion would otherwise eat
+# bash's ${} parameter expansion — escape hell.
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=OMP_NUM_THREADS=2
+
+ExecStart=/opt/neucast/tools/run_trainer_multihorizon.sh %i
+
+# See parent template for SuccessExitStatus rationale (0 + 1 both mean ok).
+SuccessExitStatus=0 1
+
+MemoryMax=2500M
+MemoryHigh=2000M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=1800
+
+[Install]
+# Activated by an explicit start or a future .timer template.

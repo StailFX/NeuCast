@@ -262,3 +262,76 @@ def build_long_horizon_features(df_bars: pd.DataFrame) -> pd.DataFrame:
     # Final scrub for inf / NaN — CatBoost handles missing but explicit
     # is cleaner.
     return feats.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Live-inference helper (Phase B+ multi-horizon)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def build_latest_inference_bar_long_horizon(
+    df_seconds: pd.DataFrame, *, bar_minutes: int,
+) -> tuple[pd.Series, float] | None:
+    """Long-horizon counterpart to
+    :func:`feature_pipeline.build_latest_inference_bar`.
+
+    Aggregates the seconds frame at the requested ``bar_minutes`` (e.g.
+    15 / 60), drops the in-flight current bar, then computes the
+    long-horizon TA feature row + the closing microprice of that bar.
+
+    Same "complete bar only" semantics as the 1-minute helper: the
+    trainer fits on whole-bar aggregates, so serving on a partial bar
+    means feeding out-of-distribution inputs.
+
+    Returns ``(features, close_microprice)`` for the most recent
+    COMPLETE bar of the requested size, or ``None`` at cold-start /
+    insufficient data.
+
+    Parameters
+    ----------
+    df_seconds
+        Per-second OFI frame (same schema as the L2 ingest writes).
+    bar_minutes
+        Aggregation horizon. Must be ≥ 1.
+
+    Notes
+    -----
+    The long-horizon pipeline needs MORE history than 1m to bootstrap:
+    EMA(20) wants 20 bars of context, RSI(14) wants 14 bars of returns,
+    Bollinger z-score wants 20 bars. Returning a feature row from a
+    fresh aggregate with only one bar would produce zero-valued
+    indicators that the model wasn't trained on. We let the caller
+    pass enough seconds-history to produce ≥ 20 complete bars; if not
+    enough, return ``None`` and the runner skips the tick.
+    """
+    if df_seconds.empty or bar_minutes <= 0:
+        return None
+
+    df = df_seconds.copy()
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    if df["ts"].empty:
+        return None
+
+    # Drop the in-flight bar (mirrors the 1m helper). For a 15m bar at
+    # wall-clock 12:37 UTC, the most recent complete bar floor is 12:30,
+    # the in-flight one is also 12:30 (ends at 12:45) and gets dropped.
+    bar_freq = f"{int(bar_minutes)}min"
+    now_floor = df["ts"].max().floor(bar_freq)
+    df = df.loc[df["ts"] < now_floor].copy()
+    if df.empty:
+        return None
+
+    from app.highfreq.feature_pipeline import aggregate_to_minute
+
+    minute_df = aggregate_to_minute(df, bar_minutes=bar_minutes)
+    # Need enough bars to bootstrap the EMA(20) / Bollinger(20) /
+    # RSI(14) indicators. Fewer than 20 → indicators ill-defined.
+    if len(minute_df) < 20:
+        return None
+
+    feats_full = build_long_horizon_features(minute_df)
+    if feats_full.empty:
+        return None
+
+    last_close = float(minute_df.iloc[-1]["microprice_close"])
+    return feats_full.iloc[-1], last_close

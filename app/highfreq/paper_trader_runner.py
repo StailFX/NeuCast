@@ -128,14 +128,19 @@ POOL_MAX_SIZE: int = 2
 DEFAULT_SYMBOL: str = os.getenv("HIGHFREQ_PAPER_SYMBOL", "BTCUSDT")
 
 
-def _weights_path_for(symbol: str) -> Path:
-    """Per-symbol .cbm path. Honours explicit HIGHFREQ_WEIGHTS_PATH override
-    (single-symbol legacy); otherwise derives from the symbol via the
-    trainer's filename convention (``{symbol.lower()}_1m.cbm``)."""
+def _weights_path_for(symbol: str, *, horizon_minutes: int = 1) -> Path:
+    """Per-(symbol × horizon) .cbm path. Honours explicit
+    HIGHFREQ_WEIGHTS_PATH override (single-symbol legacy); otherwise
+    derives from the symbol via the trainer's filename convention
+    ({symbol.lower()}_{horizon}m.cbm).
+
+    ``horizon_minutes`` defaults to 1 to preserve the production
+    contract; set via the ``HF_HORIZON_MINUTES`` env var for
+    long-horizon paper traders (release R, 2026-04-29)."""
     explicit = os.getenv("HIGHFREQ_WEIGHTS_PATH")
     if explicit:
         return Path(explicit)
-    return weights_path_for_symbol(symbol)
+    return weights_path_for_symbol(symbol, horizon_minutes=horizon_minutes)
 
 
 def _metrics_path_for(weights_path: Path) -> Path:
@@ -283,20 +288,51 @@ async def process_one_tick(
         )
         return None
 
-    # Pull the recent window.
-    df = await fetch_recent_seconds(pool, symbol)
+    # Pull the recent window. For multi-horizon we need MORE history:
+    # the long-horizon pipeline needs ≥20 complete bars to bootstrap
+    # EMA(20) / RSI(14) / Bollinger(20). For a 15m model that means
+    # 20 × 15 = 300 minutes; we ask for 25 bars worth = 25 × bar_minutes
+    # to also have the in-flight bar's headroom dropped.
+    # ``getattr`` defaults preserve the legacy contract for predictor
+    # stubs in tests (and any minimal predictor implementation that
+    # predates release R's feature_set / bar_minutes accessors).
+    fs_for_lookback = getattr(predictor, "feature_set", lambda: "microstructure")()
+    bm_for_lookback = getattr(predictor, "bar_minutes", lambda: 1)()
+    if fs_for_lookback == "long_horizon" and bm_for_lookback > 1:
+        # 25 bars × bar_minutes × 60s + 60s headroom for in-flight drop.
+        lookback = 25 * bm_for_lookback * 60 + 60
+    else:
+        lookback = LOOKBACK_SECONDS
+    df = await fetch_recent_seconds(pool, symbol, lookback_seconds=lookback)
     if df.empty:
         logger.info(
             "tick %s: DB returned no rows in the last %ds — ingest down?",
-            bar_close_ts.isoformat(), LOOKBACK_SECONDS,
+            bar_close_ts.isoformat(), lookback,
         )
         return None
 
-    inference = build_latest_inference_bar(df)
+    # Multi-horizon dispatch (release R, 2026-04-29). The predictor
+    # reads ``feature_set`` + ``bar_minutes`` from metrics.json and we
+    # call the matching live-inference helper so the feature row's
+    # column count matches the model's. Legacy 1m / microstructure
+    # path (default) is unchanged.  ``getattr`` defaults keep this
+    # backwards-compatible with predictor stubs in tests.
+    fs = getattr(predictor, "feature_set", lambda: "microstructure")()
+    bm = getattr(predictor, "bar_minutes", lambda: 1)()
+    if fs == "long_horizon":
+        from app.highfreq.feature_pipeline_long_horizon import (
+            build_latest_inference_bar_long_horizon,
+        )
+        inference = build_latest_inference_bar_long_horizon(
+            df, bar_minutes=bm,
+        )
+    else:
+        inference = build_latest_inference_bar(df)
     if inference is None:
         logger.info(
-            "tick %s: not enough recent data for a complete bar — skipping",
-            bar_close_ts.isoformat(),
+            "tick %s: not enough recent data for a complete bar "
+            "(feature_set=%s bar_minutes=%d) — skipping",
+            bar_close_ts.isoformat(), fs, bm,
         )
         return None
     feat, microprice_close = inference
@@ -748,11 +784,20 @@ async def main() -> None:
             metrics_port,
         )
 
-    weights_path = _weights_path_for(symbol)
+    # Multi-horizon support (release R, 2026-04-29). HF_HORIZON_MINUTES
+    # selects which trained .cbm to load (default 1 → 1m model);
+    # PaperTraderConfig.horizon_minutes mirrors so the time-stop fires
+    # at the same horizon the model was trained on.
+    horizon_minutes = int(os.environ.get("HF_HORIZON_MINUTES", "1"))
+    if horizon_minutes <= 0:
+        raise ValueError(
+            f"HF_HORIZON_MINUTES must be positive, got {horizon_minutes}"
+        )
+    weights_path = _weights_path_for(symbol, horizon_minutes=horizon_minutes)
     metrics_path = _metrics_path_for(weights_path)
     logger.info(
-        "predictor weights=%s metrics=%s symbol=%s",
-        weights_path, metrics_path, symbol,
+        "predictor weights=%s metrics=%s symbol=%s horizon=%dm",
+        weights_path, metrics_path, symbol, horizon_minutes,
     )
     predictor = LivePredictor(
         weights_path=weights_path, metrics_path=metrics_path,
@@ -792,6 +837,7 @@ async def main() -> None:
             require_calibrated=not demo_mode,
             entry_long_threshold=entry_long,
             entry_short_threshold=entry_short,
+            horizon_minutes=horizon_minutes,
         ),
         risk_caps=RiskCaps(),
     )

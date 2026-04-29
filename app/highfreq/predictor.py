@@ -83,15 +83,25 @@ def _default_weights_path() -> Path:
     ))
 
 
-def weights_path_for_symbol(symbol: str) -> Path:
-    """Trainer-convention weights path for ``symbol``.
+def weights_path_for_symbol(
+    symbol: str, *, horizon_minutes: int = 1,
+) -> Path:
+    """Trainer-convention weights path for ``symbol`` × ``horizon_minutes``.
 
-    e.g. ``"BTCUSDT"`` → ``weights/highfreq/btcusdt_1m.cbm``.
+    e.g. ``("BTCUSDT", horizon_minutes=1)`` →
+    ``weights/highfreq/btcusdt_1m.cbm``;
+    ``("BTCUSDT", horizon_minutes=15)`` →
+    ``weights/highfreq/btcusdt_15m.cbm``.
+
     The base directory is overridable via ``HIGHFREQ_WEIGHTS_DIR`` env
     (default ``weights/highfreq``) so dev / prod / test can split.
+
+    ``horizon_minutes`` defaults to 1 to preserve the original
+    single-horizon contract — existing call sites continue to read
+    ``btcusdt_1m.cbm`` without changes (release R, 2026-04-29).
     """
     base = Path(os.getenv("HIGHFREQ_WEIGHTS_DIR", "weights/highfreq"))
-    return base / f"{symbol.lower()}_1m.cbm"
+    return base / f"{symbol.lower()}_{int(horizon_minutes)}m.cbm"
 
 
 def _metrics_path_for(weights_path: Path) -> Path:
@@ -275,6 +285,38 @@ class LivePredictor:
         except (TypeError, ValueError):
             return False
 
+    def feature_set(self) -> str:
+        """Feature pipeline the model was trained with.
+
+        Reads from metrics.json (``feature_set`` field, written by the
+        trainer in release R). Falls back to ``"microstructure"`` for
+        legacy models that don't carry the field — preserves the
+        original 1m / microstructure contract.
+
+        Used by the live-inference path to dispatch to the matching
+        ``build_latest_inference_bar*`` helper so the live feature
+        vector matches the 18- or 24-column shape the model expects.
+        """
+        self._maybe_reload_metrics()
+        if self._metrics is None:
+            return "microstructure"
+        return str(self._metrics.get("feature_set", "microstructure"))
+
+    def bar_minutes(self) -> int:
+        """Bar size (in minutes) the model was trained with.
+
+        Reads from metrics.json (``bar_minutes`` field, written by the
+        trainer in release R). Falls back to 1 for legacy models —
+        preserves the original 1m contract.
+        """
+        self._maybe_reload_metrics()
+        if self._metrics is None:
+            return 1
+        try:
+            return int(self._metrics.get("bar_minutes", 1))
+        except (TypeError, ValueError):
+            return 1
+
     def model_age_seconds(self, now: float | None = None) -> float | None:
         """Seconds since the weights file was last written, or ``None``."""
         self._maybe_reload_model()
@@ -325,28 +367,53 @@ class LivePredictor:
     # Internals
     # ──────────────────────────────────────────────────────────────────
 
+    def _expected_feature_columns(self) -> list[str]:
+        """Resolve the column list this model was trained with.
+
+        Default ``microstructure`` for backward compat with legacy
+        metrics.json files (release R, 2026-04-29). When metrics
+        records ``feature_set='long_horizon'`` we return the 24-column
+        TA list — keeps the train-vs-serve invariant the architecture
+        ADR-001 named as the most insidious production-ML bug.
+        """
+        fs = self.feature_set()
+        if fs == "long_horizon":
+            from app.highfreq.feature_pipeline_long_horizon import (
+                LONG_HORIZON_FEATURE_COLUMNS,
+            )
+            return LONG_HORIZON_FEATURE_COLUMNS
+        return FEATURE_COLUMNS
+
     def _prepare_features(
         self, features_row: pd.Series | dict[str, float] | np.ndarray
     ) -> np.ndarray:
-        """Coerce the input into a 1-D float array matching FEATURE_COLUMNS."""
+        """Coerce input to a 1-D float array matching the expected columns.
+
+        The "expected columns" are dictated by the model's
+        ``feature_set`` recorded in metrics.json — either the 18-column
+        microstructure list (1m models) or the 24-column long-horizon
+        list (5m+ models). Re-resolved on every call so a hot-reloaded
+        model can swap pipelines without process restart.
+        """
+        cols = self._expected_feature_columns()
         if isinstance(features_row, pd.Series):
             try:
-                ordered = features_row.reindex(FEATURE_COLUMNS)
+                ordered = features_row.reindex(cols)
             except Exception:  # noqa: BLE001
                 # Fall back to positional if reindex is impossible (no matching index).
-                ordered = pd.Series(features_row.values, index=FEATURE_COLUMNS)
+                ordered = pd.Series(features_row.values, index=cols)
             arr = ordered.to_numpy(dtype=float, copy=False)
         elif isinstance(features_row, dict):
             arr = np.array(
-                [float(features_row.get(c, 0.0)) for c in FEATURE_COLUMNS],
+                [float(features_row.get(c, 0.0)) for c in cols],
                 dtype=float,
             )
         else:
             arr = np.asarray(features_row, dtype=float).ravel()
-            if arr.shape[0] != len(FEATURE_COLUMNS):
+            if arr.shape[0] != len(cols):
                 raise ValueError(
                     f"feature vector has {arr.shape[0]} elements, "
-                    f"expected {len(FEATURE_COLUMNS)} (FEATURE_COLUMNS)"
+                    f"expected {len(cols)} ({self.feature_set()})"
                 )
 
         # Scrub NaN / inf — same contract as `aggregator._safe`.
@@ -483,16 +550,26 @@ _predictors_by_symbol: dict[str, LivePredictor] = {}
 _predictor_lock = threading.Lock()
 
 
-def get_predictor(symbol: str | None = None) -> LivePredictor:
+def get_predictor(
+    symbol: str | None = None,
+    *,
+    horizon_minutes: int = 1,
+) -> LivePredictor:
     """Return a :class:`LivePredictor` instance.
 
     * ``symbol=None`` (legacy / default) → process-wide singleton tied
       to the env-overridable ``HIGHFREQ_WEIGHTS_PATH``. Kept for
       backward compatibility with the single-symbol code path.
-    * ``symbol="BTCUSDT"`` (multi-symbol mode) → per-symbol cached
-      instance whose weights/metrics paths are derived purely from the
-      symbol via :func:`weights_path_for_symbol`. Each FastAPI worker
-      process holds at most one predictor per symbol.
+      ``horizon_minutes`` is ignored on this path.
+    * ``symbol="BTCUSDT"`` (multi-symbol mode) → per-(symbol × horizon)
+      cached instance whose weights/metrics paths derive from
+      :func:`weights_path_for_symbol`. Each FastAPI worker process
+      holds at most one predictor per (symbol, horizon) pair.
+
+    ``horizon_minutes`` (default 1) selects the bar size — 1 keeps the
+    original ``btcusdt_1m.cbm`` contract; 15 / 60 read the long-horizon
+    weights produced by ``--bar-minutes 15`` etc. trainer runs
+    (release R, 2026-04-29).
 
     The two caches are independent — calling ``get_predictor()`` then
     ``get_predictor("BTCUSDT")`` yields two different instances (they
@@ -509,15 +586,16 @@ def get_predictor(symbol: str | None = None) -> LivePredictor:
         return _predictor
 
     sym = symbol.upper()
-    cached = _predictors_by_symbol.get(sym)
+    cache_key = f"{sym}_{int(horizon_minutes)}m"
+    cached = _predictors_by_symbol.get(cache_key)
     if cached is not None:
         return cached
     with _predictor_lock:
-        cached = _predictors_by_symbol.get(sym)
+        cached = _predictors_by_symbol.get(cache_key)
         if cached is None:
-            wp = weights_path_for_symbol(sym)
+            wp = weights_path_for_symbol(sym, horizon_minutes=horizon_minutes)
             cached = LivePredictor(weights_path=wp)
-            _predictors_by_symbol[sym] = cached
+            _predictors_by_symbol[cache_key] = cached
     return cached
 
 

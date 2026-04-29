@@ -87,6 +87,75 @@ from app.highfreq.feature_pipeline import (  # noqa: E402  (re-export)
 )
 
 
+def _resolve_feature_set(feature_set: str, bar_minutes: int) -> str:
+    """Resolve ``feature_set='auto'`` based on ``bar_minutes``.
+
+    1-minute bars → microstructure (production-tested for OFI signal).
+    5+ minute bars → long_horizon TA (microstructure decays into noise
+    at that scale; OHLC/EMA/RSI capture multi-bar momentum + regime).
+    """
+    if feature_set != "auto":
+        if feature_set not in ("microstructure", "long_horizon"):
+            raise ValueError(
+                f"feature_set must be 'auto' / 'microstructure' / "
+                f"'long_horizon', got {feature_set!r}"
+            )
+        return feature_set
+    return "microstructure" if bar_minutes <= 1 else "long_horizon"
+
+
+def _make_supervised_for_feature_set(
+    df_secs: pd.DataFrame,
+    *,
+    feature_set: str,
+    bar_minutes: int,
+    horizon: int = HORIZON_MIN,
+    neutral_band_bps: float = NEUTRAL_BAND_BPS,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Pipeline-aware (X, y, meta) builder.
+
+    For ``microstructure`` calls the canonical :func:`make_supervised`.
+    For ``long_horizon`` inlines the same shape: aggregate → target →
+    drop unobservable + neutral-band → build long-horizon features.
+    Returns the same `(X, y, meta)` triple in either case so
+    walk-forward CV / fit_final_model don't care about the source.
+    """
+    resolved = _resolve_feature_set(feature_set, bar_minutes)
+    if resolved == "microstructure":
+        return make_supervised(
+            df_secs,
+            horizon=horizon,
+            neutral_band_bps=neutral_band_bps,
+            bar_minutes=bar_minutes,
+        )
+
+    # long_horizon path. We replicate make_supervised's logic but swap
+    # build_features for build_long_horizon_features.
+    from app.highfreq.feature_pipeline_long_horizon import (
+        LONG_HORIZON_FEATURE_COLUMNS,
+        build_long_horizon_features,
+    )
+    minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
+    targeted = build_target(
+        minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps,
+    )
+    if targeted.empty:
+        empty_X = pd.DataFrame(columns=LONG_HORIZON_FEATURE_COLUMNS)
+        empty_y = pd.Series(dtype=np.int8, name="y")
+        empty_meta = pd.DataFrame(columns=[
+            "symbol", "minute", "microprice_close", "return_bps",
+        ])
+        return empty_X, empty_y, empty_meta
+    keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
+    targeted = targeted.loc[keep].reset_index(drop=True)
+    X = build_long_horizon_features(targeted)[LONG_HORIZON_FEATURE_COLUMNS]
+    y = targeted["y"].astype(np.int8)
+    meta = targeted[
+        ["symbol", "minute", "microprice_close", "return_bps"]
+    ].copy()
+    return X, y, meta
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Walk-forward evaluation
 # ────────────────────────────────────────────────────────────────────────────
@@ -108,6 +177,18 @@ class WalkForwardConfig:
     catboost_depth: int = 5
     catboost_learning_rate: float = 0.05
     catboost_thread_count: int = 2           # ADR-006
+    #: Bar size in minutes for aggregation (release R, multi-horizon
+    #: support). 1 = original 1-minute contract; 5/15/60 = longer
+    #: horizons that catch where E[|move|] grows enough to clear the
+    #: fee burden (see ADR-017 trade-off table). Multi-horizon eval
+    #: empirically validated this lift on 15m + 60m horizons.
+    bar_minutes: int = 1
+    #: Feature pipeline. ``"auto"`` picks microstructure for 1-minute
+    #: bars (the production-tested pipeline) and long-horizon TA
+    #: (OHLC + EMA + RSI + Bollinger) for ≥5-minute bars where
+    #: microstructure decays into noise. ``"microstructure"`` /
+    #: ``"long_horizon"`` force the pipeline regardless of bar size.
+    feature_set: str = "auto"
     random_seed: int = 42
     #: Days of the most-recent data the trainer is FORBIDDEN from
     #: looking at — neither walk-forward CV folds nor the final-model
@@ -195,10 +276,22 @@ def walk_forward_evaluate(
             "pip install catboost>=1.2"
         ) from exc
 
-    if len(X) < cfg.initial_train_minutes + cfg.test_fold_minutes:
+    # Scale fold geometry by bar_minutes (release R, multi-horizon).
+    # Config fields are semantically "minutes of WALL-CLOCK data", but
+    # X has ONE ROW PER BAR, so for 5/15/60-minute bars the positional
+    # indices need scaling. ``initial_train_minutes=1440`` (1 day) maps
+    # to 1440 bars on 1m, 96 bars on 15m, 24 bars on 60m.
+    bm = max(1, int(cfg.bar_minutes))
+    initial_train_bars = max(cfg.min_train_samples, cfg.initial_train_minutes // bm)
+    test_fold_bars = max(1, cfg.test_fold_minutes // bm)
+    step_bars = max(1, cfg.step_minutes // bm)
+
+    if len(X) < initial_train_bars + test_fold_bars:
         logger.warning(
-            "walk_forward_evaluate: only %d minutes available, need ≥%d for one fold",
-            len(X), cfg.initial_train_minutes + cfg.test_fold_minutes,
+            "walk_forward_evaluate: only %d bars available, need ≥%d for one fold "
+            "(bar_minutes=%d, initial_train_bars=%d, test_fold_bars=%d)",
+            len(X), initial_train_bars + test_fold_bars,
+            bm, initial_train_bars, test_fold_bars,
         )
         return [], pd.DataFrame(columns=["minute", "y_true", "proba", "y_pred", "fold_idx"])
 
@@ -210,10 +303,10 @@ def walk_forward_evaluate(
     folds: list[FoldReport] = []
     pred_rows: list[dict[str, Any]] = []
 
-    train_end = cfg.initial_train_minutes
+    train_end = initial_train_bars
     fold_idx = 0
-    while train_end + cfg.test_fold_minutes <= len(X):
-        test_end = train_end + cfg.test_fold_minutes
+    while train_end + test_fold_bars <= len(X):
+        test_end = train_end + test_fold_bars
 
         # Apply embargo + purge (López de Prado). Embargo: drop the
         # last ``embargo_bars`` of the train fold so the model can't
@@ -225,7 +318,13 @@ def walk_forward_evaluate(
         X_te, y_te = X.iloc[train_end:test_end], y.iloc[train_end:test_end]
 
         if len(X_tr) < cfg.min_train_samples:
-            train_end += cfg.step_minutes
+            # Skip-fold path: advance by the SAME bar-scaled step the
+            # successful path uses. Pre-release-R this branch used the
+            # raw ``cfg.step_minutes`` which was correct only when
+            # bar_minutes=1; on 15m bars that meant skipping 60 bars
+            # at a time (15 hours of data) and producing 0 folds even
+            # when only the first fold needed to be skipped.
+            train_end += step_bars
             continue
 
         clf = CatBoostClassifier(
@@ -276,7 +375,7 @@ def walk_forward_evaluate(
                 "y_pred": int(y_hat[i]),
                 "fold_idx": fold_idx,
             })
-        train_end += cfg.step_minutes
+        train_end += step_bars
         fold_idx += 1
 
     preds_df = pd.DataFrame(pred_rows)
@@ -558,6 +657,17 @@ class TrainingReport:
     #: no folds have been produced yet. Release Q (2026-04-29).
     dir_acc_bayesian_ci_low: float | None = None
     dir_acc_bayesian_ci_high: float | None = None
+    #: Bar size in minutes the model was trained at (release R). The
+    #: predictor reads this so it can aggregate live seconds → bars
+    #: at the right granularity at inference time.
+    bar_minutes: int = 1
+    #: Feature pipeline used at training time (release R). The
+    #: predictor reads this so the live inference path uses the SAME
+    #: pipeline that produced the .cbm — avoids the Feature 18 vs 24
+    #: column-count drift between train (long_horizon, 24 cols) and
+    #: serve (microstructure, 18 cols) that broke the first 15m
+    #: paper-trader spawn.
+    feature_set: str = "microstructure"
 
     def to_json(self) -> str:
         """JSON-serialise the report. NaN/Inf are emitted as ``null`` so
@@ -589,11 +699,20 @@ def run_training(
     df_secs = load_seconds(database_url, symbol=symbol, since_hours=since_hours)
     logger.info("loaded %d seconds of data for %s", len(df_secs), symbol)
 
-    minute_df = aggregate_to_minute(df_secs)
-    n_min = len(minute_df)
-    logger.info("aggregated to %d minute bars", n_min)
+    bm = max(1, int(cfg.bar_minutes))
+    fs = _resolve_feature_set(cfg.feature_set, bm)
+    logger.info(
+        "bar_minutes=%d feature_set=%s (resolved from %s)",
+        bm, fs, cfg.feature_set,
+    )
 
-    X, y, meta = make_supervised(df_secs)
+    minute_df = aggregate_to_minute(df_secs, bar_minutes=bm)
+    n_min = len(minute_df)
+    logger.info("aggregated to %d %d-minute bars", n_min, bm)
+
+    X, y, meta = _make_supervised_for_feature_set(
+        df_secs, feature_set=cfg.feature_set, bar_minutes=bm,
+    )
     n_min_kept = len(X)
     logger.info(
         "after target+neutral-band drop: %d bars (%.1f%% kept)",
@@ -733,6 +852,8 @@ def run_training(
         calibrator_ece=calibrator_ece,
         dir_acc_bayesian_ci_low=bayes_lo,
         dir_acc_bayesian_ci_high=bayes_hi,
+        bar_minutes=bm,
+        feature_set=fs,
         folds=[asdict(f) for f in folds],
         # Cautious default: claim "we have skill" only when the 95 % CI
         # lower bound is strictly above chance. NaN (no data) keeps the
@@ -778,6 +899,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Set 0 during early bootstrap when every bar matters.",
     )
     p.add_argument(
+        "--bar-minutes", type=int, default=1,
+        help="bar size in minutes. 1 = production 1-minute model "
+             "(microstructure features); 5/15/60 = longer horizons "
+             "with long-horizon TA features (auto-selected). Output "
+             "weights path should reflect the horizon, e.g. "
+             "btcusdt_15m.cbm. Release R / 2026-04-29.",
+    )
+    p.add_argument(
+        "--feature-set", default="auto",
+        choices=("auto", "microstructure", "long_horizon"),
+        help="feature pipeline. 'auto' (default) picks microstructure "
+             "for 1m bars and long_horizon TA for ≥5m. Force a "
+             "specific pipeline only for ablation studies.",
+    )
+    p.add_argument(
         "--log-level", default=os.getenv("LOG_LEVEL", "INFO"),
     )
     return p.parse_args(argv)
@@ -798,6 +934,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = WalkForwardConfig(
         initial_train_minutes=args.initial_train_minutes,
         frozen_holdout_days=args.frozen_holdout_days,
+        bar_minutes=args.bar_minutes,
+        feature_set=args.feature_set,
     )
     out = Path(args.out) if args.out else None
 

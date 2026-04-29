@@ -1,0 +1,38 @@
+[Unit]
+Description=NeuCast Paper Trader (multi-horizon) for %I — Phase C, sim-only ADR-005, release R 2026-04-29
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service neucast-highfreq.service
+Wants=neucast-highfreq.service
+
+# Instance name format: <symbol>-h<horizon>m (e.g. "btcusdt-h15m",
+# "ethusdt-h60m"). The wrapper script parses %I and exports
+# HIGHFREQ_PAPER_SYMBOL + HF_HORIZON_MINUTES before exec'ing the
+# runner. Wrapper is a separate file because systemd's ${} expansion
+# would clobber bash's ${} parameter expansion if inlined here.
+# The 1m runner keeps using the existing neucast-paper-trader@%I.service
+# template (instance="btcusdt") for backward compat — no changes there.
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+
+ExecStart=/opt/neucast/tools/run_paper_trader_multihorizon.sh %i
+
+Restart=always
+RestartSec=10
+MemoryMax=300M
+MemoryHigh=200M
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+
+# Graceful shutdown: SIGTERM lets the loop run its force_close path
+# (flatten any open position, persist the closing trade) before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
