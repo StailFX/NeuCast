@@ -1,49 +1,64 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Прогноз на минуту — NeuCast</title>
+  <title>Прогноз BTC, ETH, BNB на минуту вперёд — NeuCast Live</title>
+  <meta name="description" content="NeuCast Live — модель машинного обучения смотрит на стакан Binance Spot и каждую минуту прогнозирует направление BTC, ETH и BNB. Симуляция, открытые метрики.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://neucast.ru/forecast">
+
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
 
-  <meta name="description" content="Куда пойдёт BTC, ETH и BNB через минуту? Живой прогноз направления крипто-курсов.">
-  <meta name="robots" content="index, follow">
-
-  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
+  <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-800.woff2">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
 
   <style>
+    /* ── Self-hosted Inter (same as landing) ── */
     @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
       src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }
-    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap;
-      src: url('/static/fonts/inter-latin-600.woff2') format('woff2'); }
     @font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
       src: url('/static/fonts/inter-latin-700.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter'; font-style: normal; font-weight: 800; font-display: swap;
+      src: url('/static/fonts/inter-latin-800.woff2') format('woff2'); }
+    @font-face { font-family: 'Inter-fallback';
+      src: local('Arial'), local('Helvetica'), local('sans-serif');
+      size-adjust: 107%; ascent-override: 90%; descent-override: 22%; line-gap-override: 0%; }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    /* Same design tokens as landing.html — single source of truth. */
     :root {
       --green: #10b981;
-      --red: #ef4444;
+      --green-dark: #059669;
+      --blue: #3b82f6;
       --amber: #f59e0b;
+      --purple: #a78bfa;
+      --red: #ef4444;
+      --teal: #14b8a6;
       --bg: #060a13;
-      --bg-card: rgba(12, 20, 35, 0.85);
+      --bg-card: rgba(12, 20, 35, 0.95);
+      --bg-card-soft: rgba(12, 20, 35, 0.85);
       --border: rgba(51, 65, 85, 0.35);
-      --text: #e2e8f0;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
+      --border-soft: rgba(51, 65, 85, 0.2);
+      --text: #f1f5f9;
+      --text-muted: #b0bdd0;
+      --text-dim: #94a3b8;
     }
+
+    html { scroll-behavior: smooth; }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-family: 'Inter', 'Inter-fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
       color: var(--text);
+      overflow-x: hidden;
       min-height: 100vh;
-      line-height: 1.5;
     }
 
-    /* Subtle grid background — same as landing for visual consistency. */
+    /* ── Background grid + orbs (copied from landing for style continuity) ── */
     body::before {
       content: '';
       position: fixed;
@@ -55,548 +70,1079 @@
       z-index: 0;
       pointer-events: none;
     }
-
-    .container {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 2rem 1.5rem;
-      position: relative;
-      z-index: 1;
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(40px);
+      pointer-events: none;
+      z-index: 0;
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      contain: layout style paint;
     }
+    .orb-1 { width: 420px; height: 420px; background: rgba(16, 185, 129, 0.07); top: -120px; left: -80px; }
+    .orb-2 { width: 360px; height: 360px; background: rgba(59, 130, 246, 0.06); top: 40%; right: -100px; }
+    .orb-3 { width: 320px; height: 320px; background: rgba(167, 139, 250, 0.05); bottom: -80px; left: 30%; }
+    @media (max-width: 767px) { .orb-3 { display: none; } }
 
-    /* ── Header ── */
-    header {
+    /* ── Navbar (same as landing) ── */
+    .nav {
+      position: fixed;
+      top: 0;
+      width: 100%;
+      z-index: 100;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 1rem;
-      margin-bottom: 2rem;
+      padding: 1rem 3rem;
+      background: rgba(6, 10, 19, 0.85);
       border-bottom: 1px solid var(--border);
     }
-    .logo {
-      font-size: 1.25rem;
-      font-weight: 700;
-      color: var(--text);
-      text-decoration: none;
+    @supports (backdrop-filter: blur(1px)) {
+      @media (min-width: 769px) {
+        .nav { backdrop-filter: blur(24px); background: rgba(6, 10, 19, 0.6); }
+      }
     }
-    .logo span { color: var(--green); }
-    nav a {
-      color: var(--text-muted);
-      text-decoration: none;
-      font-size: 0.9rem;
-      margin-left: 1.5rem;
+    .nav-brand {
+      display: flex; align-items: center; gap: 0.75rem; text-decoration: none;
     }
-    nav a:hover { color: var(--text); }
+    .nav-logo {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--green), var(--blue));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+    }
+    .nav-logo svg { width: 18px; height: 18px; fill: white; }
+    .nav-name { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+    .nav-links { display: flex; gap: 0.75rem; align-items: center; }
+    .nav-btn {
+      padding: 0.55rem 1.3rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      font-family: inherit;
+      border-radius: 10px;
+      text-decoration: none;
+      transition: all 0.25s;
+      border: 1px solid transparent;
+    }
+    .nav-btn-ghost {
+      color: var(--text-dim);
+      border-color: var(--border);
+      background: transparent;
+    }
+    .nav-btn-ghost:hover { color: var(--text); border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.05); }
+    .nav-btn-primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--green), var(--green-dark));
+      border: none;
+      box-shadow: 0 2px 12px rgba(16, 185, 129, 0.2);
+    }
+    .nav-btn-primary:hover { box-shadow: 0 4px 24px rgba(16, 185, 129, 0.35); transform: translateY(-1px); }
 
     /* ── Hero ── */
     .hero {
-      text-align: center;
-      margin: 2rem 0 3rem;
-    }
-    .hero h1 {
-      font-size: clamp(1.75rem, 4vw, 2.5rem);
-      font-weight: 700;
-      margin-bottom: 0.75rem;
-      letter-spacing: -0.02em;
-    }
-    .hero p {
-      color: var(--text-muted);
-      max-width: 500px;
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
       margin: 0 auto;
-      font-size: 1rem;
+      padding: 9rem 2rem 3rem;
+      text-align: center;
     }
-    .live-dot {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 1.15rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--green);
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      border-radius: 50px;
+      margin-bottom: 1.75rem;
+      letter-spacing: 0.02em;
+    }
+    .hero-badge .dot {
+      width: 7px; height: 7px;
       background: var(--green);
       border-radius: 50%;
-      margin-right: 0.5rem;
-      animation: pulse 1.5s ease-in-out infinite;
+      animation: pulse 2s ease-in-out infinite;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
     }
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.6; transform: scale(1.3); }
+      50% { opacity: 0.4; transform: scale(0.85); }
     }
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.04em;
+      margin-bottom: 1.25rem;
+      color: var(--text);
+    }
+    h1 .gradient {
+      background: linear-gradient(135deg, #34d399, #60a5fa, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-sub {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+      max-width: 640px;
+      margin: 0 auto 2rem;
+    }
+    .hero-meta {
+      display: flex;
+      gap: 1.25rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+    .hero-meta .dot { color: var(--text-dim); margin: 0 0.5rem; opacity: 0.5; }
 
-    /* ── Prediction cards ── */
+    /* ── Cards grid ── */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 2rem;
+    }
     .cards {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      grid-template-columns: repeat(3, 1fr);
       gap: 1.25rem;
-      margin-bottom: 3rem;
+      margin-bottom: 2.5rem;
     }
+    @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
+
     .card {
+      position: relative;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1.5rem;
-      backdrop-filter: blur(10px);
-      transition: transform 0.2s, border-color 0.2s;
+      border-radius: 20px;
+      padding: 1.75rem;
+      overflow: hidden;
+      transition: border-color 0.4s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     }
-    .card.up { border-color: rgba(16, 185, 129, 0.4); }
-    .card.down { border-color: rgba(239, 68, 68, 0.4); }
-    .card.neutral { border-color: rgba(245, 158, 11, 0.3); }
-    .card.loading { opacity: 0.6; }
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 20px;
+      padding: 1px;
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+    }
+    .card.up {
+      border-color: rgba(16, 185, 129, 0.35);
+      box-shadow: 0 12px 48px rgba(16, 185, 129, 0.08);
+    }
+    .card.up::before {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), transparent 60%);
+      opacity: 1;
+    }
+    .card.down {
+      border-color: rgba(239, 68, 68, 0.35);
+      box-shadow: 0 12px 48px rgba(239, 68, 68, 0.08);
+    }
+    .card.down::before {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.3), transparent 60%);
+      opacity: 1;
+    }
+    .card.neutral {
+      border-color: rgba(245, 158, 11, 0.3);
+    }
+    .card.loading {
+      opacity: 0.55;
+    }
 
-    .card-symbol {
+    .card-head {
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: flex-start;
       margin-bottom: 1rem;
     }
-    .card-symbol strong {
-      font-size: 1.3rem;
-      font-weight: 700;
+    .card-symbol {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
     }
-    .card-price {
+    .card-icon {
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
       font-size: 0.85rem;
+      font-weight: 800;
+      color: #fff;
+    }
+    .card-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .card-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .card-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .card-symbol-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .card-symbol-pair {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .card-horizon {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0.3rem 0.65rem;
+      border-radius: 8px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    .card-price {
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      margin-bottom: 0.4rem;
+    }
+    .card-price-sub {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      margin-bottom: 1.25rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .card-prediction {
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid var(--border-soft);
+      border-radius: 14px;
+      padding: 1.1rem;
+      margin-bottom: 1rem;
+    }
+    .card-prediction-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .card-prediction-label {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+    }
+    .card-prediction-time {
+      font-size: 0.72rem;
       color: var(--text-muted);
       font-variant-numeric: tabular-nums;
     }
-    .card-direction {
+    .verdict-row {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      margin: 1.25rem 0;
+      gap: 1rem;
     }
     .arrow {
-      font-size: 3rem;
+      width: 56px;
+      height: 56px;
+      flex-shrink: 0;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.3rem;
+      font-weight: 800;
       line-height: 1;
-      font-weight: 700;
     }
-    .arrow.up { color: var(--green); }
-    .arrow.down { color: var(--red); }
-    .arrow.neutral { color: var(--amber); }
-    .direction-text {
+    .arrow.up { color: var(--green); background: rgba(16, 185, 129, 0.1); }
+    .arrow.down { color: var(--red); background: rgba(239, 68, 68, 0.1); }
+    .arrow.neutral { color: var(--amber); background: rgba(245, 158, 11, 0.1); }
+    .arrow.loading { color: var(--text-dim); background: rgba(255,255,255,0.03); font-size: 1.4rem; }
+    .verdict {
       flex: 1;
+      min-width: 0;
     }
-    .direction-text .label {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .direction-text .verdict {
-      font-size: 1.5rem;
+    .verdict-text {
+      font-size: 1.4rem;
       font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.15;
+      margin-bottom: 0.4rem;
     }
-    .verdict.up { color: var(--green); }
-    .verdict.down { color: var(--red); }
-    .verdict.neutral { color: var(--amber); }
+    .verdict-text.up { color: var(--green); }
+    .verdict-text.down { color: var(--red); }
+    .verdict-text.neutral { color: var(--amber); }
+    .verdict-text.loading { color: var(--text-dim); font-size: 0.95rem; font-weight: 500; }
     .confidence-bar {
-      height: 6px;
+      height: 5px;
       background: rgba(255, 255, 255, 0.05);
       border-radius: 3px;
       overflow: hidden;
-      margin: 0.5rem 0 0.4rem;
+      margin-bottom: 0.4rem;
     }
     .confidence-fill {
       height: 100%;
-      transition: width 0.5s ease;
+      transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s;
       border-radius: 3px;
     }
-    .confidence-fill.up { background: var(--green); }
-    .confidence-fill.down { background: var(--red); }
-    .confidence-fill.neutral { background: var(--amber); }
+    .confidence-fill.up { background: linear-gradient(90deg, var(--green), #34d399); }
+    .confidence-fill.down { background: linear-gradient(90deg, var(--red), #fb7185); }
+    .confidence-fill.neutral { background: linear-gradient(90deg, var(--amber), #fbbf24); }
     .confidence-text {
-      font-size: 0.85rem;
+      font-size: 0.75rem;
       color: var(--text-muted);
       font-variant-numeric: tabular-nums;
     }
-    .card-foot {
+    .card-meta-row {
       display: flex;
       justify-content: space-between;
-      font-size: 0.75rem;
+      gap: 0.75rem;
+      font-size: 0.72rem;
       color: var(--text-dim);
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border);
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border-soft);
     }
-    .pending-msg {
+    .card-meta-row span { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+    /* ── Section base ── */
+    .section {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 3rem 2rem;
+      position: relative;
+      z-index: 1;
+    }
+    .section-label {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--green);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.75rem;
+    }
+    .section h2 {
+      font-size: clamp(1.6rem, 3vw, 2rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.75rem;
+    }
+    .section-sub {
       color: var(--text-muted);
-      font-size: 0.95rem;
-      padding: 1.5rem 0;
-      text-align: center;
+      max-width: 580px;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+    }
+
+    /* ── How-it-works grid ── */
+    .how-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+    }
+    @media (max-width: 800px) { .how-grid { grid-template-columns: 1fr; } }
+    .how-card {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+    }
+    .how-icon {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+    }
+    .how-icon.green { background: rgba(16, 185, 129, 0.12); color: var(--green); }
+    .how-icon.blue  { background: rgba(59, 130, 246, 0.12); color: var(--blue); }
+    .how-icon.amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); }
+    .how-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+    }
+    .how-card p {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.55;
     }
 
     /* ── Stats strip ── */
     .stats {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 1rem;
-      margin-bottom: 2rem;
-    }
-    .stat {
+      grid-template-columns: repeat(4, 1fr);
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1.25rem;
+      border-radius: 18px;
+      padding: 1.6rem 1.25rem;
+      margin-bottom: 2rem;
+    }
+    @media (max-width: 700px) { .stats { grid-template-columns: repeat(2, 1fr); padding: 1.25rem 0.75rem; } }
+    .stat {
       text-align: center;
+      position: relative;
+      padding: 0 0.5rem;
+    }
+    @media (min-width: 701px) {
+      .stat:not(:last-child)::after {
+        content: '';
+        position: absolute;
+        right: 0; top: 15%; height: 70%;
+        width: 1px;
+        background: var(--border);
+      }
     }
     .stat-value {
-      font-size: 1.75rem;
-      font-weight: 700;
+      font-size: 1.85rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      line-height: 1;
       font-variant-numeric: tabular-nums;
-      margin-bottom: 0.25rem;
     }
-    .stat-value.positive { color: var(--green); }
-    .stat-value.negative { color: var(--red); }
+    .stat-value.green    { color: var(--green); }
+    .stat-value.red      { color: var(--red); }
+    .stat-value.amber    { color: var(--amber); }
+    .stat-value.muted    { color: var(--text-muted); }
     .stat-label {
-      font-size: 0.8rem;
+      font-size: 0.7rem;
       color: var(--text-muted);
+      margin-top: 0.4rem;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.06em;
+      font-weight: 500;
+    }
+    .stat-helper {
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      margin-top: 0.2rem;
     }
 
-    /* ── Recent activity table ── */
-    section.activity {
+    /* ── Recent trades ── */
+    .trades-card {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 1.5rem;
-      margin-bottom: 2rem;
-    }
-    section.activity h2 {
-      font-size: 1.1rem;
-      font-weight: 600;
-      margin-bottom: 1rem;
-      color: var(--text-muted);
+      border-radius: 18px;
+      padding: 1.6rem;
     }
     .trades-list {
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
     }
     .trade {
       display: grid;
-      grid-template-columns: 60px 50px 1fr auto;
-      gap: 1rem;
-      padding: 0.75rem 0;
-      border-bottom: 1px solid var(--border);
+      grid-template-columns: 36px 1fr auto auto;
+      gap: 0.75rem;
       align-items: center;
-      font-size: 0.95rem;
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--border-soft);
     }
     .trade:last-child { border-bottom: none; }
-    .trade-symbol {
-      font-weight: 600;
-      font-size: 0.85rem;
+    .trade-icon {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 800;
+      color: #fff;
+    }
+    .trade-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .trade-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .trade-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .trade-meta {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
     }
     .trade-side {
+      font-size: 0.92rem;
       font-weight: 600;
-      font-size: 0.9rem;
     }
     .trade-side.long { color: var(--green); }
     .trade-side.short { color: var(--red); }
     .trade-when {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      font-variant-numeric: tabular-nums;
+      font-size: 0.72rem;
+      color: var(--text-dim);
     }
+    .trade-side-pill {
+      font-size: 0.62rem;
+      font-weight: 700;
+      padding: 0.15rem 0.5rem;
+      border-radius: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      align-self: flex-start;
+      margin-bottom: 0.2rem;
+      display: inline-block;
+    }
+    .trade-side-pill.long  { background: rgba(16, 185, 129, 0.1); color: var(--green); }
+    .trade-side-pill.short { background: rgba(239, 68, 68, 0.1); color: var(--red); }
+
     .trade-pnl {
+      text-align: right;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
-      text-align: right;
+      font-size: 0.95rem;
     }
     .trade-pnl.positive { color: var(--green); }
     .trade-pnl.negative { color: var(--red); }
-
+    .trade-bps {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
     .empty-state {
-      color: var(--text-muted);
+      color: var(--text-dim);
       text-align: center;
-      padding: 1.5rem;
+      padding: 2rem 1rem;
       font-size: 0.95rem;
+    }
+
+    /* ── Honesty section: why trades go negative on retail fees ── */
+    .honesty {
+      background: rgba(245, 158, 11, 0.04);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+      border-radius: 16px;
+      padding: 1.5rem 1.6rem;
+      margin-bottom: 2rem;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1.1rem;
+      align-items: start;
+    }
+    .honesty-icon {
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--amber);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem;
+      font-weight: 800;
+      flex-shrink: 0;
+    }
+    .honesty h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+    .honesty p {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+    .honesty p + p { margin-top: 0.5rem; }
+    .honesty code {
+      background: rgba(255, 255, 255, 0.06);
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
     }
 
     /* ── Footer ── */
     footer {
-      margin-top: 3rem;
-      padding-top: 1.5rem;
+      max-width: 1100px;
+      margin: 4rem auto 0;
+      padding: 2rem;
       border-top: 1px solid var(--border);
       color: var(--text-dim);
       font-size: 0.8rem;
+      line-height: 1.7;
       text-align: center;
-      line-height: 1.6;
+      position: relative;
+      z-index: 1;
     }
-    footer p { margin: 0.25rem 0; }
+    footer p { margin: 0.3rem 0; }
     footer a { color: var(--text-muted); }
+    footer .footer-links {
+      display: flex;
+      gap: 1.25rem;
+      justify-content: center;
+      margin-top: 0.75rem;
+    }
 
-    /* Mobile tweaks */
-    @media (max-width: 600px) {
-      .container { padding: 1.25rem 1rem; }
-      .hero { margin: 1rem 0 2rem; }
-      .trade {
-        grid-template-columns: 1fr auto;
-        grid-template-rows: auto auto;
-      }
-      .trade-symbol, .trade-side { grid-row: 1; }
-      .trade-when { grid-row: 2; grid-column: 1; }
-      .trade-pnl { grid-row: 1 / span 2; }
+    /* ── Reduced motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      .hero-badge .dot { animation: none; }
+      .card { transition: none; }
+      .confidence-fill { transition: none; }
     }
   </style>
 </head>
 <body>
+  <!-- background orbs (purely decorative) -->
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <!-- nav (matches landing) -->
+  <nav class="nav">
+    <a href="/" class="nav-brand">
+      <div class="nav-logo">
+        <svg viewBox="0 0 24 24"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+      </div>
+      <span class="nav-name">NeuCast</span>
+    </a>
+    <div class="nav-links">
+      <a href="/" class="nav-btn nav-btn-ghost">Главная</a>
+      <a href="/highfreq" class="nav-btn nav-btn-ghost">Подробно</a>
+      <a href="/register" class="nav-btn nav-btn-primary">Начать</a>
+    </div>
+  </nav>
+
+  <!-- hero -->
+  <section class="hero">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      <span>Live с биржи Binance Spot</span>
+    </div>
+    <h1>Куда пойдут <span class="gradient">BTC, ETH и BNB</span><br>через минуту?</h1>
+    <p class="hero-sub">
+      Модель машинного обучения смотрит на стакан биржи в реальном времени
+      и каждую минуту прогнозирует направление цены на следующую минуту.
+      Учебный sim-проект — реальные сделки не открываются.
+    </p>
+    <div class="hero-meta" id="hero-meta">
+      <span>горизонт: <strong>1&nbsp;минута</strong></span>
+      <span class="dot">•</span>
+      <span>модель тренируется каждые <strong>4&nbsp;часа</strong></span>
+      <span class="dot">•</span>
+      <span id="hero-meta-acc">точность загружается…</span>
+    </div>
+  </section>
+
+  <!-- 3 prediction cards -->
   <div class="container">
-    <header>
-      <a href="/" class="logo">Neu<span>Cast</span></a>
-      <nav>
-        <a href="/">Главная</a>
-        <a href="https://t.me/" target="_blank" rel="noopener">Telegram</a>
-      </nav>
-    </header>
-
-    <section class="hero">
-      <h1><span class="live-dot"></span>Прогноз курса на минуту</h1>
-      <p>
-        Модель смотрит на стакан биржи Binance в реальном времени и говорит
-        куда скорее всего пойдёт цена в следующую минуту. Учебный проект,
-        sim-only — не торговый совет.
-      </p>
-    </section>
-
-    <!-- 3 prediction cards (BTC / ETH / BNB) -->
     <div class="cards" id="cards">
-      <div class="card loading" data-symbol="BTCUSDT">
-        <div class="card-symbol">
-          <strong>BTC</strong>
-          <span class="card-price" data-bind="price">—</span>
+      <!-- BTC -->
+      <div class="card loading" data-symbol="BTCUSDT" data-icon="btc" data-name="Bitcoin">
+        <div class="card-head">
+          <div class="card-symbol">
+            <div class="card-icon btc">BTC</div>
+            <div>
+              <div class="card-symbol-name">Bitcoin</div>
+              <div class="card-symbol-pair">BTC / USDT</div>
+            </div>
+          </div>
+          <div class="card-horizon">+1 минута</div>
         </div>
-        <div class="pending-msg" data-bind="pending">загружаем…</div>
-        <div class="card-direction" data-bind="direction" style="display:none"></div>
+        <div class="card-price" data-bind="price">—</div>
+        <div class="card-price-sub" data-bind="price-sub">обновляется…</div>
+        <div class="card-prediction">
+          <div class="card-prediction-head">
+            <span class="card-prediction-label">Прогноз направления</span>
+            <span class="card-prediction-time" data-bind="updated">—</span>
+          </div>
+          <div class="verdict-row">
+            <div class="arrow loading" data-bind="arrow">…</div>
+            <div class="verdict">
+              <div class="verdict-text loading" data-bind="verdict">модель готовит прогноз</div>
+              <div class="confidence-bar">
+                <div class="confidence-fill" data-bind="conf-fill" style="width:0%"></div>
+              </div>
+              <div class="confidence-text" data-bind="conf-text">уверенность —</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-meta-row">
+          <span data-bind="model-age">модель: —</span>
+          <span data-bind="next-bar">след. бар: —</span>
+        </div>
       </div>
-      <div class="card loading" data-symbol="ETHUSDT">
-        <div class="card-symbol">
-          <strong>ETH</strong>
-          <span class="card-price" data-bind="price">—</span>
+
+      <!-- ETH -->
+      <div class="card loading" data-symbol="ETHUSDT" data-icon="eth" data-name="Ethereum">
+        <div class="card-head">
+          <div class="card-symbol">
+            <div class="card-icon eth">ETH</div>
+            <div>
+              <div class="card-symbol-name">Ethereum</div>
+              <div class="card-symbol-pair">ETH / USDT</div>
+            </div>
+          </div>
+          <div class="card-horizon">+1 минута</div>
         </div>
-        <div class="pending-msg" data-bind="pending">загружаем…</div>
-        <div class="card-direction" data-bind="direction" style="display:none"></div>
+        <div class="card-price" data-bind="price">—</div>
+        <div class="card-price-sub" data-bind="price-sub">обновляется…</div>
+        <div class="card-prediction">
+          <div class="card-prediction-head">
+            <span class="card-prediction-label">Прогноз направления</span>
+            <span class="card-prediction-time" data-bind="updated">—</span>
+          </div>
+          <div class="verdict-row">
+            <div class="arrow loading" data-bind="arrow">…</div>
+            <div class="verdict">
+              <div class="verdict-text loading" data-bind="verdict">модель готовит прогноз</div>
+              <div class="confidence-bar">
+                <div class="confidence-fill" data-bind="conf-fill" style="width:0%"></div>
+              </div>
+              <div class="confidence-text" data-bind="conf-text">уверенность —</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-meta-row">
+          <span data-bind="model-age">модель: —</span>
+          <span data-bind="next-bar">след. бар: —</span>
+        </div>
       </div>
-      <div class="card loading" data-symbol="BNBUSDT">
-        <div class="card-symbol">
-          <strong>BNB</strong>
-          <span class="card-price" data-bind="price">—</span>
+
+      <!-- BNB -->
+      <div class="card loading" data-symbol="BNBUSDT" data-icon="bnb" data-name="BNB">
+        <div class="card-head">
+          <div class="card-symbol">
+            <div class="card-icon bnb">BNB</div>
+            <div>
+              <div class="card-symbol-name">BNB</div>
+              <div class="card-symbol-pair">BNB / USDT</div>
+            </div>
+          </div>
+          <div class="card-horizon">+1 минута</div>
         </div>
-        <div class="pending-msg" data-bind="pending">загружаем…</div>
-        <div class="card-direction" data-bind="direction" style="display:none"></div>
+        <div class="card-price" data-bind="price">—</div>
+        <div class="card-price-sub" data-bind="price-sub">обновляется…</div>
+        <div class="card-prediction">
+          <div class="card-prediction-head">
+            <span class="card-prediction-label">Прогноз направления</span>
+            <span class="card-prediction-time" data-bind="updated">—</span>
+          </div>
+          <div class="verdict-row">
+            <div class="arrow loading" data-bind="arrow">…</div>
+            <div class="verdict">
+              <div class="verdict-text loading" data-bind="verdict">модель готовит прогноз</div>
+              <div class="confidence-bar">
+                <div class="confidence-fill" data-bind="conf-fill" style="width:0%"></div>
+              </div>
+              <div class="confidence-text" data-bind="conf-text">уверенность —</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-meta-row">
+          <span data-bind="model-age">модель: —</span>
+          <span data-bind="next-bar">след. бар: —</span>
+        </div>
       </div>
     </div>
+  </div>
 
-    <!-- Quick stats over the last 24 h -->
+  <!-- 24h stats strip -->
+  <div class="container">
     <div class="stats" id="stats">
       <div class="stat">
-        <div class="stat-value" id="stat-trades">—</div>
+        <div class="stat-value muted" id="stat-trades">—</div>
         <div class="stat-label">сделок за 24 ч</div>
+        <div class="stat-helper" id="stat-trades-helper">по всем 3 символам</div>
       </div>
       <div class="stat">
-        <div class="stat-value" id="stat-winrate">—</div>
-        <div class="stat-label">в плюс</div>
+        <div class="stat-value muted" id="stat-winrate">—</div>
+        <div class="stat-label">точность направления</div>
+        <div class="stat-helper">% попаданий в сторону</div>
       </div>
       <div class="stat">
-        <div class="stat-value" id="stat-pnl">—</div>
+        <div class="stat-value muted" id="stat-pnl">—</div>
         <div class="stat-label">средний результат</div>
+        <div class="stat-helper">P&amp;L после комиссии</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value muted" id="stat-skill">—</div>
+        <div class="stat-label">скилл модели</div>
+        <div class="stat-helper" id="stat-skill-helper">vs случайное угадывание</div>
       </div>
     </div>
+  </div>
 
-    <!-- Recent activity feed -->
-    <section class="activity">
-      <h2>Последние сделки</h2>
+  <!-- How it works -->
+  <section class="section">
+    <span class="section-label">Как это устроено</span>
+    <h2>Что модель умеет, а что — нет</h2>
+    <p class="section-sub">
+      Я открыто показываю и сильные, и слабые стороны. Это не «trading-сигнал»,
+      а исследовательский dashboard.
+    </p>
+    <div class="how-grid">
+      <div class="how-card">
+        <div class="how-icon green">↗</div>
+        <h3>Прогноз на 1 минуту</h3>
+        <p>
+          Каждую минуту модель смотрит на 18 признаков L2-стакана
+          (OFI, spread, depth-imbalance, microprice…) и говорит:
+          цена в следующую минуту, скорее всего, пойдёт вверх или вниз.
+        </p>
+      </div>
+      <div class="how-card">
+        <div class="how-icon blue">⟳</div>
+        <h3>Тренировка раз в 4 часа</h3>
+        <p>
+          CatBoost-классификатор переобучается с нуля каждые 4 часа на
+          последних ~3 днях ингеста. Walk-forward CV без data leakage,
+          embargo-границы по López de Prado.
+        </p>
+      </div>
+      <div class="how-card">
+        <div class="how-icon amber">≡</div>
+        <h3>Sim-only сделки</h3>
+        <p>
+          Симулятор открывает позицию, держит ровно 1 минуту, закрывает.
+          Спот-комиссия Binance: 7.5 bp с каждой стороны (15 bp roundtrip).
+          Реальных сделок на бирже не открывается.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Honesty block: why P&L is often negative on retail fees -->
+  <div class="container">
+    <div class="honesty">
+      <div class="honesty-icon">i</div>
+      <div>
+        <h3>Почему сделки часто в минусе?</h3>
+        <p>
+          На горизонте 1 минута средний ход цены ~2-4 базисных пункта (bp).
+          Round-trip спот-комиссия Binance — 15 bp. Это значит даже при
+          идеальном попадании в направление модель структурно проигрывает
+          fee-burden'у.
+        </p>
+        <p>
+          Главная цель проекта — не «делать деньги в симе», а доказать что
+          модель <strong>статистически отличает up от down лучше монетки</strong>.
+          Это уже работает: точность направления ~57%, p-value &lt; 10⁻⁹.
+          Прибыль появляется на горизонте 15+ минут или на USDM Futures
+          (комиссия 4 bp roundtrip) — это следующая фаза.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent trades -->
+  <section class="section">
+    <span class="section-label">Свежие данные</span>
+    <h2>Последние сделки</h2>
+    <p class="section-sub">
+      Последние 10 закрытых sim-сделок по всем трём символам, отсортированы по времени закрытия.
+    </p>
+    <div class="trades-card">
       <div class="trades-list" id="trades-list">
         <div class="empty-state">загружаем историю…</div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <footer>
-      <p>NeuCast — учебный проект машинного обучения на high-frequency данных.</p>
-      <p>
-        Все сделки на этой странице — <strong>симуляция</strong>, реальных позиций нет.
-        Не является инвестиционным советом.
-      </p>
-    </footer>
-  </div>
+  <footer>
+    <p><strong>NeuCast</strong> — учебный исследовательский проект машинного обучения на high-frequency данных.</p>
+    <p>Все сделки на этой странице — <strong>симуляция</strong>. Реальных позиций на бирже не открывается. Не является инвестиционным советом.</p>
+    <div class="footer-links">
+      <a href="/">Главная</a>
+      <a href="/highfreq">Подробно (для разработчика)</a>
+      <a href="https://github.com/StailFX/NeuCast" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </footer>
 
   <script>
     // ──────────────────────────────────────────────────────────────
-    // /forecast page client logic.
+    // Forecast page client logic.
     //
-    // Two polling loops:
-    //   * Predictions (3 symbols)  — every 30 s
-    //   * Recent trades + stats    — every 60 s
-    //
-    // The page degrades gracefully when the API returns 503: cards
-    // keep their "loading" state with a friendly message instead of
-    // showing technical error text.
+    //  • Predictions  — every 30 s (forecast endpoint, per symbol)
+    //  • Trades+stats — every 60 s (paper_trades endpoint)
+    //  • Hero accuracy badge — every 5 min (training_report; slow-changing)
+    //  • Countdown to next bar — every second (pure client clock,
+    //    aligns with UTC minute boundary like the trainer's bars)
     // ──────────────────────────────────────────────────────────────
 
     const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+    const SYMBOL_DISPLAY = {
+      BTCUSDT: { short: 'BTC', name: 'Bitcoin' },
+      ETHUSDT: { short: 'ETH', name: 'Ethereum' },
+      BNBUSDT: { short: 'BNB', name: 'BNB' },
+    };
     const PREDICT_REFRESH_MS = 30_000;
     const TRADES_REFRESH_MS  = 60_000;
+    const ACCURACY_REFRESH_MS = 5 * 60_000;
 
-    // Translate the API's signal + prob_up into a friendly verdict.
-    function verdictFor(signal, probUp) {
-      if (signal === 'up') {
-        const pct = Math.round(probUp * 100);
-        return { cls: 'up', arrow: '↑', label: 'вверх', confidence: pct };
-      }
-      if (signal === 'down') {
-        const pct = Math.round((1 - probUp) * 100);
-        return { cls: 'down', arrow: '↓', label: 'вниз', confidence: pct };
-      }
-      // neutral — show as horizontal arrow + confidence in stronger side.
-      const pct = Math.round(Math.max(probUp, 1 - probUp) * 100);
-      return { cls: 'neutral', arrow: '→', label: 'в стороне', confidence: pct };
-    }
-
+    // ─── helpers ───
     function fmtPrice(p) {
       if (p === null || p === undefined || !isFinite(p)) return '—';
-      // Use thousands separator + 0-2 decimals for readability.
       const n = Number(p);
       if (n >= 1000) return n.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
       if (n >= 100)  return n.toFixed(2);
-      return n.toFixed(3);
+      if (n >= 1)    return n.toFixed(3);
+      return n.toFixed(5);
+    }
+    function fmtAge(seconds) {
+      if (!isFinite(seconds) || seconds < 0) return '—';
+      if (seconds < 60)   return `${Math.round(seconds)} с`;
+      if (seconds < 3600) return `${Math.round(seconds / 60)} мин`;
+      if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} ч`;
+      return `${Math.round(seconds / 86400)} дн`;
+    }
+    function verdictFor(signal, probUp) {
+      if (signal === 'up') {
+        return { cls: 'up', arrow: '↑', label: 'вверх', confidence: Math.round(probUp * 100) };
+      }
+      if (signal === 'down') {
+        return { cls: 'down', arrow: '↓', label: 'вниз', confidence: Math.round((1 - probUp) * 100) };
+      }
+      return { cls: 'neutral', arrow: '→', label: 'без чёткого направления',
+               confidence: Math.round(Math.max(probUp, 1 - probUp) * 100) };
     }
 
-    function fmtAge(ageSeconds) {
-      if (!isFinite(ageSeconds) || ageSeconds < 0) return '—';
-      if (ageSeconds < 90)   return `${Math.round(ageSeconds)} сек назад`;
-      if (ageSeconds < 3600) return `${Math.round(ageSeconds / 60)} мин назад`;
-      return `${(ageSeconds / 3600).toFixed(1)} ч назад`;
-    }
-
+    // ─── prediction cards ───
     async function refreshCard(card) {
       const symbol = card.dataset.symbol;
-      const pendingEl   = card.querySelector('[data-bind="pending"]');
-      const priceEl     = card.querySelector('[data-bind="price"]');
-      const directionEl = card.querySelector('[data-bind="direction"]');
+      const get = (name) => card.querySelector(`[data-bind="${name}"]`);
 
       try {
         const res = await fetch(`/api/highfreq/forecast?symbol=${symbol}`,
                                 { cache: 'no-store' });
         if (res.status !== 200) {
-          // 503 → friendly "пока готовится" without exposing the reason.
+          // 503 — model not ready / cold-start. Friendly state, no jargon.
           card.classList.add('loading');
           card.classList.remove('up', 'down', 'neutral');
-          pendingEl.style.display = 'block';
-          pendingEl.textContent = 'модель готовит прогноз…';
-          directionEl.style.display = 'none';
+          get('arrow').className = 'arrow loading';
+          get('arrow').textContent = '…';
+          get('verdict').className = 'verdict-text loading';
+          get('verdict').textContent = 'модель готовит прогноз';
+          get('conf-fill').style.width = '0%';
+          get('conf-text').textContent = 'ждём первый прогноз…';
           return;
         }
         const data = await res.json();
         if (!data.ok) {
-          pendingEl.textContent = 'модель готовит прогноз…';
+          get('verdict').textContent = 'модель готовит прогноз';
           return;
         }
-        const v = verdictFor(data.signal, data.prob_up);
 
-        // Card class drives the colored border.
+        const v = verdictFor(data.signal, data.prob_up);
         card.classList.remove('loading', 'up', 'down', 'neutral');
         card.classList.add(v.cls);
 
-        // Hide pending, show direction.
-        pendingEl.style.display = 'none';
-        directionEl.style.display = 'flex';
-        directionEl.innerHTML = `
-          <span class="arrow ${v.cls}">${v.arrow}</span>
-          <div class="direction-text">
-            <div class="label">прогноз на минуту</div>
-            <div class="verdict ${v.cls}">${v.label}</div>
-            <div class="confidence-bar">
-              <div class="confidence-fill ${v.cls}" style="width:${v.confidence}%"></div>
-            </div>
-            <div class="confidence-text">уверенность ${v.confidence}%</div>
-          </div>
-        `;
+        get('arrow').className = `arrow ${v.cls}`;
+        get('arrow').textContent = v.arrow;
+        get('verdict').className = `verdict-text ${v.cls}`;
+        get('verdict').textContent = v.label;
+        get('conf-fill').className = `confidence-fill ${v.cls}`;
+        get('conf-fill').style.width = `${v.confidence}%`;
+        get('conf-text').textContent = `уверенность ${v.confidence}%`;
 
-        // Optional price + last-update display from the 'model' block.
-        // model_age_seconds tells us how stale the .cbm is (we display it
-        // as "model" age, not the prediction age — predictions refresh
-        // every minute regardless).
+        const updatedAge = (Date.now() - new Date(data.ts).getTime()) / 1000;
+        get('updated').textContent = `обновлено ${fmtAge(updatedAge)} назад`;
+
         if (data.model && isFinite(data.model.model_age_seconds)) {
-          // No price endpoint here yet — leave price blank for v1.
-          priceEl.textContent = '';
+          get('model-age').textContent = `модель: ${fmtAge(data.model.model_age_seconds)}`;
         }
       } catch (err) {
-        // Network blip — leave whatever state was last successful.
         console.warn('forecast fetch failed', symbol, err);
       }
     }
-
     async function refreshAllPredictions() {
       const cards = document.querySelectorAll('.card[data-symbol]');
-      // Fan out — three concurrent fetches.
       await Promise.all([...cards].map(refreshCard));
     }
 
+    // ─── trades + stats ───
     async function refreshTradesAndStats() {
       try {
-        // Pull recent trades for ALL three symbols. Limit small, server-side.
-        const all = await Promise.all(SYMBOLS.map(s =>
-          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=10`,
+        const responses = await Promise.all(SYMBOLS.map(s =>
+          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=20`,
                 { cache: 'no-store' })
             .then(r => r.ok ? r.json() : { trades: [] })
             .catch(() => ({ trades: [] }))
         ));
 
-        // Merge + sort by exit_ts desc, take top 10.
-        const merged = all.flatMap(payload => payload.trades || [])
-          .filter(t => t.exit_ts)
+        const allTrades = responses.flatMap(payload => payload.trades || [])
+          .filter(t => t.exit_ts);
+
+        // Sort by exit_ts desc, take top 10 for display.
+        const recent = [...allTrades]
           .sort((a, b) => new Date(b.exit_ts) - new Date(a.exit_ts))
           .slice(0, 10);
 
-        renderTrades(merged);
-        renderStats(all.flatMap(payload => payload.trades || []));
+        renderTrades(recent);
+        renderStats(allTrades);
       } catch (err) {
         console.warn('trades fetch failed', err);
       }
     }
 
+    function symbolToIcon(symbol) {
+      const map = { BTCUSDT: 'btc', ETHUSDT: 'eth', BNBUSDT: 'bnb' };
+      return map[symbol] || 'btc';
+    }
+    function shortLabel(symbol) {
+      return (SYMBOL_DISPLAY[symbol]?.short) || symbol.replace('USDT', '');
+    }
+
     function renderTrades(trades) {
       const list = document.getElementById('trades-list');
       if (!trades.length) {
-        list.innerHTML = '<div class="empty-state">пока не было сделок</div>';
+        list.innerHTML = '<div class="empty-state">пока не было закрытых сделок</div>';
         return;
       }
       list.innerHTML = trades.map(t => {
-        const symShort = (t.symbol || '').replace('USDT', '');
+        const sym = (t.symbol || '').toUpperCase();
+        const iconCls = symbolToIcon(sym);
+        const short = shortLabel(sym);
         const sideRu = t.side === 'long' ? 'покупка' : 'продажа';
         const sideClass = t.side || 'long';
         const pnlBps = Number(t.pnl_bps || 0);
-        const pnlPct = pnlBps / 100; // bps → %
+        const pnlPct = pnlBps / 100;
         const pnlClass = pnlBps > 0 ? 'positive' : (pnlBps < 0 ? 'negative' : '');
         const pnlSign = pnlBps > 0 ? '+' : '';
         const exitDate = new Date(t.exit_ts);
         const when = exitDate.toLocaleTimeString('ru-RU',
           { hour: '2-digit', minute: '2-digit' });
+        const today = new Date();
+        const sameDay = exitDate.toDateString() === today.toDateString();
+        const dateLabel = sameDay
+          ? `сегодня в ${when}`
+          : exitDate.toLocaleDateString('ru-RU',
+              { day: '2-digit', month: 'short' }) + `, ${when}`;
         return `
           <div class="trade">
-            <span class="trade-symbol">${symShort}</span>
-            <span class="trade-side ${sideClass}">${sideRu}</span>
-            <span class="trade-when">в ${when}</span>
-            <span class="trade-pnl ${pnlClass}">${pnlSign}${pnlPct.toFixed(2)}%</span>
+            <div class="trade-icon ${iconCls}">${short}</div>
+            <div class="trade-meta">
+              <span class="trade-side-pill ${sideClass}">${sideRu}</span>
+              <span class="trade-when">${dateLabel}</span>
+            </div>
+            <div></div>
+            <div class="trade-pnl ${pnlClass}">
+              ${pnlSign}${pnlPct.toFixed(2)}%
+              <div class="trade-bps">за минуту</div>
+            </div>
           </div>
         `;
       }).join('');
     }
 
     function renderStats(allTrades) {
-      // Filter to last 24 h.
       const cutoff = Date.now() - 24 * 3600 * 1000;
       const recent = allTrades.filter(t =>
         t.exit_ts && new Date(t.exit_ts).getTime() >= cutoff
       );
-
       const setEl = (id, value, cls) => {
         const el = document.getElementById(id);
         if (!el) return;
         el.textContent = value;
-        el.classList.remove('positive', 'negative');
+        el.className = 'stat-value';
         if (cls) el.classList.add(cls);
       };
-
       if (!recent.length) {
-        setEl('stat-trades', '0');
-        setEl('stat-winrate', '—');
-        setEl('stat-pnl', '—');
+        setEl('stat-trades', '0', 'muted');
+        setEl('stat-winrate', '—', 'muted');
+        setEl('stat-pnl', '—', 'muted');
         return;
       }
       const wins = recent.filter(t => Number(t.pnl_bps || 0) > 0).length;
@@ -605,22 +1151,81 @@
         acc + Number(t.pnl_bps || 0), 0) / recent.length;
       const meanPct = meanPnlBps / 100;
 
-      setEl('stat-trades', String(recent.length));
+      setEl('stat-trades', String(recent.length), 'muted');
       setEl(
         'stat-winrate',
         `${winRate.toFixed(0)}%`,
-        winRate >= 50 ? 'positive' : (winRate < 50 ? 'negative' : ''),
+        winRate >= 50 ? 'green' : (winRate < 45 ? 'red' : 'amber'),
       );
-      const pnlClass = meanPnlBps > 0 ? 'positive' : (meanPnlBps < 0 ? 'negative' : '');
+      const pnlClass = meanPnlBps > 0 ? 'green' : (meanPnlBps < 0 ? 'red' : 'amber');
       const sign = meanPnlBps > 0 ? '+' : '';
       setEl('stat-pnl', `${sign}${meanPct.toFixed(2)}%`, pnlClass);
     }
 
-    // Kick off on load + start the two polling loops.
+    // ─── hero / skill badge: pull from training_report on a slow loop ───
+    async function refreshSkill() {
+      try {
+        // Use BTC's report as the "headline" skill — it has the longest
+        // accumulated history and tightest CI of the three symbols.
+        const res = await fetch('/api/highfreq/training_report?symbol=BTCUSDT',
+                                { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const report = data?.report;
+        if (!report) return;
+
+        const dirAcc = Number(report.dir_acc_mean);
+        const pVal = Number(report.dir_acc_p_value);
+        const nFolds = Number(report.n_folds);
+
+        // Hero meta: friendly accuracy "57.0% точность за 7 дней"
+        if (isFinite(dirAcc)) {
+          const pctStr = (dirAcc * 100).toFixed(1) + '%';
+          const accEl = document.getElementById('hero-meta-acc');
+          if (accEl) {
+            accEl.innerHTML = `точность: <strong>${pctStr}</strong> на тесте`;
+          }
+          // Stat-strip skill cell — vs random baseline.
+          const skillEl = document.getElementById('stat-skill');
+          const helperEl = document.getElementById('stat-skill-helper');
+          if (skillEl) {
+            const aboveChance = (dirAcc - 0.5) * 100;
+            const sign = aboveChance > 0 ? '+' : '';
+            skillEl.textContent = `${sign}${aboveChance.toFixed(1)} п.п.`;
+            skillEl.className = 'stat-value';
+            skillEl.classList.add(aboveChance > 0 ? 'green' : 'red');
+          }
+          if (helperEl && isFinite(pVal)) {
+            const pStr = pVal < 1e-9 ? '< 10⁻⁹' :
+                         pVal < 1e-6 ? '< 10⁻⁶' :
+                         pVal < 1e-3 ? '< 0.001' :
+                         pVal.toFixed(3);
+            helperEl.textContent = `p-value ${pStr}`;
+          }
+        }
+      } catch (err) {
+        console.warn('skill fetch failed', err);
+      }
+    }
+
+    // ─── countdown to next minute boundary ───
+    function refreshCountdowns() {
+      const now = new Date();
+      const secsToNext = 60 - now.getUTCSeconds();
+      const txt = `след. бар: ${secsToNext}с`;
+      document.querySelectorAll('[data-bind="next-bar"]')
+        .forEach(el => { el.textContent = txt; });
+    }
+
+    // ─── Kick off ───
     refreshAllPredictions();
     refreshTradesAndStats();
+    refreshSkill();
+    refreshCountdowns();
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
     setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
+    setInterval(refreshSkill,          ACCURACY_REFRESH_MS);
+    setInterval(refreshCountdowns,     1000);
   </script>
 </body>
 </html>
