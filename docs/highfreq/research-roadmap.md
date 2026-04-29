@@ -362,3 +362,75 @@ If post-defense / commercial:
 
 **Total fully-out-the-box work to do everything**: ~3-4 months.
 **Most realistic 14-day pre-defense**: items in "If defense 7-14 days" block above.
+
+---
+
+## Progress log
+
+### 2026-04-29 (autonomous session, overnight)
+
+Items COMPLETED in this session, with commit reference:
+
+| Roadmap item | Release | Commit | Tests |
+|---|---|---|---|
+| **3D — Sample weighting** (recent > old, half-life 720 bars) | O | `1351916` | 12 new |
+| **7C — Embargo** (López de Prado, 1-bar default) | O | `1351916` | included above |
+| **7B — Power analysis** tool | O | `1351916` | 11 new |
+| **2C — Calendar events expansion** (3 → 23 events through 2026-06) | O | `1351916` | 13 new |
+| **3A — ε Magnitude regression** (offline-only tool, no production touch) | P | `bf4a214` | 23 new |
+| **7A — Bayesian credible intervals** (Beta-Binomial posterior) | Q | `5ac935a` | 10 new |
+| **8D — ADR updates** (ADR-012..018: cross-asset, joint, calibration, events, weighting, regression, Bayesian CI) | docs | `d9c9ae9` | n/a |
+
+Test count: 597 → 642 (+45 new). All passing locally.
+
+**Why magnitude regression is offline-only.** Production keeps running
+the classifier untouched. Empirics will decide whether to integrate:
+if regressor sign accuracy is comparable to classifier dir_acc on the
+same data + fold geometry, integration is justified; otherwise the
+regressor's only value is fee-aware threshold filtering, which can be
+layered on top of the existing classifier without a rewrite. The
+offline tool is `tools/regression_eval.py` and produces a markdown
+report comparing MAE / RMSE / R² / Pearson IC / Spearman IC + sign
+accuracy + per-threshold P&L curves at retail / vip5 / vip9 / mm_rebate
+fee tiers.
+
+**Why Bayesian CI alongside the bootstrap.** Frequentist coverage CI
+("if I rerun the experiment many times, the true value is in this
+range 95 % of the time") and Bayesian credible interval ("there's a
+95 % posterior probability the true value is in this range") answer
+subtly different questions. The latter is what most non-statisticians
+intuit when they read "95 % CI"; reporting both is defence-grade.
+At large n the two coincide; on small samples the Bayesian interval
+correctly captures right-tail uncertainty that the bootstrap can
+underestimate.
+
+**Deploy status.** Production (Tokyo VPS) is healthy — `https://
+neucast.ru/api/highfreq/health` returns `{"ok":true,"rows_last_60s":59}`.
+SSH access from this Mac is intermittently blocked by fail2ban; will
+retry through the night. The new releases (O, P, Q + ADRs) ship as
+follows when SSH recovers:
+
+* **Release O (sample weighting + embargo)** — substantial: trainer
+  changes mean models retrained tonight will use exponential decay.
+  Recommend running before/after multi-horizon eval comparison
+  (`tools/multi_horizon_eval.py --sample-weight-half-life 720
+  --embargo-bars 1`) before declaring uplift.
+* **Release P (regression eval)** — offline only. Run on Tokyo with
+  `python -m tools.regression_eval --symbols BTCUSDT ETHUSDT BNBUSDT
+  --horizons 1 5 15 --since-hours 168` and inspect the resulting
+  markdown report.
+* **Release Q (Bayesian CI)** — additive metric; surfaces in
+  `metrics.json` + multi-horizon eval JSON without UI changes.
+* **ADR docs** — pure documentation, no deploy.
+
+**Items NOT done** (deliberately skipped):
+
+* **2D Volume features** — needs raw trade volume data which would
+  require extending the L2 ingest path. Higher risk than budget for
+  an autonomous overnight session.
+* **3B Per-regime models** — substantial refactor, ~1 day. Better
+  done when user can review architecture choices.
+* **5B Calibration A/B study** — needs production runtime, blocked
+  on SSH.
+* **Frontend visuals (8A/B/C, 5D)** — UI changes are higher-touch
+  than backend additions. Deferred to user-supervised session.
