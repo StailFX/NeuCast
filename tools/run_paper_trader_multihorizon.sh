@@ -59,16 +59,52 @@ fi
 port=$((9094 + sym_idx * 3 + horizon_class))
 export HIGHFREQ_PAPER_METRICS_PORT="$port"
 
-# Tighter entry thresholds for long-horizon runners — the per-bar
-# decision is rarer (every 15-60 min vs every minute) so we accept
-# only stronger signals to avoid burning fee budget on the noise.
-# Operator can override via env if needed (env wins, by env-var
-# precedence — these are defaults the wrapper provides).
-: "${HF_ENTRY_LONG_THRESHOLD:=0.60}"
-: "${HF_ENTRY_SHORT_THRESHOLD:=0.40}"
+# Long-horizon trade economics differ from 1m: each bar's decision is
+# rarer (every 15-60 min vs every minute) and fee burden per trade is
+# the same. Conclusion: tighter conviction filter pays off — fewer
+# trades but each carries higher expected magnitude.
+#
+# Per-horizon defaults (wrapper-driven, NOT env-driven, because the
+# 1m production runners use 0.55/0.45 and we want long-horizon runners
+# DEFAULT differently without touching /etc/neucast/env globally):
+#   1-4m:    0.55 / 0.45  (production 1m contract — original)
+#   5-30m:   0.65 / 0.35  (15m: dir_acc 0.66 → high-conviction subset
+#                          has E[|move|] ≈ 7-10 bp, edge × move ~3 bp)
+#   31m+:    0.70 / 0.30  (60m: small n, want strong signals only)
+#
+# Operator override path: set HF_FORCE_LONG_THRESHOLD / HF_FORCE_SHORT_THRESHOLD
+# in the systemd unit drop-in. These are NEW variable names that
+# /etc/neucast/env doesn't carry, so dropin Environment= wins cleanly.
+if [ -n "${HF_FORCE_LONG_THRESHOLD:-}" ]; then
+    HF_ENTRY_LONG_THRESHOLD="$HF_FORCE_LONG_THRESHOLD"
+elif [ "$horizon" -le 4 ]; then
+    HF_ENTRY_LONG_THRESHOLD=0.55
+elif [ "$horizon" -le 30 ]; then
+    HF_ENTRY_LONG_THRESHOLD=0.65
+else
+    HF_ENTRY_LONG_THRESHOLD=0.70
+fi
+if [ -n "${HF_FORCE_SHORT_THRESHOLD:-}" ]; then
+    HF_ENTRY_SHORT_THRESHOLD="$HF_FORCE_SHORT_THRESHOLD"
+elif [ "$horizon" -le 4 ]; then
+    HF_ENTRY_SHORT_THRESHOLD=0.45
+elif [ "$horizon" -le 30 ]; then
+    HF_ENTRY_SHORT_THRESHOLD=0.35
+else
+    HF_ENTRY_SHORT_THRESHOLD=0.30
+fi
 export HF_ENTRY_LONG_THRESHOLD HF_ENTRY_SHORT_THRESHOLD
 
+# Disable demo mode for long-horizon runners — the model's calibration
+# gate is meaningful here (long-horizon models are produced one per
+# day max, vs 1m which trains hourly) and we want realized accuracy
+# to flow into the official stats. /etc/neucast/env may have
+# HF_PAPER_DEMO_MODE=1 set globally for legacy reasons; this wins
+# (we export AFTER any sourcing).
+export HF_PAPER_DEMO_MODE=0
+
 echo "[run_paper_trader_multihorizon] sym=$sym horizon=${horizon}m port=$port" \
-    "long_threshold=$HF_ENTRY_LONG_THRESHOLD short_threshold=$HF_ENTRY_SHORT_THRESHOLD" >&2
+    "long_threshold=$HF_ENTRY_LONG_THRESHOLD short_threshold=$HF_ENTRY_SHORT_THRESHOLD" \
+    "demo=$HF_PAPER_DEMO_MODE" >&2
 
 exec /opt/neucast/venv/bin/python -m app.highfreq.paper_trader_runner
