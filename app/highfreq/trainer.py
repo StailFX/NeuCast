@@ -578,20 +578,49 @@ def fit_final_model(
 # DB layer (SQLAlchemy, synchronous — async only matters for the WS consumer)
 # ────────────────────────────────────────────────────────────────────────────
 
+#: Allowed values for the trainer ``--venue`` flag (release S phase 3).
+VENUE_TABLES: dict[str, str] = {
+    "spot": "highfreq_ofi_1s",
+    "futures": "highfreq_futures_ofi_1s",
+}
+
+
 def load_seconds(
-    database_url: str, *, symbol: str, since_hours: float
+    database_url: str,
+    *,
+    symbol: str,
+    since_hours: float,
+    venue: str = "spot",
 ) -> pd.DataFrame:
     """Read the last ``since_hours`` of 1-second rows for ``symbol``.
 
-    Returns a DataFrame with the same columns as ``highfreq_ofi_1s``.
+    ``venue`` selects the source table:
+    * ``"spot"`` (default, backwards compatible) → ``highfreq_ofi_1s``
+    * ``"futures"`` → ``highfreq_futures_ofi_1s``
+
+    Returns a DataFrame with the columns required by the
+    feature-pipeline aggregator. Futures rows additionally carry
+    ``mark_price`` / ``funding_rate`` / ``next_funding_ms`` — those
+    are NOT selected here (release S phase 3 doesn't yet feed them
+    to the feature pipeline; that's planned for phase 4 via a
+    futures-specific feature module).
     """
+    if venue not in VENUE_TABLES:
+        raise ValueError(
+            f"venue must be one of {sorted(VENUE_TABLES)}, got {venue!r}"
+        )
+    table = VENUE_TABLES[venue]
+
     from sqlalchemy import create_engine, text  # local import keeps CLI lightweight
 
     eng = create_engine(database_url, future=True)
-    query = text("""
+    # Table name is interpolated into the query string (NOT bound) —
+    # safe because we validated against the whitelist above. Do NOT
+    # accept arbitrary venue strings in this function.
+    query = text(f"""
         SELECT ts, symbol, ofi, microprice, depth_imb, spread_bps,
                trade_imb, vpin, n_updates, local_recv_ms
-        FROM highfreq_ofi_1s
+        FROM {table}
         WHERE symbol = :symbol
           AND ts >= now() - (:hours * interval '1 hour')
         ORDER BY ts ASC
@@ -691,13 +720,26 @@ def run_training(
     since_hours: float,
     out_path: Path | None,
     config: WalkForwardConfig | None = None,
+    venue: str = "spot",
 ) -> TrainingReport:
-    """Full training pipeline. Returns a ``TrainingReport`` for logging."""
+    """Full training pipeline. Returns a ``TrainingReport`` for logging.
+
+    ``venue`` selects which OFI table the trainer reads from
+    (``"spot"`` → ``highfreq_ofi_1s``; ``"futures"`` →
+    ``highfreq_futures_ofi_1s``). Default ``"spot"`` preserves the
+    original contract — existing systemd timer / CLI calls continue
+    to read the spot table without changes (release S phase 3).
+    """
     cfg = config or WalkForwardConfig()
     started = time.monotonic()
 
-    df_secs = load_seconds(database_url, symbol=symbol, since_hours=since_hours)
-    logger.info("loaded %d seconds of data for %s", len(df_secs), symbol)
+    df_secs = load_seconds(
+        database_url, symbol=symbol, since_hours=since_hours, venue=venue,
+    )
+    logger.info(
+        "loaded %d seconds of data for %s (venue=%s)",
+        len(df_secs), symbol, venue,
+    )
 
     bm = max(1, int(cfg.bar_minutes))
     fs = _resolve_feature_set(cfg.feature_set, bm)
@@ -907,6 +949,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "btcusdt_15m.cbm. Release R / 2026-04-29.",
     )
     p.add_argument(
+        "--venue", default="spot", choices=("spot", "futures"),
+        help="OFI table to read from. 'spot' = highfreq_ofi_1s "
+             "(production default); 'futures' = highfreq_futures_ofi_1s "
+             "(release S USDM Perpetual Futures). Caller is responsible "
+             "for routing --out to the right directory "
+             "(weights/highfreq/<symbol>_*.cbm vs "
+             "weights/highfreq/futures/<symbol>_*.cbm). Release S phase 3.",
+    )
+    p.add_argument(
         "--feature-set", default="auto",
         choices=("auto", "microstructure", "long_horizon"),
         help="feature pipeline. 'auto' (default) picks microstructure "
@@ -946,7 +997,7 @@ def main(argv: list[str] | None = None) -> int:
     run_started_at = _dt.now(tz=_tz.utc)
     report = run_training(
         dsn, symbol=args.symbol.upper(), since_hours=args.since_hours,
-        out_path=out, config=cfg,
+        out_path=out, config=cfg, venue=args.venue,
     )
 
     # Append-only training history. Fail-soft — a successful run that

@@ -446,6 +446,78 @@ def test_build_latest_inference_bar_long_horizon_returns_feature_row_at_15m():
     assert close_mp > 50_000
 
 
+def test_paper_trader_config_spot_default():
+    """Backward-compat pin: PaperTraderConfig() with no args produces
+    the original spot 7.5bp/side fee model."""
+    from app.highfreq.paper_trader import PaperTraderConfig
+    cfg = PaperTraderConfig()
+    assert cfg.venue == "spot"
+    assert cfg.maker_fee_bps_per_side == 7.5
+
+
+def test_paper_trader_config_futures_auto_tunes_fees():
+    """Pin the venue → fee mapping that motivates ADR-019:
+    futures = 2 bp/side maker = 4 bp roundtrip vs spot's 15 bp.
+    Caller passes only venue='futures'; fee field auto-tunes to 2.0."""
+    from app.highfreq.paper_trader import PaperTraderConfig
+    cfg = PaperTraderConfig(venue="futures")
+    assert cfg.venue == "futures"
+    assert cfg.maker_fee_bps_per_side == 2.0
+
+
+def test_paper_trader_config_explicit_fee_override_preserved():
+    """Operator passes a custom fee with venue='futures' (e.g. for a
+    VIP-tier discount or simulating non-standard markets) — auto-tune
+    must NOT clobber the explicit value."""
+    from app.highfreq.paper_trader import PaperTraderConfig
+    cfg = PaperTraderConfig(venue="futures", maker_fee_bps_per_side=1.5)
+    assert cfg.venue == "futures"
+    assert cfg.maker_fee_bps_per_side == 1.5
+
+
+def test_paper_trader_config_rejects_unknown_venue():
+    """Defensive: typo / new venue name must raise — keeps the SQL
+    venue routing safe by failing closed at config-build time."""
+    from app.highfreq.paper_trader import PaperTraderConfig
+    with pytest.raises(ValueError):
+        PaperTraderConfig(venue="margin")
+    with pytest.raises(ValueError):
+        PaperTraderConfig(venue="")
+
+
+def test_paper_trader_config_round_trip_fee_at_futures_is_4bp():
+    """The math underlying ADR-019: 2 bp/side × 2 sides = 4 bp roundtrip.
+    Pin so a refactor that flips bp→percent or sides→one-side breaks
+    loudly — this is the number the entire venue switch is built on."""
+    from app.highfreq.paper_trader import PaperTraderConfig
+    cfg = PaperTraderConfig(venue="futures")
+    roundtrip_bps = cfg.maker_fee_bps_per_side * 2
+    assert roundtrip_bps == 4.0
+
+
+# ─── trainer venue routing ───
+
+
+def test_load_seconds_rejects_unknown_venue():
+    """Pin venue whitelist — a typo would otherwise read from a table
+    that doesn't exist (asyncpg error) or worse, an unrelated table."""
+    from app.highfreq.trainer import load_seconds
+    with pytest.raises(ValueError):
+        load_seconds(
+            "postgresql://stub/none",
+            symbol="BTCUSDT", since_hours=1.0, venue="margin",
+        )
+
+
+def test_load_seconds_venue_table_mapping_pinned():
+    """Pin: spot → highfreq_ofi_1s, futures → highfreq_futures_ofi_1s.
+    A refactor that renames a table in the migration but forgets to
+    update VENUE_TABLES would silently break trainer reads."""
+    from app.highfreq.trainer import VENUE_TABLES
+    assert VENUE_TABLES["spot"] == "highfreq_ofi_1s"
+    assert VENUE_TABLES["futures"] == "highfreq_futures_ofi_1s"
+
+
 def test_build_latest_inference_bar_long_horizon_drops_in_flight_bar():
     """The trainer fits on whole-bar aggregates. Helper must drop the
     in-flight bar (matches the 1m contract). Pin via a sentinel: if

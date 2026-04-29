@@ -128,19 +128,38 @@ POOL_MAX_SIZE: int = 2
 DEFAULT_SYMBOL: str = os.getenv("HIGHFREQ_PAPER_SYMBOL", "BTCUSDT")
 
 
-def _weights_path_for(symbol: str, *, horizon_minutes: int = 1) -> Path:
-    """Per-(symbol × horizon) .cbm path. Honours explicit
-    HIGHFREQ_WEIGHTS_PATH override (single-symbol legacy); otherwise
-    derives from the symbol via the trainer's filename convention
-    ({symbol.lower()}_{horizon}m.cbm).
+def _weights_path_for(
+    symbol: str,
+    *,
+    horizon_minutes: int = 1,
+    venue: str = "spot",
+) -> Path:
+    """Per-(symbol × horizon × venue) .cbm path.
 
-    ``horizon_minutes`` defaults to 1 to preserve the production
-    contract; set via the ``HF_HORIZON_MINUTES`` env var for
-    long-horizon paper traders (release R, 2026-04-29)."""
+    * ``HIGHFREQ_WEIGHTS_PATH`` env override wins (legacy single-file
+      contract).
+    * Otherwise derives via :func:`weights_path_for_symbol`. Futures
+      models live under ``weights/highfreq/futures/`` (sub-directory)
+      so the naming convention stays
+      ``{symbol.lower()}_{horizon}m.cbm`` while keeping spot vs
+      futures weights separate on disk.
+
+    ``horizon_minutes`` set via ``HF_HORIZON_MINUTES`` env var
+    (release R).  ``venue`` set via ``HF_VENUE`` env var (release S
+    phase 3) — defaults to ``"spot"`` for full backwards compat.
+    """
     explicit = os.getenv("HIGHFREQ_WEIGHTS_PATH")
     if explicit:
         return Path(explicit)
-    return weights_path_for_symbol(symbol, horizon_minutes=horizon_minutes)
+    base_path = weights_path_for_symbol(
+        symbol, horizon_minutes=horizon_minutes,
+    )
+    if venue == "futures":
+        # Slot futures weights into a sub-directory so the trainer's
+        # writes from ``--venue futures`` don't collide with spot
+        # weights of the same (symbol, horizon).
+        return base_path.parent / "futures" / base_path.name
+    return base_path
 
 
 def _metrics_path_for(weights_path: Path) -> Path:
@@ -793,11 +812,22 @@ async def main() -> None:
         raise ValueError(
             f"HF_HORIZON_MINUTES must be positive, got {horizon_minutes}"
         )
-    weights_path = _weights_path_for(symbol, horizon_minutes=horizon_minutes)
+    # Venue support (release S phase 3, 2026-04-29). HF_VENUE selects
+    # spot (default, preserves legacy contract) vs futures. Futures
+    # gets weights from weights/highfreq/futures/ and the
+    # PaperTraderConfig auto-tunes maker_fee_bps_per_side to 2.0.
+    venue = os.environ.get("HF_VENUE", "spot").lower()
+    if venue not in ("spot", "futures"):
+        raise ValueError(
+            f"HF_VENUE must be 'spot' or 'futures', got {venue!r}"
+        )
+    weights_path = _weights_path_for(
+        symbol, horizon_minutes=horizon_minutes, venue=venue,
+    )
     metrics_path = _metrics_path_for(weights_path)
     logger.info(
-        "predictor weights=%s metrics=%s symbol=%s horizon=%dm",
-        weights_path, metrics_path, symbol, horizon_minutes,
+        "predictor weights=%s metrics=%s symbol=%s horizon=%dm venue=%s",
+        weights_path, metrics_path, symbol, horizon_minutes, venue,
     )
     predictor = LivePredictor(
         weights_path=weights_path, metrics_path=metrics_path,
@@ -838,6 +868,7 @@ async def main() -> None:
             entry_long_threshold=entry_long,
             entry_short_threshold=entry_short,
             horizon_minutes=horizon_minutes,
+            venue=venue,
         ),
         risk_caps=RiskCaps(),
     )

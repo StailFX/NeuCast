@@ -127,11 +127,23 @@ class PaperTraderConfig:
     vol_scale_min: float = 0.25
     vol_scale_max: float = 4.0
 
-    #: Binance Spot maker fee per side in basis points. Standard tier
-    #: with BNB discount is 7.5 bp; without BNB it's 10 bp. We assume
-    #: the BNB-paid path because that's the obvious operational
-    #: configuration for any non-trivial volume.
+    #: Maker fee per side in basis points. Default 7.5 bp = Binance
+    #: Spot standard tier with BNB-paid discount.  Override via the
+    #: ``venue`` field below for the futures venue (2 bp/side, set
+    #: automatically) or by passing the field explicitly for a custom
+    #: fee model.
     maker_fee_bps_per_side: float = 7.5
+
+    #: Trading venue (release S phase 3). ``"spot"`` = Binance Spot
+    #: (default, preserves backward compat); ``"futures"`` = Binance
+    #: USDM Perpetual Futures. The ``__post_init__`` below auto-tunes
+    #: ``maker_fee_bps_per_side`` to the venue's fee tier when the
+    #: caller hasn't passed an explicit override:
+    #:   spot    → 7.5 bp/side  (standard + BNB discount)
+    #:   futures → 2.0 bp/side  (USDM maker, no volume-tier requirement)
+    #: Round-trip cost on futures is therefore 4 bp vs spot 15 bp —
+    #: the structural difference that motivates ADR-019.
+    venue: str = "spot"
 
     #: Refuse to open new positions when the model isn't statistically
     #: calibrated (``dir_acc_ci_low <= 0.5``). UX wise this is the
@@ -140,6 +152,26 @@ class PaperTraderConfig:
     #: overridable knob in case we want to backtest the uncalibrated
     #: regime separately.
     require_calibrated: bool = True
+
+    def __post_init__(self) -> None:  # noqa: D401
+        """Validate ``venue`` and auto-tune ``maker_fee_bps_per_side``
+        if the caller didn't pass an explicit override.
+
+        We use a sentinel rather than ``replace=`` semantics: if
+        ``maker_fee_bps_per_side`` is at its default 7.5 AND ``venue``
+        is ``"futures"``, we reset to 2.0. A caller who explicitly
+        passes ``maker_fee_bps_per_side=2.0`` (or anything else) on a
+        futures config keeps that value.
+        """
+        if self.venue not in ("spot", "futures"):
+            raise ValueError(
+                f"venue must be 'spot' or 'futures', got {self.venue!r}"
+            )
+        # We can't reassign a frozen-dataclass field directly; use
+        # object.__setattr__ as is the documented pattern for
+        # post-init mutation on frozen dataclasses.
+        if self.venue == "futures" and self.maker_fee_bps_per_side == 7.5:
+            object.__setattr__(self, "maker_fee_bps_per_side", 2.0)
 
 
 @dataclass(frozen=True)

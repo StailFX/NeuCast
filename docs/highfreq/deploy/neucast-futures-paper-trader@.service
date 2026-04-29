@@ -1,0 +1,46 @@
+[Unit]
+Description=NeuCast Paper Trader (USDM Futures) for %I — Phase C, sim-only ADR-005, release S phase 3
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service neucast-futures-highfreq.service
+Wants=neucast-futures-highfreq.service
+
+# Instance name format: <symbol>-h<horizon>m (e.g. "btcusdt-h1m",
+# "btcusdt-h15m"). Same parsing as the spot multi-horizon runner;
+# venue is hard-coded to ``futures`` in this template's environment
+# rather than parsed from the instance name. Keeps the instance
+# naming simple while making the venue choice obvious from the
+# unit-file lookup.
+
+[Service]
+Type=simple
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+# HF_FORCE_VENUE is a dedicated "force" env var NOT present in
+# /etc/neucast/env, so this Environment= directive cleanly wins (no
+# precedence trap with EnvironmentFile=). The wrapper checks
+# HF_FORCE_VENUE first and falls back to HF_VENUE/default otherwise.
+Environment=HF_FORCE_VENUE=futures
+# Distinct Prometheus port from spot multi-horizon runners (which
+# use 9094-9099) and from futures ingest (9101). 9110-9115 reserved
+# for futures paper traders.
+Environment=HF_FORCE_METRICS_PORT_BASE=9110
+
+ExecStart=/opt/neucast/tools/run_paper_trader_multihorizon.sh %i
+
+Restart=always
+RestartSec=10
+MemoryMax=300M
+MemoryHigh=200M
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+
+# Graceful shutdown: SIGTERM lets the loop close any open position
+# on time-stop before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

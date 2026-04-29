@@ -1,0 +1,33 @@
+[Unit]
+Description=NeuCast HFT — USDM Futures funding-rate REST poller (Release S phase 3)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service neucast-futures-highfreq.service
+# Soft-dependency on the ingest service: we want to backfill funding
+# rate into rows the ingest just wrote, but a missing ingest doesn't
+# block this poller (the UPDATE just touches 0 rows then).
+Wants=neucast-futures-highfreq.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=LOG_LEVEL=INFO
+
+ExecStart=/opt/neucast/venv/bin/python -m tools.poll_funding_rate \
+    --symbols BTCUSDT ETHUSDT BNBUSDT \
+    --backfill-minutes 6
+
+# Exit 0 when at least one symbol's poll succeeded; 1 when all
+# symbols failed (transient REST outage). Systemd's failure tracking
+# will surface persistent failures via the timer.
+SuccessExitStatus=0
+
+# Resource limits — REST GET + per-symbol UPDATE is trivial work.
+MemoryMax=100M
+Nice=10
+TimeoutStartSec=60
+
+[Install]
+# Activated by neucast-futures-funding-poll.timer.

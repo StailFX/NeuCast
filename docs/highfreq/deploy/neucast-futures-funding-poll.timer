@@ -1,0 +1,20 @@
+[Unit]
+Description=Fire neucast-futures-funding-poll.service every 5 minutes (Release S phase 3)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# Wait 60 s after boot so the ingest service has time to start +
+# write the first row (otherwise our UPDATE has nothing to touch).
+OnBootSec=60s
+# Then every 5 minutes.  Funding rate changes ~bp/min — 5 min
+# granularity is operationally fine, and matches the
+# ``--backfill-minutes 6`` window in the .service unit (1-min
+# overlap so we never miss a row).
+OnUnitActiveSec=5min
+# Up to 30s jitter so 3 funding pollers across hosts don't all
+# hit Binance at the exact same wall-clock instant.
+RandomizedDelaySec=30s
+Unit=neucast-futures-funding-poll.service
+
+[Install]
+WantedBy=timers.target

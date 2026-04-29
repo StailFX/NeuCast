@@ -38,11 +38,29 @@ esac
 export HIGHFREQ_PAPER_SYMBOL="$sym"
 export HF_HORIZON_MINUTES="$horizon"
 
-# Prometheus metrics port. The three 1-minute runners hold 9091/9092/9093.
-# Multi-horizon runners get 9094-9099. Map deterministically:
+# Venue selection (release S phase 3, 2026-04-29). systemd's
+# EnvironmentFile= overrides Environment= per spec, so we can't rely
+# on the unit file's ``Environment=HF_VENUE=futures`` if /etc/neucast/env
+# happens to define HF_VENUE. We use a dedicated "force" name that's
+# NEW and not in /etc/neucast/env — dropin / unit Environment= is
+# the only place it gets set.  Defaults to spot.
+if [ -n "${HF_FORCE_VENUE:-}" ]; then
+    HF_VENUE="$HF_FORCE_VENUE"
+elif [ -z "${HF_VENUE:-}" ]; then
+    HF_VENUE=spot
+fi
+export HF_VENUE
+
+# Prometheus metrics port. Allocated bases (each holds 6 ports for
+# 3 symbols × 2 horizon classes):
+#   9091-9093  — spot 1m runners (existing)
+#   9094-9099  — spot multi-horizon (default base 9094)
+#   9110-9115  — futures multi-horizon (release S phase 3, base 9110)
+# Map deterministically within a base:
 #   bnb=0, btc=1, eth=2, ...   (other symbols → fall through to 0)
-#   port = 9094 + (sym_idx * 3 + horizon_class)
+#   port = base + (sym_idx * 3 + horizon_class)
 # horizon_class: 0 for ≤5m, 1 for 6-30m, 2 for >30m.
+port_base="${HF_FORCE_METRICS_PORT_BASE:-9094}"
 case "$sym" in
     bnb*) sym_idx=0 ;;
     btc*) sym_idx=1 ;;
@@ -56,7 +74,7 @@ elif [ "$horizon" -le 30 ]; then
 else
     horizon_class=2
 fi
-port=$((9094 + sym_idx * 3 + horizon_class))
+port=$((port_base + sym_idx * 3 + horizon_class))
 export HIGHFREQ_PAPER_METRICS_PORT="$port"
 
 # Long-horizon trade economics differ from 1m: each bar's decision is
@@ -103,7 +121,7 @@ export HF_ENTRY_LONG_THRESHOLD HF_ENTRY_SHORT_THRESHOLD
 # (we export AFTER any sourcing).
 export HF_PAPER_DEMO_MODE=0
 
-echo "[run_paper_trader_multihorizon] sym=$sym horizon=${horizon}m port=$port" \
+echo "[run_paper_trader_multihorizon] sym=$sym horizon=${horizon}m venue=$HF_VENUE port=$port" \
     "long_threshold=$HF_ENTRY_LONG_THRESHOLD short_threshold=$HF_ENTRY_SHORT_THRESHOLD" \
     "demo=$HF_PAPER_DEMO_MODE" >&2
 
