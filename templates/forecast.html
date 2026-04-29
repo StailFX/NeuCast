@@ -92,7 +92,8 @@
       .nav-name { font-size: 1.05rem; }
       .nav-btn { padding: 0.45rem 0.9rem; font-size: 0.78rem; }
     }
-    .nav-brand { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; }
+    .nav-brand { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; color: var(--text); }
+    .nav-brand:visited, .nav-brand:hover { color: var(--text); }
     .nav-logo {
       width: 38px; height: 38px;
       background: linear-gradient(135deg, var(--green), var(--blue));
@@ -101,7 +102,7 @@
       box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
     }
     .nav-logo svg { width: 18px; height: 18px; fill: white; }
-    .nav-name { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
+    .nav-name { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
     .nav-links { display: flex; gap: 0.5rem; align-items: center; }
     .nav-btn {
       padding: 0.55rem 1.1rem;
@@ -461,6 +462,91 @@
     .metric-num.muted { color: var(--text-dim); }
     .metric-row-loading .metric-cell { color: var(--text-dim); }
 
+    /* ── Detailed admin metrics (Brier / ECE / log_loss) ── */
+    .admin-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+    .admin-metric {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+    }
+    .admin-metric-label {
+      font-size: 0.7rem; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      font-weight: 600; margin-bottom: 0.35rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .admin-metric-tip {
+      width: 14px; height: 14px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.62rem; color: var(--text-dim); cursor: help;
+      font-weight: 700; font-style: italic;
+    }
+    .admin-metric-value {
+      font-size: 1.5rem; font-weight: 800;
+      letter-spacing: -0.02em; line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .admin-metric-value.green { color: var(--green); }
+    .admin-metric-value.red   { color: var(--red); }
+    .admin-metric-value.muted { color: var(--text-muted); }
+    .admin-metric-sub {
+      font-size: 0.7rem; color: var(--text-dim);
+      margin-top: 0.25rem;
+    }
+
+    /* ── Roadmap timeline ── */
+    .roadmap {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+    .road-item {
+      display: grid;
+      grid-template-columns: 130px 1fr auto;
+      gap: 1.25rem;
+      padding: 1.1rem 1.4rem;
+      border-bottom: 1px solid var(--border-soft);
+      align-items: center;
+    }
+    .road-item:last-child { border-bottom: none; }
+    @media (max-width: 700px) {
+      .road-item {
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+      }
+      .road-when { grid-row: 1; grid-column: 1; }
+      .road-status { grid-row: 1; grid-column: 2; }
+      .road-text { grid-row: 2; grid-column: 1 / -1; }
+    }
+    .road-when {
+      font-size: 0.85rem; font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .road-text { color: var(--text-muted); font-size: 0.92rem; line-height: 1.5; }
+    .road-text strong { color: var(--text); }
+    .road-status {
+      font-size: 0.65rem; font-weight: 800;
+      padding: 0.3rem 0.65rem; border-radius: 6px;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .road-status.live   { background: rgba(16, 185, 129, 0.15); color: var(--green); }
+    .road-status.soon   { background: rgba(245, 158, 11, 0.12); color: var(--amber); }
+    .road-status.queued { background: rgba(167, 139, 250, 0.12); color: var(--purple); }
+
     /* ── Fee tier comparison ── */
     .fee-tiers {
       display: grid;
@@ -791,6 +877,131 @@
       <div class="metric-cell metric-head">обучена</div>
       <!-- rows filled by JS -->
     </div>
+
+    <!-- Detailed admin metrics: Brier / ECE / log_loss / mean|move| / base_rate -->
+    <div class="admin-metrics" id="admin-metrics">
+      <div class="admin-metric">
+        <div class="admin-metric-label">
+          Brier score
+          <span class="admin-metric-tip" title="Среднеквадратичная ошибка предсказанной вероятности vs реализованного 0/1. Аналог MSE для probabilistic classifier. Меньше = лучше калибровка. Идеал 0, монетка 0.25.">i</span>
+        </div>
+        <div class="admin-metric-value muted" id="admin-brier">—</div>
+        <div class="admin-metric-sub">калибровка вероятностей</div>
+      </div>
+      <div class="admin-metric">
+        <div class="admin-metric-label">
+          ECE
+          <span class="admin-metric-tip" title="Expected Calibration Error — насколько предсказанные вероятности соответствуют реальной частоте событий. 0 = идеально калиброван, 0.10+ = плохо.">i</span>
+        </div>
+        <div class="admin-metric-value muted" id="admin-ece">—</div>
+        <div class="admin-metric-sub">expected calibration error</div>
+      </div>
+      <div class="admin-metric">
+        <div class="admin-metric-label">
+          log-loss
+          <span class="admin-metric-tip" title="Cross-entropy loss. Идеал 0; монетка ≈ 0.693 (= ln 2). Лучше Brier для редких событий.">i</span>
+        </div>
+        <div class="admin-metric-value muted" id="admin-logloss">—</div>
+        <div class="admin-metric-sub">cross-entropy loss</div>
+      </div>
+      <div class="admin-metric">
+        <div class="admin-metric-label">
+          base rate
+          <span class="admin-metric-tip" title="Доля мажоритарного класса (up или down). Если 0.51 — рынок почти симметричный, 0.55+ — есть смещение в одну сторону.">i</span>
+        </div>
+        <div class="admin-metric-value muted" id="admin-baserate">—</div>
+        <div class="admin-metric-sub">% мажоритарного класса</div>
+      </div>
+      <div class="admin-metric">
+        <div class="admin-metric-label">
+          Bayesian CI
+          <span class="admin-metric-tip" title="Beta-Binomial credible interval — байесовский аналог frequentist bootstrap CI. На больших n совпадает с Wilson, на малых — шире (более честная неопределённость).">i</span>
+        </div>
+        <div class="admin-metric-value muted" id="admin-bayes">—</div>
+        <div class="admin-metric-sub">Beta-Binomial posterior</div>
+      </div>
+      <div class="admin-metric">
+        <div class="admin-metric-label">
+          n predictions
+          <span class="admin-metric-tip" title="Размер OOS test sample (после walk-forward CV). Чем больше, тем уже CI и тем убедительнее p-value.">i</span>
+        </div>
+        <div class="admin-metric-value muted" id="admin-npred">—</div>
+        <div class="admin-metric-sub">OOS sample size</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Roadmap: when other horizons + futures arrive -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">План развития</span>
+        <h2>Когда появятся другие горизонты и фьючерсы?</h2>
+        <p class="section-sub">
+          Все компоненты на бэкенде готовы и запущены. Большинство ETA — это
+          ожидание накопления данных, а не ожидание разработки.
+        </p>
+      </div>
+    </div>
+    <div class="roadmap">
+      <div class="road-item">
+        <div class="road-when">сейчас</div>
+        <div class="road-text">
+          <strong>Spot 1m</strong> — 3 модели (BTC / ETH / BNB), полностью
+          калиброваны, торгуют каждую минуту.
+        </div>
+        <div class="road-status live">live</div>
+      </div>
+      <div class="road-item">
+        <div class="road-when">сегодня</div>
+        <div class="road-text">
+          <strong>Spot 15m</strong> — модель BNB уже калибрована (точность 66%);
+          UI-переключатель горизонта прикручу в течение нескольких часов.
+        </div>
+        <div class="road-status soon">скоро</div>
+      </div>
+      <div class="road-item">
+        <div class="road-when" id="road-futures-eta">~17:30 UTC</div>
+        <div class="road-text">
+          <strong>Futures BTC 1m</strong> — L2-ингест с Binance Futures запущен
+          в 14:00 UTC, нужно накопить 200+ баров (~3.5 ч). Первая модель
+          сегодня вечером, paper-trader — ночью. Комиссия 4 bp roundtrip
+          вместо 15 bp на спот retail — структурно ближе к break-even.
+        </div>
+        <div class="road-status queued">накапливаем</div>
+      </div>
+      <div class="road-item">
+        <div class="road-when">+1-3 дня</div>
+        <div class="road-text">
+          <strong>Spot 5m / 60m</strong> — данные накапливаются параллельно с 1m.
+          На 5m сигнал слабый (eval показал p &gt; 0.1); на 60m — самый высокий
+          dir_acc (0.61) но мало данных. Будут включены как обучение
+          станет статистически значимым.
+        </div>
+        <div class="road-status queued">накапливаем</div>
+      </div>
+      <div class="road-item">
+        <div class="road-when">+1 неделя</div>
+        <div class="road-text">
+          <strong>Futures 15m / 60m</strong> + <strong>выбор плеча</strong> (1× / 3× / 5×) —
+          после первой недели накопления futures-данных. Бэкенд для leveraged
+          paper trading спроектирован, но не активирован пока нет
+          подтверждённой profitability на 1× futures.
+        </div>
+        <div class="road-status queued">в очереди</div>
+      </div>
+      <div class="road-item">
+        <div class="road-when">+2-4 недели</div>
+        <div class="road-text">
+          <strong>Frozen holdout</strong> 7-day OOS gold standard,
+          <strong>triple-barrier labels</strong> (López de Prado),
+          <strong>cross-exchange features</strong> (Coinbase / Kraken
+          референсы). Это — научный апгрейд для защиты, не повседневная
+          фича.
+        </div>
+        <div class="road-status queued">в roadmap</div>
+      </div>
+    </div>
   </section>
 
   <!-- Fee tier P&L comparison -->
@@ -1059,7 +1270,7 @@
                               .map(el => el.outerHTML).join('');
 
       const reports = await Promise.all(SYMBOLS.map(s =>
-        fetch(`/api/highfreq/training_report?symbol=${s}`, { cache: 'no-store' })
+        fetch(`/api/highfreq/training_report?symbol=${s}&lite=1`, { cache: 'no-store' })
           .then(r => r.ok ? r.json() : null)
           .catch(() => null)
       ));

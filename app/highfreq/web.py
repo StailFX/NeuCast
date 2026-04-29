@@ -371,58 +371,20 @@ def _get_db():
         db.close()
 
 
-@router.get("/highfreq", response_class=HTMLResponse)
-async def highfreq_page(request: Request) -> HTMLResponse:
-    """Render the live ``/highfreq`` page.
-
-    The HTML is intentionally minimal — actual data is filled in client-side
-    by polling :func:`get_status` every 2 seconds. This keeps server-side
-    rendering cheap and lets the page degrade gracefully if the ingest
-    service is briefly down.
-    """
-    # Note: starlette ≥ 0.27 deprecated the old `TemplateResponse(name, {"request": request, ...})`
-    # signature; in starlette ≥ 0.40 (which the Tokyo venv ships) it raises
-    # `TypeError: unhashable type: 'dict'` outright. The new API takes
-    # ``request`` as the first positional arg with a separate ``context`` dict.
-    return templates.TemplateResponse(
-        request,
-        "highfreq.html",
-        {
-            "symbol": DEFAULT_SYMBOL,
-            "minutes_required": MIN_MINUTES_FOR_TRAINING,
-            "available_symbols": _available_symbols(),
-        },
-    )
-
-
-@router.get("/forecast", response_class=HTMLResponse)
-async def forecast_page(request: Request) -> HTMLResponse:
-    """Render the user-facing ``/forecast`` page (release T, 2026-04-29).
-
-    Sister page to ``/highfreq`` but stripped down for non-technical
-    visitors:
-
-    * Three big direction cards (BTC / ETH / BNB) — UP / DOWN / SIDEWAYS
-      with confidence percentage, no jargon.
-    * Last 10 paper trades across all symbols, formatted as plain
-      "купил BTC в 14:30, +0.04% за минуту".
-    * 24 h summary stats (trade count, win-rate, mean P&L %).
-
-    No mention of bootstrap CIs, p-values, neutral-band drops, fold
-    counts, etc. — that's all on ``/highfreq`` for the operator.
-
-    The page is server-rendered as a static shell; all data comes
-    from existing JSON endpoints (``/api/highfreq/forecast``,
-    ``/api/highfreq/paper_trades``) via two polling loops.
-    Index-able by search engines (the marketing landing already does
-    so for the project as a whole; this is the live-data follow-up
-    that converts curious clicks).
-    """
-    return templates.TemplateResponse(
-        request,
-        "forecast.html",
-        {},  # no template variables — page is pure client-side data
-    )
+# NOTE — release T.4 (2026-04-29):
+# The ``/highfreq`` and ``/forecast`` HTML routes used to live HERE
+# (Tokyo). They've been MOVED to Finland's ``app/main.py`` so the
+# auth gate (login required for /forecast, admin-only for /highfreq)
+# can use Finland's existing session middleware.
+#
+# Tokyo now serves ONLY the JSON ``/api/highfreq/*`` endpoints.
+# Finland's nginx still proxies ``/api/highfreq/*`` to this router via
+# the WireGuard tunnel; the rendered HTML pages are produced on
+# Finland and pull data through that proxy.
+#
+# Defence-in-depth: if a future visitor somehow hits Tokyo directly
+# (e.g. via WG IP), they get a 404 on /highfreq + /forecast rather
+# than an unauthenticated render of the operator UI.
 
 
 @router.get("/api/highfreq/status")
@@ -1284,6 +1246,7 @@ async def get_feature_importance(
 @router.get("/api/highfreq/training_report")
 async def get_training_report(
     symbol: str = DEFAULT_SYMBOL,
+    lite: int = 0,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
     """Return the trainer's last metrics report + computed fold-readiness.
@@ -1301,31 +1264,43 @@ async def get_training_report(
     until the next daily firing. We now compute a **live inventory**
     via :func:`app.highfreq.data_inventory.fetch_live_inventory` (cached
     30 s per symbol) and surface it as ``live_inventory`` in the response.
-    The UI's progress bar reads ``fold_ready_pct`` which is now derived
-    from the live count, so the user sees minute-by-minute progress
-    rather than "stuck at 14% all day".
+
+    ``lite=1`` query parameter (release T.3, 2026-04-29)
+    -----------------------------------------------------
+
+    The live-inventory query reads up to 7 days of 1-second rows from
+    Postgres on a cache miss (~600k rows). Through the WG tunnel from
+    Finland to Tokyo this can hit 10-20 seconds of TTFB on a cold
+    cache, blocking page-render for any UI that fans out
+    training_report calls per-symbol.
+
+    The public-facing /forecast page only needs metrics.json (dir_acc,
+    p-value, n_folds) — it has no progress widget. Pass ``?lite=1`` to
+    skip the live_inventory computation entirely; response drops the
+    ``live_inventory`` and ``fold_ready_pct`` fields. Operator-facing
+    /highfreq omits the flag (gets the full payload as before).
 
     Returns 200 with ``ok=False, reason="no_report_yet"`` if the
-    trainer hasn't written its first ``metrics.json`` yet (cold-start)
-    — but even then, ``live_inventory`` is computed so the UI can show
-    ramp-up progress before the first model is fit.
+    trainer hasn't written its first ``metrics.json`` yet (cold-start).
     Never 503 — the page must keep rendering through trainer outages.
     """
     symbol = symbol.upper()
+    skip_live = bool(lite)
 
-    # Live inventory ALWAYS computed — the progress widget should work
-    # even before the trainer has fired its first run. Failure of the
-    # live computation degrades gracefully (None) without 503-ing the
-    # whole endpoint.
+    # Live inventory ALWAYS computed when lite=0 — the progress widget
+    # on /highfreq should work even before the trainer has fired its
+    # first run. Failure of the live computation degrades gracefully
+    # (None) without 503-ing the whole endpoint.
     live: dict[str, Any] | None = None
-    try:
-        from app.highfreq.data_inventory import fetch_live_inventory
-        live_snap = fetch_live_inventory(db, symbol=symbol)
-        live = live_snap.to_dict()
-    except (ProgrammingError, OperationalError) as exc:
-        logger.warning("live_inventory query failed (%s): %s", symbol, exc)
-    except Exception as exc:
-        logger.warning("live_inventory unexpected failure (%s): %s", symbol, exc)
+    if not skip_live:
+        try:
+            from app.highfreq.data_inventory import fetch_live_inventory
+            live_snap = fetch_live_inventory(db, symbol=symbol)
+            live = live_snap.to_dict()
+        except (ProgrammingError, OperationalError) as exc:
+            logger.warning("live_inventory query failed (%s): %s", symbol, exc)
+        except Exception as exc:
+            logger.warning("live_inventory unexpected failure (%s): %s", symbol, exc)
 
     # Use per-symbol path if symbol is given; fall back to the
     # legacy default for backward compat with any single-symbol call sites.

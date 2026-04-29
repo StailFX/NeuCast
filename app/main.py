@@ -492,6 +492,63 @@ async def landing(request: Request, role: str = Depends(get_current_role)):
     return templates.TemplateResponse("landing.html", {"request": request, "logged_in": role is not None})
 
 
+@app.get("/forecast", response_class=HTMLResponse)
+async def forecast_page(
+    request: Request,
+    role: str = Depends(get_current_role),
+):
+    """Live HF forecast page — gated for any logged-in user.
+
+    Originally served by Tokyo (release T), but moved to Finland in
+    release T.4 because the user requested auth-gating ("чтобы любой
+    не мог посмотреть с главной"). Auth state lives on Finland; the
+    page renders from a Finland template and pulls live data via the
+    public ``/api/highfreq/*`` endpoints (which still proxy to Tokyo).
+
+    Non-authenticated visitors → 302 to ``/login?next=/forecast`` so
+    they come back to the forecast after sign-in.
+    """
+    if role is None:
+        return RedirectResponse("/login?next=/forecast", status_code=302)
+    return templates.TemplateResponse("forecast.html", {
+        "request": request,
+        "logged_in": True,
+        "is_admin": role == "admin",
+    })
+
+
+@app.get("/highfreq", response_class=HTMLResponse)
+async def highfreq_admin_page(
+    request: Request,
+    role: str = Depends(get_current_role),
+):
+    """Operator-grade /highfreq page — admin role required.
+
+    Surfaces dense technical metrics (Wilson CI, p-values, fold counts,
+    calibration diagnostics, fee-tier P&L breakdown) intended for the
+    project operator, not casual visitors.
+
+    * not logged in → 302 to /login?next=/highfreq
+    * logged in but role != admin → 404 (hide the URL exists)
+    * admin → render the full operator template
+    """
+    if role is None:
+        return RedirectResponse("/login?next=/highfreq", status_code=302)
+    if role != "admin":
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse("highfreq.html", {
+        "request": request,
+        "logged_in": True,
+        "is_admin": True,
+        # Defaults previously injected by Tokyo's web.py renderer; the
+        # template uses these only for the symbol-switcher dropdown +
+        # the "minutes required" first-fold progress widget.
+        "symbol": "BTCUSDT",
+        "minutes_required": 1500,
+        "available_symbols": ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
+    })
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, role: str = Depends(get_current_role), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not role:
