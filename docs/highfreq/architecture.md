@@ -478,6 +478,48 @@ Reported alongside the bootstrap CI as `dir_acc_bayesian_ci_low` / `dir_acc_baye
 
 ---
 
+### ADR-019 · USDM Perpetual Futures venue as parallel data plane (Release S, in progress)
+
+**Context.** Multi-horizon paper-trading on Binance Spot at retail fees (15 bp roundtrip) is mathematically loss-bound for every horizon we've measured: even at BNB 15m's `dir_acc 0.66` with `mean|move| 5 bp`, expected P&L per trade is `0.32 × 5 − 15 = −13.4 bp`. The fee burden is the single dominant cost; no realistic ML improvement can close it on 1-15m horizons. The structural break to break-even is **a venue with lower fees**.
+
+Binance USDM (USDT-margined) Perpetual Futures offers maker fees of **2 bp/side = 4 bp roundtrip** (taker 4/side = 8 bp roundtrip), without volume tier requirements. This collapses the BNB 15m example to `0.32 × 5 − 4 = −2.4 bp/trade` — within striking distance, and on a tighter-conviction signal subset (threshold 0.65/0.35 lifts E[|move|] to ~7-10 bp) it crosses zero.
+
+USDM additionally provides:
+* **Native shorts** — Binance Spot doesn't support shorts without margin; the paper trader currently treats shorts symbolically (ADR-011 §3). USDM has true bilateral quoting.
+* **Funding rate as a feature** — paid every 8h; positive funding = longs paying shorts (bearish lean signal). Updates every 1 s on the @markPrice@1s stream.
+* **Slightly higher liquidity** on the BTCUSDT pair than Spot in 2025-2026 measurements.
+
+**Decision.** Build USDM Futures as a **parallel data plane**, not a venue column on the existing tables. The spot ingest, trainer, and paper trader stay running unchanged; futures is additive, with separate weights, separate paper trades, separate UI surface.
+
+Schema (release S migration 006):
+
+* `highfreq_futures_ofi_1s` — clone of `highfreq_ofi_1s` plus `mark_price`, `funding_rate`, `next_funding_ms` columns from the @markPrice@1s stream.
+* Symbol values match spot (`BTCUSDT` not `BTCUSDT.P`) — venue is implicit by table name.
+* Same primary-key + index convention as spot for query parity in the trainer.
+
+Code structure:
+
+* `app/highfreq/futures_l2_consumer.py` (skeleton in release S, full impl in S+1) — parallel WebSocket consumer connecting to `wss://fstream.binance.com/stream` with `@depth20@100ms` + `@markPrice@1s` subscriptions per symbol.
+* `app/highfreq/futures_aggregator.py` — same minute-aggregation as spot, plus funding-rate carry-forward.
+* `app/highfreq/feature_pipeline_futures.py` — extends microstructure with `funding_rate_bp_per_8h`, `mark_minus_microprice_bp` features.
+* Trainer: existing CLI gains `--venue futures` flag; reads from the futures table; writes to `weights/highfreq/futures/<symbol>_<horizon>m.cbm`.
+* Paper trader: existing `PaperTraderConfig` gains `venue: Literal["spot", "futures"] = "spot"`. When futures: `maker_fee_bps = 2.0`, `taker_fee_bps = 4.0`; funding-rate cost is added to the realized P&L for any position that straddles a funding settlement.
+* Systemd: new templated units `neucast-futures-highfreq.service`, `neucast-futures-paper-trader@.service`.
+
+**Trade-off accepted — code surface duplication.** Spot and futures pipelines share ~80 % of feature logic, but the consumer / aggregator / fee model differs. We accept duplicating the consumer + aggregator + the trainer's input loader rather than refactoring spot to a venue-aware abstraction, because:
+
+1. The spot ingest has been running for weeks and feeding production paper traders; a venue-abstraction refactor would be a high-risk change with no immediate upside.
+2. If futures research dead-ends (insufficient liquidity, funding-rate volatility eats edge, etc.) we just drop the futures path — the spot side is unaffected.
+3. The duplicated code IS shared at the feature-pipeline layer (microstructure features are venue-agnostic) — only the data-source plumbing diverges.
+
+**Alternative rejected — `venue` column on `highfreq_ofi_1s`.** Cleaner relationally, but adds nullable columns (`mark_price`, `funding_rate`) that don't apply to spot rows, complicates the trainer's "give me last 96h of BTCUSDT" query (now needs `WHERE venue='spot'`), and bakes a "what does NULL funding_rate mean for a spot row?" question into every downstream consumer.
+
+**Alternative rejected — COIN-M Futures (BTC-margined).** PNL would be in BTC, not USDT, requiring a USDT-equivalent conversion for cross-venue comparison. Mark-price calculation differs from USDM. Lower priority — we add it post-defense if research suggests it's needed.
+
+**Alternative rejected — switching the production paper trader to futures.** That's the eventual goal, but tonight's work is *additive only* — the spot side keeps running as the academic-defense baseline. Once the futures side has a few weeks of data and a confirmed-better-than-spot post-fee P&L curve, we re-evaluate which side to declare "primary".
+
+---
+
 ## 5 · Module layout
 
 ```
