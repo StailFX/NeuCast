@@ -357,6 +357,7 @@ def evaluate_joint_horizon(
     test_fold_bars: int,
     step_bars: int,
     neutral_band_bps: float,
+    use_long_horizon_features: bool = False,
     catboost_iterations: int = 200,
     catboost_depth: int = 5,
     catboost_learning_rate: float = 0.05,
@@ -367,9 +368,12 @@ def evaluate_joint_horizon(
     Walk-forward CV operates on the chronologically-sorted pooled
     dataset. Each fold trains on past pooled bars and tests on the
     next slice — the test set may contain multiple symbols.
+
+    When ``use_long_horizon_features`` is True, uses TA features
+    (OHLC/EMA/RSI/Bollinger) instead of microstructure — appropriate
+    for 5m+ horizons where microstructure decays.
     """
     from app.highfreq.feature_pipeline_joint import (
-        JOINT_FEATURE_COLUMNS,
         make_joint_supervised,
     )
     from app.highfreq.feature_pipeline import aggregate_to_minute
@@ -385,6 +389,7 @@ def evaluate_joint_horizon(
         df_secs_by_symbol,
         neutral_band_bps=neutral_band_bps,
         bar_minutes=bar_minutes,
+        use_long_horizon_features=use_long_horizon_features,
     )
     n_bars_kept = int(len(X))
 
@@ -544,14 +549,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="bar sizes in minutes to compare")
     p.add_argument("--feature-sets", nargs="+",
                    default=["microstructure"],
-                   choices=["microstructure", "long_horizon", "cross_asset", "joint"],
+                   choices=["microstructure", "long_horizon", "cross_asset",
+                            "joint", "joint_long_horizon"],
                    help="which feature pipelines to evaluate. Pass multiple "
                         "to compare side-by-side. cross_asset uses BTC as "
-                        "reference for ETH/BNB; for BTC itself it falls back "
-                        "to base + lagged features only. joint trains ONE "
-                        "model on all 3 symbols pooled with symbol-id features "
-                        "— evaluated against held-out chronological tail of "
-                        "the pooled data.")
+                        "reference for ETH/BNB; joint pools 3 symbols with "
+                        "symbol-id features; joint_long_horizon combines "
+                        "joint pooling with classical TA features (OHLC, "
+                        "EMA, RSI, BB) — better suited for 5m/15m+.")
     p.add_argument("--since-hours", type=float, default=96.0)
     p.add_argument("--neutral-band-bps", type=float, default=None,
                    help="override default. Auto-scales as sqrt(bar_minutes) × 1bp "
@@ -587,10 +592,13 @@ def main(argv: list[str] | None = None) -> int:
         btc_df_secs = load_seconds(dsn, symbol="BTCUSDT", since_hours=args.since_hours)
         logger.info("loaded %d BTC rows for cross-asset reference", len(btc_df_secs))
 
-    # If 'joint' is requested, special-case: load all symbols' seconds
-    # ONCE, train a single pooled model, and short-circuit the per-
-    # symbol loop for the joint feature_set.
-    if "joint" in args.feature_sets:
+    # If any joint variant is requested, special-case: load all symbols'
+    # seconds ONCE, train a single pooled model, and short-circuit the
+    # per-symbol loop for those feature_sets.
+    joint_variants = [
+        f for f in args.feature_sets if f in ("joint", "joint_long_horizon")
+    ]
+    if joint_variants:
         logger.info("=" * 60)
         logger.info("loading all symbols for joint training")
         joint_secs = {
@@ -605,32 +613,37 @@ def main(argv: list[str] | None = None) -> int:
             step_bars = test_fold_bars
             neutral = args.neutral_band_bps if args.neutral_band_bps is not None \
                 else 1.0 * math.sqrt(h)
-            logger.info(
-                "joint @ %dm neutral=%.2fbp init_train=%d test=%d",
-                h, neutral, initial_train_bars, test_fold_bars,
-            )
-            try:
-                row = evaluate_joint_horizon(
-                    joint_secs, bar_minutes=h,
-                    initial_train_bars=initial_train_bars,
-                    test_fold_bars=test_fold_bars,
-                    step_bars=step_bars,
-                    neutral_band_bps=neutral,
+            for fset in joint_variants:
+                use_lh = (fset == "joint_long_horizon")
+                logger.info(
+                    "%s @ %dm neutral=%.2fbp init_train=%d test=%d",
+                    fset, h, neutral, initial_train_bars, test_fold_bars,
                 )
-                rows.append(row)
-                if row.dir_acc is None:
-                    logger.info(
-                        "joint @ %dm: insufficient data (n=%d)",
-                        h, row.n_bars_after_neutral_drop,
+                try:
+                    row = evaluate_joint_horizon(
+                        joint_secs, bar_minutes=h,
+                        initial_train_bars=initial_train_bars,
+                        test_fold_bars=test_fold_bars,
+                        step_bars=step_bars,
+                        neutral_band_bps=neutral,
+                        use_long_horizon_features=use_lh,
                     )
-                else:
-                    logger.info(
-                        "joint @ %dm: dir_acc=%.4f [%.3f, %.3f] p=%.2e folds=%d",
-                        h, row.dir_acc, row.dir_acc_ci_low,
-                        row.dir_acc_ci_high, row.dir_acc_p_value, row.n_folds,
-                    )
-            except Exception:
-                logger.exception("joint eval failed at %dm", h)
+                    # Tag with which joint variant for the table.
+                    row = HorizonEvalRow(**{**asdict(row), "feature_set": fset})
+                    rows.append(row)
+                    if row.dir_acc is None:
+                        logger.info(
+                            "%s @ %dm: insufficient data (n=%d)",
+                            fset, h, row.n_bars_after_neutral_drop,
+                        )
+                    else:
+                        logger.info(
+                            "%s @ %dm: dir_acc=%.4f [%.3f, %.3f] p=%.2e folds=%d",
+                            fset, h, row.dir_acc, row.dir_acc_ci_low,
+                            row.dir_acc_ci_high, row.dir_acc_p_value, row.n_folds,
+                        )
+                except Exception:
+                    logger.exception("%s eval failed at %dm", fset, h)
 
     for symbol in args.symbols:
         logger.info("=" * 60)
@@ -651,9 +664,9 @@ def main(argv: list[str] | None = None) -> int:
                 # original 1bp; at 60m it's 1*sqrt(60) ≈ 7.7bp.
                 neutral = 1.0 * math.sqrt(h)
             for fset in args.feature_sets:
-                if fset == "joint":
-                    # Joint is symbol-agnostic; handled in the special-case
-                    # block above. Skip here so we don't double-evaluate.
+                if fset in ("joint", "joint_long_horizon"):
+                    # Joint variants are symbol-agnostic; handled above.
+                    # Skip here so we don't double-evaluate.
                     continue
                 logger.info(
                     "  horizon=%dm fset=%s neutral=%.2fbp init_train=%d test=%d",

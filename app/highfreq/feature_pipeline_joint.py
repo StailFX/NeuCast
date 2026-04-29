@@ -55,6 +55,40 @@ JOINT_SYMBOL_FEATURE_COLUMNS: list[str] = [
 JOINT_FEATURE_COLUMNS: list[str] = list(BASE_FEATURE_COLUMNS) + list(JOINT_SYMBOL_FEATURE_COLUMNS)
 
 
+# Joint + classical-TA features — pooled multi-symbol training with
+# OHLC/RSI/Bollinger features (better suited for longer horizons).
+# Same symbol-id one-hots appended for per-symbol identity.
+def joint_long_horizon_columns() -> list[str]:
+    """Build the canonical column order for joint+long_horizon mode.
+
+    Centralised so trainer + predictor + tests can't drift."""
+    from app.highfreq.feature_pipeline_long_horizon import (
+        LONG_HORIZON_FEATURE_COLUMNS,
+    )
+    return list(LONG_HORIZON_FEATURE_COLUMNS) + list(JOINT_SYMBOL_FEATURE_COLUMNS)
+
+
+def build_joint_long_horizon_features(minute_df: pd.DataFrame) -> pd.DataFrame:
+    """Long-horizon TA features + symbol-id one-hots for joint training.
+
+    Used at 5m / 15m / 60m horizons where microstructure decays but
+    OHLC + EMA + RSI + Bollinger carry signal.
+    """
+    from app.highfreq.feature_pipeline_long_horizon import (
+        build_long_horizon_features,
+    )
+    cols = joint_long_horizon_columns()
+    if minute_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    feats = build_long_horizon_features(minute_df)
+    sym = minute_df["symbol"].astype(str).str.upper()
+    feats["is_btc"] = (sym == "BTCUSDT").astype(float).values
+    feats["is_eth"] = (sym == "ETHUSDT").astype(float).values
+    feats["is_bnb"] = (sym == "BNBUSDT").astype(float).values
+    return feats[cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
 def build_joint_features(minute_df: pd.DataFrame) -> pd.DataFrame:
     """Compute base features + one-hot symbol identity.
 
@@ -85,6 +119,7 @@ def make_joint_supervised(
     horizon: int = 1,
     neutral_band_bps: float = 1.0,
     bar_minutes: int = 1,
+    use_long_horizon_features: bool = False,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """Pool seconds frames across symbols and build a unified
     (X, y, meta) supervised dataset.
@@ -138,7 +173,10 @@ def make_joint_supervised(
 
     keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
     targeted = targeted.loc[keep].reset_index(drop=True)
-    X = build_joint_features(targeted)
+    if use_long_horizon_features:
+        X = build_joint_long_horizon_features(targeted)
+    else:
+        X = build_joint_features(targeted)
     # CRITICAL: walk-forward CV needs chronological ordering. Joint
     # data has multiple symbols at the same minute — within-minute
     # order doesn't matter for training, but we sort by `minute` so
