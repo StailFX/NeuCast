@@ -898,15 +898,19 @@ DEFAULT_METRICS_PATH = Path(
 )
 
 
-def metrics_path_for_symbol(symbol: str) -> Path:
-    """Per-symbol metrics path (mirrors trainer's --report convention).
+def metrics_path_for_symbol(symbol: str, *, horizon: int = 1) -> Path:
+    """Per-(symbol × horizon) metrics path — mirrors trainer's --report
+    convention.
 
-    e.g. ``"BTCUSDT"`` → ``weights/highfreq/btcusdt_1m_metrics.json``.
-    Lives next to the per-symbol .cbm; both paths share
+    e.g. ``("BTCUSDT", horizon=1)``  → ``weights/highfreq/btcusdt_1m_metrics.json``
+         ``("BTCUSDT", horizon=15)`` → ``weights/highfreq/btcusdt_15m_metrics.json``
+
+    Default horizon=1 preserves the original single-horizon contract.
+    Lives next to the per-(symbol, horizon) .cbm; both paths share
     ``HIGHFREQ_WEIGHTS_DIR`` if overridden.
     """
     base = Path(os.getenv("HIGHFREQ_WEIGHTS_DIR", "weights/highfreq"))
-    return base / f"{symbol.lower()}_1m_metrics.json"
+    return base / f"{symbol.lower()}_{int(horizon)}m_metrics.json"
 
 
 # Z-score for 95% two-sided confidence — standard normal inverse at 0.975.
@@ -1284,6 +1288,7 @@ async def get_feature_importance(
 @router.get("/api/highfreq/training_report")
 async def get_training_report(
     symbol: str = DEFAULT_SYMBOL,
+    horizon: int = 1,
     lite: int = 0,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
@@ -1324,6 +1329,8 @@ async def get_training_report(
     """
     symbol = symbol.upper()
     skip_live = bool(lite)
+    if horizon <= 0:
+        horizon = 1
 
     # Live inventory ALWAYS computed when lite=0 — the progress widget
     # on /highfreq should work even before the trainer has fired its
@@ -1340,10 +1347,10 @@ async def get_training_report(
         except Exception as exc:
             logger.warning("live_inventory unexpected failure (%s): %s", symbol, exc)
 
-    # Use per-symbol path if symbol is given; fall back to the
-    # legacy default for backward compat with any single-symbol call sites.
-    path = metrics_path_for_symbol(symbol)
-    if not path.exists():
+    # Use per-(symbol, horizon) path. Default horizon=1 preserves the
+    # legacy single-horizon contract for callers that don't pass it.
+    path = metrics_path_for_symbol(symbol, horizon=horizon)
+    if not path.exists() and horizon == 1:
         # Try the legacy override path as a last resort (catches cases
         # where the trainer was invoked with --report at a custom path).
         if DEFAULT_METRICS_PATH.exists():

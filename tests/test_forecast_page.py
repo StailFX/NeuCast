@@ -122,14 +122,24 @@ def test_forecast_template_has_fee_tier_and_metrics_sections():
 
 
 def test_forecast_template_polls_correct_api_endpoints():
+    """Pin the API endpoints the page hits.
+
+    Note ``pnl_by_fee_tier`` was REMOVED in release T.10 — fee-tier
+    aggregates are now computed client-side from horizon-filtered
+    trades (the paper_trades schema has no horizon column, so server
+    can't filter for us).  ``microprice_history`` powers the live
+    price line on each card."""
     html = _read_forecast_template()
     assert "/api/highfreq/forecast" in html
     assert "/api/highfreq/paper_trades" in html
     assert "/api/highfreq/training_report" in html
-    assert "/api/highfreq/pnl_by_fee_tier" in html
+    assert "/api/highfreq/microprice_history" in html
     # Pin lite=1 query param — without it the page would block 18s on
     # cold cache for live_inventory; release T.3 added the flag.
     assert "lite=1" in html
+    # Pin horizon param — release T.10 made every horizon-dependent
+    # block reactive to the active pill.
+    assert "horizon=" in html
 
 
 def test_forecast_template_uses_text_default_for_brand():

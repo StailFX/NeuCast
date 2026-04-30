@@ -1028,10 +1028,11 @@
     <div class="section-head">
       <div class="section-head-text">
         <span class="section-label">Метрики модели</span>
-        <h2>Качество прогнозов по символам</h2>
+        <h2>Качество прогнозов по символам <span id="metrics-horizon-suffix" style="color:var(--green);font-size:0.75em;font-weight:500;">— на 1 мин</span></h2>
         <p class="section-sub">
-          Каждая модель тренируется отдельно на своём символе.
+          Каждая модель тренируется отдельно на своём символе и горизонте.
           Все цифры — из последнего walk-forward CV с embargo (без data leakage).
+          <strong>Числа реактивны к выбранному горизонту наверху страницы.</strong>
         </p>
       </div>
     </div>
@@ -1179,10 +1180,12 @@
     <div class="section-head">
       <div class="section-head-text">
         <span class="section-label">P&amp;L при разных комиссиях</span>
-        <h2>Тот же сигнал, разные fee-tiers</h2>
+        <h2>Тот же сигнал, разные fee-tiers <span id="fee-horizon-suffix" style="color:var(--green);font-size:0.7em;font-weight:500;">— на 1 мин</span></h2>
         <p class="section-sub">
-          Одна и та же серия сделок, пересчитанная под разные тарифные тиры Binance.
-          Видно почему retail-Spot структурно в минусе, а на VIP9 / Futures-maker — выходит в плюс.
+          Одна и та же серия сделок выбранного горизонта, пересчитанная под разные
+          тарифы Binance. Левая колонка <strong>«без комиссии»</strong> — это и есть
+          gross-профит модели, без fee-burden'а. На retail-spot fees съедают edge;
+          на institutional VIP-9 (0 bp) или maker-rebate выходим в плюс.
         </p>
       </div>
     </div>
@@ -1219,10 +1222,11 @@
     <div class="section-head">
       <div class="section-head-text">
         <span class="section-label">Свежие данные</span>
-        <h2>Последние сделки</h2>
+        <h2>Последние сделки <span id="trades-horizon-suffix" style="color:var(--green);font-size:0.75em;font-weight:500;">— на 1 мин</span></h2>
         <p class="section-sub">
-          Последние 10 закрытых sim-сделок по всем трём символам.
-          Sим-модель: открыла позицию по сигналу, держала 1 минуту, закрыла.
+          Последние закрытые sim-сделки, отфильтрованные по выбранному горизонту.
+          Каждая строка показывает: цены входа и выхода, объём, длительность,
+          что сказала модель в момент входа, и P&amp;L в % и в $.
         </p>
       </div>
     </div>
@@ -1259,8 +1263,31 @@
     const METRICS_REFRESH_MS  = 5 * 60_000;
 
     // Selected horizon (changes when user clicks a pill). 1m → 1, 15m → 15.
-    // Cards re-fetch with this horizon param.
+    // ALL data blocks below the pills react to this — predictions,
+    // metrics, admin metrics, recent trades, fee-tier P&L.
     let activeHorizon = 1;
+
+    // Helper: format the suffix shown next to section titles.
+    function horizonSuffix() {
+      if (activeHorizon === 60) return '— на 1 час';
+      return `— на ${activeHorizon} мин`;
+    }
+    function updateHorizonSuffixes() {
+      ['metrics-horizon-suffix', 'trades-horizon-suffix', 'fee-horizon-suffix']
+        .forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = horizonSuffix();
+        });
+    }
+    // Trade row's hold-time matches the active horizon ± 50% tolerance.
+    // Used to filter the recent-trades feed and the fee-tier aggregate.
+    function isTradeAtActiveHorizon(t) {
+      const hm = holdMinutes(t);
+      if (hm === null) return false;
+      const lo = activeHorizon * 0.5;
+      const hi = activeHorizon * 1.6;
+      return hm >= lo && hm <= hi;
+    }
 
     function fmtAge(seconds) {
       if (!isFinite(seconds) || seconds < 0) return '—';
@@ -1378,20 +1405,37 @@
     async function refreshTradesAndStats() {
       try {
         const responses = await Promise.all(SYMBOLS.map(s =>
-          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=50`, { cache: 'no-store' })
+          fetch(`/api/highfreq/paper_trades?symbol=${s}&limit=80`, { cache: 'no-store' })
             .then(r => r.ok ? r.json() : { trades: [] })
             .catch(() => ({ trades: [] }))
         ));
         const allTrades = responses.flatMap(p => p.trades || []).filter(t => t.exit_ts);
-        const recent10 = [...allTrades]
+        // Filter trades that match the currently-selected horizon so
+        // switching the pill (1m ↔ 15m) immediately changes the visible
+        // set — instead of mixing 1m and 15m sales together.
+        const horizonTrades = allTrades.filter(isTradeAtActiveHorizon);
+        const recent10 = [...horizonTrades]
           .sort((a, b) => new Date(b.exit_ts) - new Date(a.exit_ts))
           .slice(0, 10);
         renderTrades(recent10);
-        renderStats(allTrades);
+        // Stats strip uses the same horizon-filtered set so "сделок за 24h"
+        // and "точность направления" reflect the active horizon's runner,
+        // not the union of all runners.
+        renderStats(horizonTrades);
+        // Fee tiers also need the horizon-filtered trades (recompute
+        // aggregates from this slice rather than asking the server).
+        _lastHorizonTrades = horizonTrades;
+        // Re-render fee tiers immediately from the fresh horizon slice.
+        refreshFeeTiers();
       } catch (err) {
         console.warn('trades fetch failed', err);
       }
     }
+    // Cache last horizon-filtered trades for the fee-tier client-side
+    // computation. Avoids needing a separate /pnl_by_fee_tier?horizon=H
+    // server endpoint (which would require a paper_trades schema change
+    // to carry horizon — not worth the migration just for the UI).
+    let _lastHorizonTrades = [];
     function isDirectionCorrect(t) {
       // True direction-accuracy: did the model's chosen side match the
       // realised price move? Independent of fees / win-rate.
@@ -1658,7 +1702,9 @@
       const headerHTML = window._metricsGridHeader;
 
       const reports = await Promise.all(SYMBOLS.map(s =>
-        fetch(`/api/highfreq/training_report?symbol=${s}&lite=1`, { cache: 'no-store' })
+        fetch(
+          `/api/highfreq/training_report?symbol=${s}&horizon=${activeHorizon}&lite=1`,
+          { cache: 'no-store' })
           .then(r => r.ok ? r.json() : null)
           .catch(() => null)
       ));
@@ -1913,56 +1959,65 @@
       }
     }
 
-    // ─── Fee-tier P&L ───
-    const TIER_DISPLAY = {
-      retail:    { name: 'Spot retail',  fee: '7.5 bp / сторона', desc: 'без VIP-объёма' },
-      vip5:      { name: 'Spot VIP-5',   fee: '1.0 bp / сторона', desc: '$50M+ оборот/мес' },
-      vip9:      { name: 'Spot VIP-9',   fee: '0 bp / сторона',   desc: '$1B+ оборот, institutional' },
-      mm_rebate: { name: 'Market-maker', fee: '−0.4 bp / сторона', desc: 'rebate за liquidity' },
-    };
-    async function refreshFeeTiers() {
-      // Aggregate across all 3 symbols — sum trades, recompute means.
-      const responses = await Promise.all(SYMBOLS.map(s =>
-        fetch(`/api/highfreq/pnl_by_fee_tier?symbol=${s}`, { cache: 'no-store' })
-          .then(r => r.ok ? r.json() : null)
-          .catch(() => null)
-      ));
-      // Sum n_trades + weighted-mean realized_pnl per tier.
-      const aggregated = {};  // tier_name → { n: int, sum_bps: float }
-      let totalTrades = 0;
-      for (const payload of responses) {
-        if (!payload?.tiers) continue;
-        const n = Number(payload.n_trades || 0);
-        totalTrades += n;
-        for (const t of payload.tiers) {
-          if (!aggregated[t.tier_name]) aggregated[t.tier_name] = { n: 0, sum_bps: 0 };
-          aggregated[t.tier_name].n += n;
-          aggregated[t.tier_name].sum_bps += (Number(t.mean_pnl_bps_per_trade) || 0) * n;
-        }
+    // ─── Fee-tier P&L (client-side, horizon-aware) ───
+    // Recomputes the per-tier mean P&L from the horizon-filtered trade
+    // set we already cached.  Why client-side: paper_trades schema has
+    // no horizon column, so server can't filter; doing it on the client
+    // keeps the UI consistent with what the user sees in the trades feed
+    // above (same trades → same aggregates).
+    //
+    // Tier list now leads with "Без комиссии" (gross): the user
+    // explicitly asked for "профит без учета комиссии" — that's just
+    // the gross signal P&L without subtracting any maker/taker round-trip.
+    const TIER_DEFS = [
+      { key: 'gross',     fee_bps: 0,    name: 'Без комиссии',  fee: 'gross / 0 bp',     desc: 'чистый сигнал модели' },
+      { key: 'retail',    fee_bps: 7.5,  name: 'Spot retail',   fee: '7.5 bp / сторона', desc: 'без VIP-объёма' },
+      { key: 'vip5',      fee_bps: 1.0,  name: 'Spot VIP-5',    fee: '1.0 bp / сторона', desc: '$50M+ оборот/мес' },
+      { key: 'vip9',      fee_bps: 0.0,  name: 'Spot VIP-9',    fee: '0 bp / сторона',   desc: 'institutional' },
+      { key: 'futures',   fee_bps: 2.0,  name: 'Futures maker', fee: '2 bp / сторона',   desc: 'USDM perpetual' },
+      { key: 'mm_rebate', fee_bps: -0.4, name: 'MM rebate',     fee: '−0.4 bp / сторона', desc: 'liquidity rebate' },
+    ];
+    function meanGrossBps(trades) {
+      // Reconstruct gross (pre-fee) bps return from realized prices,
+      // independent of pnl_bps which already has retail fees deducted.
+      if (!trades.length) return 0;
+      let sum = 0;
+      let n = 0;
+      for (const t of trades) {
+        const entry = Number(t.entry_price);
+        const exit = Number(t.exit_price);
+        if (!isFinite(entry) || !isFinite(exit) || entry <= 0) continue;
+        const moveBps = ((exit - entry) / entry) * 1e4;
+        const sideMul = t.side === 'long' ? 1 : -1;
+        sum += sideMul * moveBps;
+        n += 1;
       }
-
+      return n ? (sum / n) : 0;
+    }
+    function refreshFeeTiers() {
       const target = document.getElementById('fee-tiers');
-      if (totalTrades === 0) {
-        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">пока не было сделок для пересчёта по тирам</div>';
+      if (!target) return;
+      const trades = _lastHorizonTrades;
+      if (!trades.length) {
+        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">сделок этого горизонта пока нет</div>';
         return;
       }
-      // Order tiers retail → vip5 → vip9 → mm_rebate
-      const order = ['retail', 'vip5', 'vip9', 'mm_rebate'];
-      target.innerHTML = order.filter(k => aggregated[k]).map(k => {
-        const a = aggregated[k];
-        const meanBps = a.n ? (a.sum_bps / a.n) : 0;
+      const grossBps = meanGrossBps(trades);
+      target.innerHTML = TIER_DEFS.map(t => {
+        // Round-trip cost = 2 × per-side fee.
+        const roundtrip = 2 * t.fee_bps;
+        const meanBps = grossBps - roundtrip;
         const meanPct = meanBps / 100;
         const positive = meanBps > 0;
         const cls = positive ? 'profitable' : (meanBps < -1 ? 'loss' : '');
         const pnlCls = positive ? 'green' : (meanBps < 0 ? 'red' : 'muted');
         const sign = positive ? '+' : '';
-        const display = TIER_DISPLAY[k] || { name: k, fee: '—', desc: '' };
         return `
           <div class="tier-card ${cls}">
-            <div class="tier-name">${display.name}</div>
-            <div class="tier-fee">${display.fee}</div>
+            <div class="tier-name">${t.name}</div>
+            <div class="tier-fee">${t.fee}</div>
             <div class="tier-pnl ${pnlCls}">${sign}${meanPct.toFixed(2)}%</div>
-            <div class="tier-sub">${display.desc}</div>
+            <div class="tier-sub">${t.desc}</div>
           </div>
         `;
       }).join('');
@@ -1976,9 +2031,10 @@
     }
 
     // ─── Filter pill UX ───
-    // Horizon pills WORK now (release T.6): clicking 1m/15m re-fires
-    // refreshAllPredictions with the new horizon. Disabled pills (5m/60m)
-    // stay non-interactive until backend support lands.
+    // Horizon pills change activeHorizon AND fire a full re-render of
+    // every horizon-dependent block: predictions, model metrics,
+    // recent trades, fee-tier P&L. Section titles get a suffix
+    // ("— на 15 мин") so it's obvious WHICH horizon's data is below.
     document.querySelectorAll('#horizon-pills .pill').forEach(btn => {
       btn.addEventListener('click', () => {
         if (btn.classList.contains('disabled')) return;
@@ -1986,8 +2042,15 @@
         group.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         activeHorizon = parseInt(btn.dataset.horizon, 10) || 1;
-        // Immediately re-fetch so user sees instant feedback.
+        updateHorizonSuffixes();
+        // Refresh EVERY horizon-dependent block, not just predictions —
+        // earlier T.7 only re-fired refreshAllPredictions, which is why
+        // the metrics table + fee tiers stayed stuck on 1m data when
+        // user switched to 15m.  refreshTradesAndStats internally
+        // also calls refreshFeeTiers once trades are loaded.
         refreshAllPredictions();
+        refreshModelMetrics();
+        refreshTradesAndStats();
       });
     });
     // Venue pills are visual-only for now (Spot active, Futures "скоро").
@@ -2001,16 +2064,17 @@
     });
 
     // ─── Kick off ───
+    updateHorizonSuffixes();
     refreshAllPredictions();
-    refreshTradesAndStats();
+    refreshTradesAndStats();   // populates _lastHorizonTrades + calls refreshFeeTiers internally
     refreshModelMetrics();
-    refreshFeeTiers();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
     setInterval(refreshTradesAndStats, TRADES_REFRESH_MS);
     setInterval(refreshModelMetrics,   METRICS_REFRESH_MS);
-    setInterval(refreshFeeTiers,       METRICS_REFRESH_MS);
+    // refreshFeeTiers is fired from inside refreshTradesAndStats now,
+    // so we don't need a separate interval for it.
     setInterval(refreshCountdowns,     1000);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
