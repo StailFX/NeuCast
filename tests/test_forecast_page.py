@@ -121,6 +121,17 @@ def test_forecast_template_has_fee_tier_and_metrics_sections():
     assert 'id="road-futures-eta"' in html or 'roadmap' in html.lower()
 
 
+def test_forecast_template_has_conditional_accuracy_block():
+    """Release T.12 (2026-04-30) added a "когда модель уверена" block
+    showing realized dir_acc bucketed by ``|prob_up - 0.5|`` so the
+    user can see "BNB at conf >= 65% is right 57.2% of the time on
+    n=1838 calls". Pin the anchor + the JS fetch."""
+    html = _read_forecast_template()
+    assert 'id="conf-grid"' in html
+    assert "/api/highfreq/conditional_accuracy" in html
+    assert "refreshConditionalAccuracy" in html
+
+
 def test_forecast_template_polls_correct_api_endpoints():
     """Pin the API endpoints the page hits.
 
@@ -128,12 +139,14 @@ def test_forecast_template_polls_correct_api_endpoints():
     aggregates are now computed client-side from horizon-filtered
     trades (the paper_trades schema has no horizon column, so server
     can't filter for us).  ``microprice_history`` powers the live
-    price line on each card."""
+    price line on each card.  ``conditional_accuracy`` (T.12) buckets
+    realized predictions by confidence threshold."""
     html = _read_forecast_template()
     assert "/api/highfreq/forecast" in html
     assert "/api/highfreq/paper_trades" in html
     assert "/api/highfreq/training_report" in html
     assert "/api/highfreq/microprice_history" in html
+    assert "/api/highfreq/conditional_accuracy" in html
     # Pin lite=1 query param — without it the page would block 18s on
     # cold cache for live_inventory; release T.3 added the flag.
     assert "lite=1" in html

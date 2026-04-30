@@ -543,6 +543,79 @@
       margin-top: 0.25rem;
     }
 
+    /* ── Conditional accuracy by confidence bucket ── */
+    .conf-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+    .conf-card {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem 1.15rem;
+    }
+    .conf-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.85rem;
+    }
+    .conf-card-symbol {
+      font-weight: 700; font-size: 0.9rem;
+      letter-spacing: 0.02em;
+    }
+    .conf-card-symbol .mini-icon {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: inline-block; vertical-align: middle; margin-right: 0.45rem;
+    }
+    .conf-card-symbol .mini-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .conf-card-symbol .mini-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .conf-card-symbol .mini-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .conf-card-total {
+      font-size: 0.7rem; color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .conf-bucket-row {
+      display: grid;
+      grid-template-columns: 80px 1fr 70px;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px dashed rgba(255,255,255,0.05);
+    }
+    .conf-bucket-row:last-child { border-bottom: none; }
+    .conf-bucket-label {
+      font-size: 0.72rem; color: var(--text-muted);
+      font-weight: 600;
+    }
+    .conf-bucket-bar {
+      height: 8px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .conf-bucket-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--text-muted), var(--green));
+      border-radius: 4px;
+      transition: width 0.5s ease;
+    }
+    .conf-bucket-bar-fill.low { background: var(--text-muted); }
+    .conf-bucket-bar-fill.mid { background: linear-gradient(90deg, var(--text-muted), #f0b90b); }
+    .conf-bucket-bar-fill.hi  { background: linear-gradient(90deg, #f0b90b, var(--green)); }
+    .conf-bucket-pct {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-weight: 700; font-size: 0.95rem;
+      color: var(--text);
+    }
+    .conf-bucket-pct.muted { color: var(--text-muted); font-weight: 500; }
+    .conf-bucket-n {
+      font-size: 0.62rem; color: var(--text-dim);
+      margin-left: 0.4rem; font-weight: 400;
+    }
+
     /* ── Roadmap timeline ── */
     .roadmap {
       display: grid;
@@ -1096,6 +1169,30 @@
         <div class="admin-metric-value muted" id="admin-npred">—</div>
         <div class="admin-metric-sub">OOS sample size</div>
       </div>
+    </div>
+  </section>
+
+  <!-- Conditional accuracy: точность когда модель уверена -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Точность по уверенности</span>
+        <h2>Когда модель уверена — она права чаще</h2>
+        <p class="section-sub">
+          Показатель «общая точность направления» включает все бары — даже те,
+          где модель сама колеблется около 50/50. Калиброванная модель
+          (Platt-fit) гарантирует: чем дальше <code>prob_up</code> от 0.5,
+          тем выше реальный hit-rate. Это не подкрутка цифр —
+          это <strong>осмысленный отбор сигналов</strong>: торговать стоит
+          только когда модель действительно говорит «уверена».
+          <br><br>
+          Считается на полном <code>predictions_log</code> (накопленные
+          live-предсказания всех поколений моделей), Wilson 95% CI.
+        </p>
+      </div>
+    </div>
+    <div class="conf-grid" id="conf-grid">
+      <!-- filled by JS -->
     </div>
   </section>
 
@@ -2023,6 +2120,77 @@
       }).join('');
     }
 
+    // ─── Conditional accuracy by confidence bucket ───
+    //
+    // Calibrated 1-min model: hit-rate climbs as |prob - 0.5| grows.
+    // We surface this as a 3×3 grid (3 symbols × 3 confidence
+    // thresholds) so users can see e.g. "BNB on conf >= 65% is right
+    // 57% of the time, on n=1838 calls". Wilson 95% CI from server.
+    async function refreshConditionalAccuracy() {
+      const target = document.getElementById('conf-grid');
+      if (!target) return;
+      try {
+        const res = await fetch('/api/highfreq/conditional_accuracy', { cache: 'no-store' });
+        if (!res.ok) {
+          target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">данных пока нет</div>';
+          return;
+        }
+        const j = await res.json();
+        if (!j.ok || !Array.isArray(j.rows) || j.rows.length === 0) {
+          target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">накапливаем live-предсказания…</div>';
+          return;
+        }
+        const SYMBOL_ORDER = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+        const rows = j.rows.slice().sort((a, b) =>
+          SYMBOL_ORDER.indexOf(a.symbol) - SYMBOL_ORDER.indexOf(b.symbol),
+        );
+        const BUCKET_DEFS = [
+          { key: 'conf_55', label: 'prob ≥ 55%', toneCls: 'low' },
+          { key: 'conf_60', label: 'prob ≥ 60%', toneCls: 'mid' },
+          { key: 'conf_65', label: 'prob ≥ 65%', toneCls: 'hi' },
+        ];
+        target.innerHTML = rows.map(r => {
+          const sym = r.symbol;
+          const ticker = sym.replace('USDT', '');
+          const iconCls = ticker.toLowerCase();
+          // total = bars in the LOWEST threshold bucket (most permissive)
+          const total = (r.buckets && r.buckets.conf_55 && r.buckets.conf_55.n) || 0;
+          const bucketsHtml = BUCKET_DEFS.map(b => {
+            const v = (r.buckets || {})[b.key];
+            if (!v || v.n === 0 || v.dir_acc === null) {
+              return `
+                <div class="conf-bucket-row">
+                  <div class="conf-bucket-label">${b.label}</div>
+                  <div class="conf-bucket-bar"><div class="conf-bucket-bar-fill ${b.toneCls}" style="width:0%"></div></div>
+                  <div class="conf-bucket-pct muted">—</div>
+                </div>`;
+            }
+            const pct = (v.dir_acc * 100).toFixed(1);
+            // Bar fill: maps [50%, 65%] → [0, 100%] for visual punch.
+            const barPct = Math.max(0, Math.min(100, (v.dir_acc - 0.5) * 100 / 0.15 * 100));
+            const isSig = (v.ci_low !== null && v.ci_low > 0.5);
+            const pctCls = isSig ? '' : 'muted';
+            return `
+              <div class="conf-bucket-row">
+                <div class="conf-bucket-label">${b.label}</div>
+                <div class="conf-bucket-bar"><div class="conf-bucket-bar-fill ${b.toneCls}" style="width:${barPct.toFixed(0)}%"></div></div>
+                <div class="conf-bucket-pct ${pctCls}">${pct}%<span class="conf-bucket-n">n=${v.n}</span></div>
+              </div>`;
+          }).join('');
+          return `
+            <div class="conf-card">
+              <div class="conf-card-head">
+                <div class="conf-card-symbol"><span class="mini-icon ${iconCls}"></span>${ticker}/USDT</div>
+                <div class="conf-card-total">всего сигналов: ${total}</div>
+              </div>
+              ${bucketsHtml}
+            </div>`;
+        }).join('');
+      } catch (err) {
+        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">ошибка загрузки</div>';
+      }
+    }
+
     // ─── Countdown ───
     function refreshCountdowns() {
       const secs = 60 - new Date().getUTCSeconds();
@@ -2068,6 +2236,7 @@
     refreshAllPredictions();
     refreshTradesAndStats();   // populates _lastHorizonTrades + calls refreshFeeTiers internally
     refreshModelMetrics();
+    refreshConditionalAccuracy();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
@@ -2076,6 +2245,10 @@
     // refreshFeeTiers is fired from inside refreshTradesAndStats now,
     // so we don't need a separate interval for it.
     setInterval(refreshCountdowns,     1000);
+    // Conditional accuracy refreshes alongside model metrics — same
+    // cadence (predictions_log accumulates ~1 row/min, no need for
+    // sub-minute polling).
+    setInterval(refreshConditionalAccuracy, METRICS_REFRESH_MS);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
     setInterval(pollHorizonAvailability, 120_000);

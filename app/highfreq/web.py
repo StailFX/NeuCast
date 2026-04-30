@@ -1569,6 +1569,104 @@ async def get_realized_accuracy_full(
     }))
 
 
+@router.get("/api/highfreq/conditional_accuracy")
+async def get_conditional_accuracy(
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Realized directional accuracy bucketed by confidence threshold.
+
+    The unconditional dir_acc on a calibrated 1-min direction model
+    typically lands at 53-56% — close-to-chance because half the
+    predictions are mild-confidence noise. The CALIBRATED model's
+    Platt-fit posteriors mean: on bars where ``prob_up`` is far from
+    0.5, the realized hit-rate climbs sharply. This endpoint surfaces
+    that "when the model is confident, how often is it right?" answer.
+
+    Buckets are nested (a bar in the 65% bucket is also in 60% / 55%
+    counts) so the UI can show a monotone descending series:
+    "conf ≥ 65% → 57.2% acc; conf ≥ 60% → 54.8%; conf ≥ 55% → 53.4%".
+
+    Returns 200 always; DB error degrades to ``ok=False``.
+    """
+    import math
+    try:
+        from scipy.stats import binomtest as _binomtest
+    except ImportError:
+        _binomtest = None
+
+    # Confidence thresholds → "abs(prob_up - 0.5) >= threshold". Each
+    # bucket is the FULL set of bars at-or-above that confidence
+    # (nested, not exclusive).
+    THRESHOLDS = [0.05, 0.10, 0.15]   # = prob ≥ 0.55 / 0.60 / 0.65
+    LABELS = ["conf_55", "conf_60", "conf_65"]
+
+    sql = text(
+        "SELECT symbol, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS NOT NULL "
+        "                        AND ABS(prob_up - 0.5) >= :t) AS n, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS TRUE "
+        "                        AND ABS(prob_up - 0.5) >= :t) AS hits "
+        "  FROM predictions_log "
+        " GROUP BY symbol "
+        " ORDER BY symbol"
+    )
+
+    def _wilson(k: int, n: int, *, z: float = 1.96) -> tuple[float, float]:
+        if n == 0:
+            return 0.0, 1.0
+        p = k / n
+        denom = 1.0 + z * z / n
+        centre = (p + z * z / (2 * n)) / denom
+        half = (z / denom) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+        return max(0.0, centre - half), min(1.0, centre + half)
+
+    by_symbol: dict[str, dict[str, Any]] = {}
+    try:
+        for label, t in zip(LABELS, THRESHOLDS):
+            for r in db.execute(sql, {"t": t}).all():
+                sym = r[0]
+                n = int(r[1] or 0)
+                hits = int(r[2] or 0)
+                if sym not in by_symbol:
+                    by_symbol[sym] = {"symbol": sym, "buckets": {}}
+                if n == 0:
+                    by_symbol[sym]["buckets"][label] = {
+                        "threshold": t, "n": 0, "hits": 0,
+                        "dir_acc": None, "ci_low": None, "ci_high": None,
+                        "p_value": None,
+                    }
+                    continue
+                acc = hits / n
+                lo, hi = _wilson(hits, n)
+                p_val: float | None = None
+                if _binomtest is not None:
+                    p_val = float(
+                        _binomtest(k=hits, n=n, p=0.5, alternative="greater").pvalue
+                    )
+                by_symbol[sym]["buckets"][label] = {
+                    "threshold": t,
+                    "n": n,
+                    "hits": hits,
+                    "dir_acc": acc,
+                    "ci_low": lo,
+                    "ci_high": hi,
+                    "p_value": p_val,
+                }
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("conditional_accuracy failed: %s", exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "rows": list(by_symbol.values()),
+    }))
+
+
 @router.get("/api/highfreq/anti_skill")
 async def get_anti_skill(
     symbol: str = DEFAULT_SYMBOL,
