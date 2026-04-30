@@ -1639,12 +1639,23 @@
     }
 
     // ─── Per-symbol model metrics table ───
+    // Cache the header row markup at MODULE scope (not function scope).
+    // Earlier code tried to extract it via ``split('<!-- rows filled by JS -->')``
+    // but that comment is gone after the first render → split returned
+    // the WHOLE current innerHTML (header + old rows), so each polling
+    // tick APPENDED a fresh body and the table grew unboundedly
+    // (visible as duplicated BTC/ETH/BNB rows after a few minutes).
+    // ``window._metricsGridHeader`` is captured once on first
+    // invocation and reused — guarantees idempotent renders.
     async function refreshModelMetrics() {
       const grid = document.getElementById('metrics-grid');
-      // Keep header row, replace body.
-      const headerHTML = grid.innerHTML.split('<!-- rows filled by JS -->')[0]
-                       || Array.from(grid.querySelectorAll('.metric-head'))
-                              .map(el => el.outerHTML).join('');
+      if (!grid) return;
+      if (!window._metricsGridHeader) {
+        window._metricsGridHeader = Array
+          .from(grid.querySelectorAll('.metric-head'))
+          .map(el => el.outerHTML).join('');
+      }
+      const headerHTML = window._metricsGridHeader;
 
       const reports = await Promise.all(SYMBOLS.map(s =>
         fetch(`/api/highfreq/training_report?symbol=${s}&lite=1`, { cache: 'no-store' })
