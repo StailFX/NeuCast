@@ -15,9 +15,23 @@ Environment=OMP_NUM_THREADS=2
 # %I = unescaped instance name (e.g. "btcusdt"). Trainer uppercases
 # --symbol internally; weights/report files are written lowercase to
 # match predictor.weights_path_for_symbol convention.
+#
+# ``--since-hours 93``: use the maximum history we have on disk
+# (ETH/BNB capped at 3.9 days = 93h). Release T.13 (2026-04-30)
+# bumped this from 72h after a grid A/B (tools/grid_search) showed
+# +0.5-1.5pp on conf60 accuracy across all three symbols — more bars
+# tightens fold count + CI without overfitting since we still aren't
+# data-rich enough to overfit on this feature dimensionality. Once
+# we accumulate >7 days of data, bump to 168 (7d) and re-evaluate.
+#
+# Per-symbol ExecStart is overridden in /etc/systemd/system/
+# neucast-highfreq-trainer@{ethusdt,bnbusdt}.service.d/feature-set.conf
+# to add ``--feature-set cross_asset`` (BTC stays microstructure;
+# A/B showed cross_asset is -0.4pp for BTC since pointing-at-itself
+# yields no extra signal).
 ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.trainer \
     --symbol %I \
-    --since-hours 72 \
+    --since-hours 93 \
     --out /opt/neucast/weights/highfreq/%i_1m.cbm \
     --report /opt/neucast/weights/highfreq/%i_1m_metrics.json \
     --frozen-holdout-days 0
