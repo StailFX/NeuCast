@@ -320,6 +320,10 @@ async def process_one_tick(
     if fs_for_lookback == "long_horizon" and bm_for_lookback > 1:
         # 25 bars × bar_minutes × 60s + 60s headroom for in-flight drop.
         lookback = 25 * bm_for_lookback * 60 + 60
+    elif fs_for_lookback == "cross_asset":
+        # 6 bars × bar_minutes × 60s + 60s headroom = ≥4 complete bars
+        # after the in-flight drop, plenty for lag3 + cross-asset join.
+        lookback = max(LOOKBACK_SECONDS, 6 * bm_for_lookback * 60 + 60)
     else:
         lookback = LOOKBACK_SECONDS
     df = await fetch_recent_seconds(pool, symbol, lookback_seconds=lookback)
@@ -344,6 +348,28 @@ async def process_one_tick(
         )
         inference = build_latest_inference_bar_long_horizon(
             df, bar_minutes=bm,
+        )
+    elif fs == "cross_asset":
+        # ETH/BNB pull BTC seconds as a reference (release T, 2026-04-29).
+        # BTC's own model has no reference (would be identity). Same
+        # wall-clock window so bars align after aggregation.
+        from app.highfreq.feature_pipeline_cross_asset import (
+            build_latest_inference_bar_cross_asset,
+        )
+        sym_upper = symbol.upper()
+        ref_symbol = None if sym_upper == "BTCUSDT" else "BTCUSDT"
+        ref_df = None
+        if ref_symbol is not None:
+            ref_df = await fetch_recent_seconds(
+                pool, ref_symbol, lookback_seconds=lookback,
+            )
+            if ref_df.empty:
+                ref_df = None
+        inference = build_latest_inference_bar_cross_asset(
+            df,
+            bar_minutes=bm,
+            reference_df_seconds=ref_df,
+            reference_symbol=ref_symbol,
         )
     else:
         inference = build_latest_inference_bar(df)

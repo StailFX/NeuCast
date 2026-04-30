@@ -246,3 +246,74 @@ def build_cross_asset_features(
     # Reorder to canonical — defends against silent column reordering.
     enriched = enriched[expected_cols]
     return enriched.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+def build_latest_inference_bar_cross_asset(
+    df_seconds: pd.DataFrame,
+    *,
+    bar_minutes: int,
+    reference_df_seconds: pd.DataFrame | None,
+    reference_symbol: str | None,
+) -> tuple[pd.Series, float] | None:
+    """Cross-asset counterpart to
+    :func:`feature_pipeline.build_latest_inference_bar`.
+
+    Aggregates the target seconds frame at ``bar_minutes``, drops the
+    in-flight current bar, then computes base + lagged + (optional)
+    cross-asset features using the same ``build_cross_asset_features``
+    pipeline the trainer uses. Reference seconds (typically BTC for
+    ETH/BNB) are aggregated at the same bar size and joined by
+    ``minute`` timestamps inside the pipeline.
+
+    Returns ``(features, close_microprice)`` for the most recent
+    COMPLETE bar, or ``None`` at cold-start / insufficient data.
+
+    The lagged features need at least 4 complete bars (lag1/2/3 + the
+    current bar). Cross-asset features need at least 1 reference bar
+    aligned with the target bar. If reference data is missing for a
+    given target bar, those columns get filled with 0.0 inside
+    ``build_cross_asset_features`` — the model still produces a
+    prediction, just with reduced signal on that bar.
+    """
+    if df_seconds.empty or bar_minutes <= 0:
+        return None
+
+    df = df_seconds.copy()
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    if df["ts"].empty:
+        return None
+
+    # Drop the in-flight bar (mirrors the other helpers).
+    bar_freq = f"{int(bar_minutes)}min"
+    now_floor = df["ts"].max().floor(bar_freq)
+    df = df.loc[df["ts"] < now_floor].copy()
+    if df.empty:
+        return None
+
+    from app.highfreq.feature_pipeline import aggregate_to_minute
+
+    minute_df = aggregate_to_minute(df, bar_minutes=bar_minutes)
+    # Need ≥ 4 bars so lag3 is defined for the LAST row.
+    if len(minute_df) < 4:
+        return None
+
+    ref_minutes: pd.DataFrame | None = None
+    if reference_symbol and reference_df_seconds is not None and not reference_df_seconds.empty:
+        ref = reference_df_seconds.copy()
+        ref["ts"] = pd.to_datetime(ref["ts"], utc=True)
+        # Align reference to the same wall-clock cutoff so we don't
+        # join in-flight bars from BTC into a complete ETH bar.
+        ref = ref.loc[ref["ts"] < now_floor].copy()
+        if not ref.empty:
+            ref_minutes = aggregate_to_minute(ref, bar_minutes=bar_minutes)
+
+    feats_full = build_cross_asset_features(
+        minute_df,
+        reference_minutes=ref_minutes,
+        reference_symbol=reference_symbol,
+    )
+    if feats_full.empty:
+        return None
+
+    last_close = float(minute_df.iloc[-1]["microprice_close"])
+    return feats_full.iloc[-1], last_close

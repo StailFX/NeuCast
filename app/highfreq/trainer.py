@@ -95,10 +95,10 @@ def _resolve_feature_set(feature_set: str, bar_minutes: int) -> str:
     at that scale; OHLC/EMA/RSI capture multi-bar momentum + regime).
     """
     if feature_set != "auto":
-        if feature_set not in ("microstructure", "long_horizon"):
+        if feature_set not in ("microstructure", "long_horizon", "cross_asset"):
             raise ValueError(
                 f"feature_set must be 'auto' / 'microstructure' / "
-                f"'long_horizon', got {feature_set!r}"
+                f"'long_horizon' / 'cross_asset', got {feature_set!r}"
             )
         return feature_set
     return "microstructure" if bar_minutes <= 1 else "long_horizon"
@@ -111,14 +111,20 @@ def _make_supervised_for_feature_set(
     bar_minutes: int,
     horizon: int = HORIZON_MIN,
     neutral_band_bps: float = NEUTRAL_BAND_BPS,
+    reference_df_secs: pd.DataFrame | None = None,
+    target_symbol: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """Pipeline-aware (X, y, meta) builder.
 
     For ``microstructure`` calls the canonical :func:`make_supervised`.
     For ``long_horizon`` inlines the same shape: aggregate → target →
     drop unobservable + neutral-band → build long-horizon features.
-    Returns the same `(X, y, meta)` triple in either case so
-    walk-forward CV / fit_final_model don't care about the source.
+    For ``cross_asset`` builds base + lagged + (optionally) BTC-reference
+    features — needs ``reference_df_secs`` (BTC's seconds) when the
+    target symbol is ETH/BNB.
+
+    Returns the same ``(X, y, meta)`` triple regardless of source so
+    walk-forward CV / fit_final_model don't care about the pipeline.
     """
     resolved = _resolve_feature_set(feature_set, bar_minutes)
     if resolved == "microstructure":
@@ -129,18 +135,64 @@ def _make_supervised_for_feature_set(
             bar_minutes=bar_minutes,
         )
 
-    # long_horizon path. We replicate make_supervised's logic but swap
-    # build_features for build_long_horizon_features.
-    from app.highfreq.feature_pipeline_long_horizon import (
-        LONG_HORIZON_FEATURE_COLUMNS,
-        build_long_horizon_features,
+    if resolved == "long_horizon":
+        # long_horizon path. We replicate make_supervised's logic but swap
+        # build_features for build_long_horizon_features.
+        from app.highfreq.feature_pipeline_long_horizon import (
+            LONG_HORIZON_FEATURE_COLUMNS,
+            build_long_horizon_features,
+        )
+        minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
+        targeted = build_target(
+            minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps,
+        )
+        if targeted.empty:
+            empty_X = pd.DataFrame(columns=LONG_HORIZON_FEATURE_COLUMNS)
+            empty_y = pd.Series(dtype=np.int8, name="y")
+            empty_meta = pd.DataFrame(columns=[
+                "symbol", "minute", "microprice_close", "return_bps",
+            ])
+            return empty_X, empty_y, empty_meta
+        keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
+        targeted = targeted.loc[keep].reset_index(drop=True)
+        X = build_long_horizon_features(targeted)[LONG_HORIZON_FEATURE_COLUMNS]
+        y = targeted["y"].astype(np.int8)
+        meta = targeted[
+            ["symbol", "minute", "microprice_close", "return_bps"]
+        ].copy()
+        return X, y, meta
+
+    # cross_asset path (release T 2026-04-29). For BTC the reference is
+    # itself, so we just don't add cross-asset features (only base+lagged).
+    # For ETH/BNB we point at BTC and need reference seconds.
+    from app.highfreq.feature_pipeline_cross_asset import (
+        build_cross_asset_features,
+        feature_columns_for,
     )
+    sym_upper = (target_symbol or "").upper()
+    reference_symbol: str | None = (
+        None if sym_upper == "BTCUSDT" else "BTCUSDT"
+    )
+    cols = feature_columns_for(reference_symbol)
+
     minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
+    ref_minutes: pd.DataFrame | None = None
+    if reference_symbol is not None and reference_df_secs is not None:
+        ref_minutes = aggregate_to_minute(
+            reference_df_secs, bar_minutes=bar_minutes,
+        )
+    elif reference_symbol is not None:
+        logger.warning(
+            "cross_asset requested for %s but no reference_df_secs "
+            "provided — falling back to base + lagged only",
+            target_symbol,
+        )
+
     targeted = build_target(
         minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps,
     )
     if targeted.empty:
-        empty_X = pd.DataFrame(columns=LONG_HORIZON_FEATURE_COLUMNS)
+        empty_X = pd.DataFrame(columns=cols)
         empty_y = pd.Series(dtype=np.int8, name="y")
         empty_meta = pd.DataFrame(columns=[
             "symbol", "minute", "microprice_close", "return_bps",
@@ -148,7 +200,12 @@ def _make_supervised_for_feature_set(
         return empty_X, empty_y, empty_meta
     keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
     targeted = targeted.loc[keep].reset_index(drop=True)
-    X = build_long_horizon_features(targeted)[LONG_HORIZON_FEATURE_COLUMNS]
+    X = build_cross_asset_features(
+        targeted,
+        reference_minutes=ref_minutes,
+        reference_symbol=reference_symbol,
+    )
+    X = X[cols]
     y = targeted["y"].astype(np.int8)
     meta = targeted[
         ["symbol", "minute", "microprice_close", "return_bps"]
@@ -748,12 +805,41 @@ def run_training(
         bm, fs, cfg.feature_set,
     )
 
+    # cross_asset for ETH/BNB needs BTC's seconds at the SAME window so
+    # the bar timestamps align after aggregation. BTC's own model has no
+    # reference (would point at itself). Spot-only — futures cross-asset
+    # is not yet wired (would need separate venue split).
+    reference_df_secs: pd.DataFrame | None = None
+    if fs == "cross_asset" and symbol.upper() != "BTCUSDT":
+        try:
+            reference_df_secs = load_seconds(
+                database_url,
+                symbol="BTCUSDT",
+                since_hours=since_hours,
+                venue="spot",
+            )
+            logger.info(
+                "loaded %d reference seconds (BTCUSDT spot) for cross_asset features",
+                len(reference_df_secs),
+            )
+        except Exception:
+            logger.warning(
+                "failed to load BTCUSDT reference for cross_asset; "
+                "falling back to base + lagged features",
+                exc_info=True,
+            )
+            reference_df_secs = None
+
     minute_df = aggregate_to_minute(df_secs, bar_minutes=bm)
     n_min = len(minute_df)
     logger.info("aggregated to %d %d-minute bars", n_min, bm)
 
     X, y, meta = _make_supervised_for_feature_set(
-        df_secs, feature_set=cfg.feature_set, bar_minutes=bm,
+        df_secs,
+        feature_set=cfg.feature_set,
+        bar_minutes=bm,
+        reference_df_secs=reference_df_secs,
+        target_symbol=symbol,
     )
     n_min_kept = len(X)
     logger.info(
@@ -959,10 +1045,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--feature-set", default="auto",
-        choices=("auto", "microstructure", "long_horizon"),
+        choices=("auto", "microstructure", "long_horizon", "cross_asset"),
         help="feature pipeline. 'auto' (default) picks microstructure "
-             "for 1m bars and long_horizon TA for ≥5m. Force a "
-             "specific pipeline only for ablation studies.",
+             "for 1m bars and long_horizon TA for ≥5m. 'cross_asset' "
+             "adds BTC reference features to ETH/BNB models — empirically "
+             "lifts dir_acc by ~1pp on ETH/BNB. Force a specific "
+             "pipeline only for ablation studies.",
+    )
+    p.add_argument(
+        "--sample-weight-half-life-bars",
+        type=int,
+        default=int(os.getenv("HF_SAMPLE_WEIGHT_HALF_LIFE", "720")),
+        help="exponential decay half-life (in bars) for sample weighting. "
+             "Default 720 (release O). Set to 0 to disable — empirically "
+             "disabled weighting lifts dir_acc by 1-5pp on stable market "
+             "regimes (the deweighting of older training bars without "
+             "drift compensation is structurally a headwind on stable "
+             "windows). Override via HF_SAMPLE_WEIGHT_HALF_LIFE env.",
     )
     p.add_argument(
         "--log-level", default=os.getenv("LOG_LEVEL", "INFO"),
@@ -987,6 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
         frozen_holdout_days=args.frozen_holdout_days,
         bar_minutes=args.bar_minutes,
         feature_set=args.feature_set,
+        sample_weight_half_life_bars=args.sample_weight_half_life_bars,
     )
     out = Path(args.out) if args.out else None
 

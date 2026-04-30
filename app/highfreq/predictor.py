@@ -360,7 +360,10 @@ class LivePredictor:
             dir_acc_ci_low=dir_acc_ci_low,
             dir_acc_p_value=dir_acc_p_value,
             metrics_age_seconds=metrics_age,
-            n_features_expected=len(FEATURE_COLUMNS),
+            # Read from the actual expected-cols list so cross_asset
+            # (22 / 27) and long_horizon (24) report the right number,
+            # not the legacy microstructure 18.
+            n_features_expected=len(self._expected_feature_columns()),
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -373,8 +376,11 @@ class LivePredictor:
         Default ``microstructure`` for backward compat with legacy
         metrics.json files (release R, 2026-04-29). When metrics
         records ``feature_set='long_horizon'`` we return the 24-column
-        TA list — keeps the train-vs-serve invariant the architecture
-        ADR-001 named as the most insidious production-ML bug.
+        TA list. ``feature_set='cross_asset'`` returns 22 cols for BTC
+        (base + lagged) or 27 cols for ETH/BNB (base + lagged +
+        BTC-reference). Keeps the train-vs-serve invariant the
+        architecture ADR-001 named as the most insidious production-ML
+        bug.
         """
         fs = self.feature_set()
         if fs == "long_horizon":
@@ -382,6 +388,16 @@ class LivePredictor:
                 LONG_HORIZON_FEATURE_COLUMNS,
             )
             return LONG_HORIZON_FEATURE_COLUMNS
+        if fs == "cross_asset":
+            from app.highfreq.feature_pipeline_cross_asset import (
+                feature_columns_for,
+            )
+            # BTC's own model has no reference (would be identity);
+            # ETH/BNB point at BTC. We can't know the symbol from the
+            # predictor, so infer it from the weights filename.
+            sym = self.weights_path.stem.split("_")[0].upper()
+            ref = None if sym == "BTCUSDT" else "BTCUSDT"
+            return feature_columns_for(ref)
         return FEATURE_COLUMNS
 
     def _prepare_features(

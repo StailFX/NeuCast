@@ -519,12 +519,17 @@ async def get_forecast(
     # Branch 2: model loaded but DB unreachable (e.g. ingest restart).
     # For long-horizon models we need MUCH more lookback (the long-
     # horizon helper needs ≥20 complete bars to bootstrap EMA(20) /
-    # Bollinger(20) / RSI(14)).
+    # Bollinger(20) / RSI(14)). For cross_asset we need ≥4 complete
+    # bars so lag3 is defined for the latest row.
     fs = predictor.feature_set()
     bm = predictor.bar_minutes()
     if fs == "long_horizon" and bm > 1:
         # 25 bars × bar_minutes × 60s + 60s headroom for in-flight drop.
         lookback = 25 * bm * 60 + 60
+    elif fs == "cross_asset":
+        # 6 bars × bar_minutes × 60s + 60s headroom = ≥4 complete bars
+        # after the in-flight drop, plenty for lag3 + cross-asset join.
+        lookback = max(_FORECAST_LOOKBACK_SECONDS, 6 * bm * 60 + 60)
     else:
         lookback = _FORECAST_LOOKBACK_SECONDS
     df_seconds = _fetch_recent_seconds(db, symbol, lookback_seconds=lookback)
@@ -548,6 +553,31 @@ async def get_forecast(
         )
         inference = build_latest_inference_bar_long_horizon(
             df_seconds, bar_minutes=bm,
+        )
+        feature_row = inference[0] if inference is not None else None
+    elif fs == "cross_asset":
+        # ETH/BNB pull BTC seconds as a reference. Same wall-clock
+        # window as the target seconds — both already share the
+        # bar-minute alignment after aggregation. BTC's own model has
+        # no reference (would be identity).
+        from app.highfreq.feature_pipeline_cross_asset import (
+            build_latest_inference_bar_cross_asset,
+        )
+        sym_upper = symbol.upper()
+        ref_symbol = None if sym_upper == "BTCUSDT" else "BTCUSDT"
+        ref_seconds: pd.DataFrame | None = None
+        if ref_symbol is not None:
+            ref_seconds = _fetch_recent_seconds(
+                db, ref_symbol, lookback_seconds=lookback,
+            )
+            # If reference fetch fails we don't fail the request —
+            # build_latest_inference_bar_cross_asset handles missing
+            # reference by zero-filling those columns.
+        inference = build_latest_inference_bar_cross_asset(
+            df_seconds,
+            bar_minutes=bm,
+            reference_df_seconds=ref_seconds,
+            reference_symbol=ref_symbol,
         )
         feature_row = inference[0] if inference is not None else None
     else:
