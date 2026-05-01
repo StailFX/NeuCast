@@ -115,3 +115,96 @@ def test_compare_records_feature_set_change(tmp_path):
     assert row.feature_set_prod == "microstructure"
     assert row.feature_set_cand == "long_horizon"
     assert row.verdict == "deploy"
+
+
+# ──────────────────── exit-code semantics (release T.15.e) ───────────────────
+
+
+def test_main_exit_code_all_keep_returns_1(tmp_path, capsys, monkeypatch):
+    """When EVERY symbol regresses (keep_production verdict), main()
+    must exit 1 — the pipeline runner uses this to drive the
+    "⚠️ keep production" Telegram branch.  Earlier T.15.b regression
+    where this case returned 2 ("missing") got the runner to send a
+    misleading "missing data" message even though comparator clearly
+    decided to keep production."""
+    from tools.compare_candidate_models import main
+
+    prod = tmp_path / "prod"
+    cand = tmp_path / "cand"
+    for sym in ("btcusdt", "ethusdt", "bnbusdt"):
+        _write_metrics(
+            prod / f"{sym}_1m_metrics.json", dir_acc=0.56, ci_low=0.54,
+        )
+        # Each candidate regresses by 2pp on dir_acc.
+        _write_metrics(
+            cand / f"{sym}_1m_metrics.json", dir_acc=0.54, ci_low=0.52,
+        )
+
+    rc = main([
+        "--production-dir", str(prod),
+        "--candidate-dir", str(cand),
+        "--tolerance", "0.005",
+    ])
+    assert rc == 1, "all-keep should map to exit 1, not 2"
+
+
+def test_main_exit_code_at_least_one_deploy_returns_0(tmp_path):
+    """Exit 0 when at least one symbol genuinely improves AND no
+    other symbol regresses — pipeline runner uses this to drive
+    the "✅ deploy" branch."""
+    from tools.compare_candidate_models import main
+
+    prod = tmp_path / "prod"
+    cand = tmp_path / "cand"
+    # BTC improves, ETH ties.
+    _write_metrics(prod / "btcusdt_1m_metrics.json", dir_acc=0.55, ci_low=0.53)
+    _write_metrics(cand / "btcusdt_1m_metrics.json", dir_acc=0.58, ci_low=0.56)
+    _write_metrics(prod / "ethusdt_1m_metrics.json", dir_acc=0.55, ci_low=0.53)
+    _write_metrics(cand / "ethusdt_1m_metrics.json", dir_acc=0.5495, ci_low=0.5298)
+
+    rc = main([
+        "--production-dir", str(prod),
+        "--candidate-dir", str(cand),
+        "--symbol", "BTCUSDT", "--symbol", "ETHUSDT",
+        "--tolerance", "0.005",
+    ])
+    assert rc == 0
+
+
+def test_main_exit_code_all_missing_returns_2(tmp_path):
+    """Exit 2 only when nothing to compare (operator forgot to write
+    metrics or pointed at wrong dir) — pipeline runner uses this
+    to send "❓ missing data" Telegram branch."""
+    from tools.compare_candidate_models import main
+
+    prod = tmp_path / "prod"
+    cand = tmp_path / "cand"
+    # No metric files written anywhere.
+    rc = main([
+        "--production-dir", str(prod),
+        "--candidate-dir", str(cand),
+        "--symbol", "BTCUSDT",
+    ])
+    assert rc == 2
+
+
+def test_main_exit_code_one_keep_one_deploy_prefers_keep(tmp_path):
+    """Mixed: BTC deploy, ETH keep_production. Conservative rule:
+    if ANY symbol regresses, the whole batch goes to keep_production
+    (you don't want to ship a partial deploy that saves BTC and tanks
+    ETH on the same day). Exit 1."""
+    from tools.compare_candidate_models import main
+
+    prod = tmp_path / "prod"
+    cand = tmp_path / "cand"
+    _write_metrics(prod / "btcusdt_1m_metrics.json", dir_acc=0.55, ci_low=0.53)
+    _write_metrics(cand / "btcusdt_1m_metrics.json", dir_acc=0.58, ci_low=0.56)  # deploy
+    _write_metrics(prod / "ethusdt_1m_metrics.json", dir_acc=0.56, ci_low=0.54)
+    _write_metrics(cand / "ethusdt_1m_metrics.json", dir_acc=0.55, ci_low=0.53)  # keep
+    rc = main([
+        "--production-dir", str(prod),
+        "--candidate-dir", str(cand),
+        "--symbol", "BTCUSDT", "--symbol", "ETHUSDT",
+        "--tolerance", "0.005",
+    ])
+    assert rc == 1, "any keep_production must dominate exit code"

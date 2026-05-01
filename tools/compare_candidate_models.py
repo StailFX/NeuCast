@@ -196,12 +196,21 @@ def main(argv: list[str] | None = None) -> int:
             for note in r.notes:
                 print(f"  - {r.symbol}: {note}")  # noqa: T201
 
-    # Exit code: 0 if at least one deploy, 1 if any keep, 2 if all missing.
-    if not any(r.verdict in ("deploy", "tied") for r in rows):
+    # Exit code semantics (used by the pipeline runner to decide
+    # what to send to Telegram):
+    #   0 = at least one deploy AND no keep_production → safe to deploy
+    #   1 = at least one keep_production → keep production (regression)
+    #   2 = all rows are 'missing' (nothing to compare)
+    missings = [r for r in rows if r.verdict == "missing"]
+    if missings and len(missings) == len(rows):
         return 2
     if keeps:
         return 1
-    return 0
+    if deploys:
+        return 0
+    # All tied / mix of tied + missing → no regression but no improvement.
+    # Treat as "keep production" (no reason to deploy noise).
+    return 1
 
 
 if __name__ == "__main__":
