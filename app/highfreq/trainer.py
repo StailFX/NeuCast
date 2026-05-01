@@ -605,11 +605,21 @@ def _exponential_sample_weights(
 
 def fit_final_model(
     X: pd.DataFrame, y: pd.Series, *, config: WalkForwardConfig | None = None,
+    init_from: str | Path | None = None,
 ):
     """Fit a model on the full dataset for production inference.
 
     Returns the fitted ``CatBoostClassifier`` instance. Caller is
     responsible for calling ``.save_model(path, format="cbm")``.
+
+    ``init_from`` (release T.15, 2026-05-01): path to a pre-trained
+    ``.cbm`` checkpoint. When given, CatBoost continues fitting from
+    that checkpoint via the ``init_model=`` parameter — incremental
+    (transfer) learning. The pre-trained model must have been fit
+    with the SAME feature schema (column count + order). Typical
+    workflow: pretrain on years of historical Klines via
+    ``app.highfreq.pretrain``, then fine-tune on recent live OFI
+    data here.
     """
     cfg = config or WalkForwardConfig()
     from catboost import CatBoostClassifier
@@ -627,7 +637,21 @@ def fit_final_model(
     sample_weights = _exponential_sample_weights(
         n=len(X), half_life=cfg.sample_weight_half_life_bars,
     )
-    clf.fit(X.values, y.values, sample_weight=sample_weights)
+    init_model = None
+    if init_from is not None:
+        init_path = Path(init_from)
+        if not init_path.exists():
+            raise FileNotFoundError(
+                f"--init-from points to {init_path} but the file is missing"
+            )
+        init_model = CatBoostClassifier()
+        init_model.load_model(str(init_path))
+        logger.info(
+            "fine-tuning: loaded pre-trained checkpoint from %s "
+            "(tree_count=%d)",
+            init_path, init_model.tree_count_,
+        )
+    clf.fit(X.values, y.values, sample_weight=sample_weights, init_model=init_model)
     return clf
 
 
@@ -778,6 +802,7 @@ def run_training(
     out_path: Path | None,
     config: WalkForwardConfig | None = None,
     venue: str = "spot",
+    init_from: str | Path | None = None,
 ) -> TrainingReport:
     """Full training pipeline. Returns a ``TrainingReport`` for logging.
 
@@ -786,6 +811,13 @@ def run_training(
     ``highfreq_futures_ofi_1s``). Default ``"spot"`` preserves the
     original contract — existing systemd timer / CLI calls continue
     to read the spot table without changes (release S phase 3).
+
+    ``init_from`` (release T.15, 2026-05-01): path to a pre-trained
+    ``.cbm`` checkpoint produced by ``app.highfreq.pretrain``. When
+    given, the final-fit step uses CatBoost's incremental learning
+    (``init_model=``) so the new tree ensemble continues from the
+    pretrained one. Feature schema must match — caller is responsible
+    for setting ``--feature-set`` to the same pipeline used at pretrain.
     """
     cfg = config or WalkForwardConfig()
     started = time.monotonic()
@@ -912,7 +944,7 @@ def run_training(
     calibrator_brier: float | None = None
     calibrator_ece: float | None = None
     if out_path is not None and len(X) >= cfg.min_train_samples:
-        clf = fit_final_model(X, y, config=cfg)
+        clf = fit_final_model(X, y, config=cfg, init_from=init_from)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         clf.save_model(str(out_path), format="cbm")
         weights_path = str(out_path)
@@ -1064,6 +1096,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "windows). Override via HF_SAMPLE_WEIGHT_HALF_LIFE env.",
     )
     p.add_argument(
+        "--init-from", default=os.getenv("HF_INIT_FROM"),
+        help="path to a pre-trained .cbm checkpoint (release T.15). When "
+             "set, CatBoost continues fitting from that checkpoint via "
+             "init_model= — this is incremental / transfer learning. "
+             "Typical workflow: pretrain on years of historical Klines "
+             "via `python -m app.highfreq.pretrain`, then fine-tune on "
+             "recent live OFI data here. Feature schema MUST match — "
+             "set --feature-set to the same pipeline used at pretrain "
+             "(default 'long_horizon' for Klines pretrains).",
+    )
+    p.add_argument(
         "--log-level", default=os.getenv("LOG_LEVEL", "INFO"),
     )
     return p.parse_args(argv)
@@ -1098,6 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run_training(
         dsn, symbol=args.symbol.upper(), since_hours=args.since_hours,
         out_path=out, config=cfg, venue=args.venue,
+        init_from=args.init_from,
     )
 
     # Append-only training history. Fail-soft — a successful run that
