@@ -96,11 +96,22 @@ for interval in 30m 1h 4h 1d; do
 done
 
 # ── Step 3: fine-tune only on intervals with enough live data ──────
-# 30m: 186 bars from 93h live — viable
-# 1h:   93 bars from 93h live — borderline (may produce few CV folds)
-# 4h, 1d: skipped — insufficient bars
+# Live OFI seconds depth ≈ 93h → bar count drops with bar size. Scale
+# the walk-forward params by bar size so we get a usable fold count
+# despite the small total-bar count.
+#
+# 30m: 186 bars total — initial=90 bars, test=1 bar, step=1 bar, min=80 → ~96 folds
+# 1h:   93 bars total — initial=45 bars, test=1 bar, step=1 bar, min=40 → ~48 folds
+# 4h, 1d skipped (not enough bars even with min_train=20).
+#
+# Tiny per-fold sample means individual fold dir_acc is noisy — but
+# pooling 50-100 folds gives reasonable CI for an honest estimate.
 for interval in 30m 1h; do
   bar_minutes=$(_bar_minutes $interval)
+  case $interval in
+    30m) initial_train=2700; test_fold=30; step=30; min_train=80 ;;   # 90 bars init
+    1h)  initial_train=2700; test_fold=60; step=60; min_train=40 ;;   # 45 bars init
+  esac
   for sym in BTCUSDT ETHUSDT BNBUSDT; do
     symlower=$(echo $sym | tr A-Z a-z)
     pretrain_path=$PRETRAIN_DIR/${symlower}_${interval}_pretrained.cbm
@@ -110,7 +121,7 @@ for interval in 30m 1h; do
       echo "[$(date)] WARN no pretrain ckpt for $sym @ $interval, skip fine-tune"
       continue
     fi
-    echo "[$(date)] --- fine-tune $sym @ $interval ---"
+    echo "[$(date)] --- fine-tune $sym @ $interval (initial=$initial_train min=$min_train) ---"
     /opt/neucast/venv/bin/python -m app.highfreq.trainer \
       --symbol $sym \
       --since-hours 93 \
@@ -121,6 +132,10 @@ for interval in 30m 1h; do
       --report $metrics_path \
       --frozen-holdout-days 0 \
       --sample-weight-half-life-bars 0 \
+      --initial-train-minutes $initial_train \
+      --test-fold-minutes $test_fold \
+      --step-minutes $step \
+      --min-train-samples $min_train \
       || echo "[$(date)] WARN fine-tune $sym @ $interval exited non-zero"
   done
 done

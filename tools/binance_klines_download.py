@@ -260,9 +260,18 @@ def main(argv: list[str] | None = None) -> int:
                         "Capped by listing date — Binance auto-truncates.")
     p.add_argument("--out-dir", default="data/historical",
                    help="directory to write <symbol>_1m_klines.parquet")
-    p.add_argument("--interval", default="1m",
-                   choices=("1m", "3m", "5m", "15m", "30m", "1h"),
-                   help="kline interval; long_horizon trainer uses 1m by default")
+    p.add_argument(
+        "--interval", default="1m",
+        # Full Binance Klines kline-interval list. Trainer will reject
+        # unsupported bar sizes downstream; keep this argparse choices
+        # broad so academic-reference pretrains at 4h / 1d / etc. work.
+        choices=(
+            "1m", "3m", "5m", "15m", "30m",
+            "1h", "2h", "4h", "6h", "8h", "12h",
+            "1d", "3d", "1w",
+        ),
+        help="kline interval; long_horizon trainer uses 1m by default",
+    )
     p.add_argument("--log-level", default=os.getenv("LOG_LEVEL", "INFO"))
     args = p.parse_args(argv)
 

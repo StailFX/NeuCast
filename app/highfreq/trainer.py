@@ -1053,6 +1053,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="initial train window for walk-forward (default: 1440 = 1 day)",
     )
     p.add_argument(
+        "--test-fold-minutes", type=int, default=60,
+        help="test-fold size in minutes (default 60 = 1 hour). At "
+             "small bar sizes scale-down: e.g. for 30m bars, "
+             "--test-fold-minutes 30 = 1 bar per fold.",
+    )
+    p.add_argument(
+        "--step-minutes", type=int, default=60,
+        help="walk-forward step (default 60). Like --test-fold-minutes "
+             "this is in wall-clock minutes; trainer divides by "
+             "bar_minutes to get bars-per-step.",
+    )
+    p.add_argument(
+        "--min-train-samples", type=int, default=200,
+        help="minimum bars required to attempt a CV fold fit (default "
+             "200). Lower this for low-density bar sizes (30m, 1h, ...) "
+             "where total bar count is naturally small. Trade-off: "
+             "smaller min → more folds but each fit is on fewer rows, "
+             "noisier per-fold dir_acc estimate.",
+    )
+    p.add_argument(
         "--frozen-holdout-days", type=int, default=7,
         help="reserve last N days from training/CV — used by "
              "eval_frozen_holdout.py for true OOS evaluation. "
@@ -1126,6 +1146,9 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = WalkForwardConfig(
         initial_train_minutes=args.initial_train_minutes,
+        test_fold_minutes=args.test_fold_minutes,
+        step_minutes=args.step_minutes,
+        min_train_samples=args.min_train_samples,
         frozen_holdout_days=args.frozen_holdout_days,
         bar_minutes=args.bar_minutes,
         feature_set=args.feature_set,
