@@ -132,6 +132,22 @@ def test_forecast_template_has_conditional_accuracy_block():
     assert "refreshConditionalAccuracy" in html
 
 
+def test_forecast_template_has_robustness_block():
+    """Release T.14 (2026-05-01) added a "Проверка значимости" block
+    surfacing block bootstrap CI + permutation test + per-day
+    stability so the operator can see whether dir_acc is regime-
+    robust (vs just lucky on a trending window). Pin the anchor +
+    the JS fetch + the verdict-classification logic."""
+    html = _read_forecast_template()
+    assert 'id="rob-grid"' in html
+    assert "/api/highfreq/robustness" in html
+    assert "refreshRobustness" in html
+    # The verdict logic must be present so the UI doesn't silently
+    # claim "skill" on a borderline result.
+    assert "permutation_p_value" in html
+    assert "block_bootstrap_ci_low" in html
+
+
 def test_forecast_template_polls_correct_api_endpoints():
     """Pin the API endpoints the page hits.
 
@@ -147,6 +163,7 @@ def test_forecast_template_polls_correct_api_endpoints():
     assert "/api/highfreq/training_report" in html
     assert "/api/highfreq/microprice_history" in html
     assert "/api/highfreq/conditional_accuracy" in html
+    assert "/api/highfreq/robustness" in html
     # Pin lite=1 query param — without it the page would block 18s on
     # cold cache for live_inventory; release T.3 added the flag.
     assert "lite=1" in html

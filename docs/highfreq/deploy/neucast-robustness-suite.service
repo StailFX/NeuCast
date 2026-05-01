@@ -1,0 +1,25 @@
+[Unit]
+Description=NeuCast HF robustness suite (block bootstrap + permutation test)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=OMP_NUM_THREADS=2
+ExecStart=/opt/neucast/venv/bin/python -m tools.robustness_suite \
+    --symbol BTCUSDT --symbol ETHUSDT --symbol BNBUSDT \
+    --out-dir /opt/neucast/weights/highfreq
+
+# Robustness suite is fast (<5s per symbol on 4000-row predictions_log)
+# but reads predictions_log which only changes minute-by-minute. Run
+# every 6h: keeps the dashboard fresh without churning DB.
+SuccessExitStatus=0
+TimeoutStartSec=600
+
+[Install]
+# Activated by the .timer unit, not socket / multi-user.

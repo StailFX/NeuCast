@@ -543,6 +543,132 @@
       margin-top: 0.25rem;
     }
 
+    /* ── Robustness check (block bootstrap + permutation) ── */
+    .rob-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+    .rob-card {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.1rem 1.25rem;
+      position: relative;
+    }
+    .rob-card.skill { border-color: rgba(46, 204, 113, 0.25); }
+    .rob-card.borderline { border-color: rgba(241, 196, 15, 0.25); }
+    .rob-card.weak { border-color: rgba(231, 76, 60, 0.20); }
+    .rob-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 0.85rem;
+    }
+    .rob-card-symbol {
+      font-weight: 700; font-size: 0.95rem;
+    }
+    .rob-card-symbol .mini-icon {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: inline-block; vertical-align: middle; margin-right: 0.45rem;
+    }
+    .rob-card-symbol .mini-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .rob-card-symbol .mini-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .rob-card-symbol .mini-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .rob-verdict {
+      font-size: 0.65rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0.25rem 0.55rem;
+      border-radius: 6px;
+    }
+    .rob-verdict.skill {
+      background: rgba(46, 204, 113, 0.15);
+      color: var(--green);
+    }
+    .rob-verdict.borderline {
+      background: rgba(241, 196, 15, 0.15);
+      color: #f1c40f;
+    }
+    .rob-verdict.weak {
+      background: rgba(231, 76, 60, 0.15);
+      color: var(--red);
+    }
+    .rob-card-acc {
+      font-size: 1.65rem; font-weight: 800;
+      letter-spacing: -0.02em; line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 0.15rem;
+    }
+    .rob-card-acc-sub {
+      font-size: 0.68rem; color: var(--text-dim);
+      margin-bottom: 0.95rem;
+    }
+    .rob-stat-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.5rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px dashed rgba(255,255,255,0.05);
+      font-size: 0.78rem;
+    }
+    .rob-stat-row:last-child { border-bottom: none; }
+    .rob-stat-label { color: var(--text-muted); }
+    .rob-stat-value {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600; color: var(--text);
+    }
+    .rob-stat-value.muted { color: var(--text-muted); font-weight: 400; }
+    .rob-ci-bar {
+      margin-top: 0.6rem;
+      position: relative;
+      height: 22px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .rob-ci-bar::before {
+      /* 0.5 reference line */
+      content: '';
+      position: absolute;
+      top: 0; bottom: 0; left: 50%;
+      width: 1px;
+      background: rgba(255,255,255,0.18);
+    }
+    .rob-ci-fill {
+      position: absolute; top: 4px; bottom: 4px;
+      background: var(--green);
+      border-radius: 2px;
+    }
+    .rob-ci-fill.weak { background: var(--red); opacity: 0.7; }
+    .rob-ci-fill.borderline { background: #f1c40f; opacity: 0.85; }
+    .rob-ci-pct {
+      position: absolute;
+      top: 50%; transform: translateY(-50%);
+      font-size: 0.62rem; color: var(--text-dim);
+      pointer-events: none;
+    }
+    .rob-ci-pct.left { left: 0.3rem; }
+    .rob-ci-pct.right { right: 0.3rem; }
+    .rob-perday {
+      margin-top: 0.85rem;
+      display: flex; gap: 3px; align-items: flex-end;
+      height: 28px;
+    }
+    .rob-perday-bar {
+      flex: 1;
+      min-width: 6px;
+      background: var(--green);
+      border-radius: 2px;
+      opacity: 0.8;
+      position: relative;
+    }
+    .rob-perday-bar.weak { background: var(--red); opacity: 0.7; }
+    .rob-perday-bar.borderline { background: #f1c40f; opacity: 0.85; }
+    .rob-perday-label {
+      font-size: 0.62rem; color: var(--text-dim);
+      margin-top: 0.4rem;
+      text-align: center;
+    }
+
     /* ── Conditional accuracy by confidence bucket ── */
     .conf-grid {
       display: grid;
@@ -1169,6 +1295,37 @@
         <div class="admin-metric-value muted" id="admin-npred">—</div>
         <div class="admin-metric-sub">OOS sample size</div>
       </div>
+    </div>
+  </section>
+
+  <!-- Robustness check: block bootstrap CI + permutation test -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Проверка значимости</span>
+        <h2>Block bootstrap + permutation test</h2>
+        <p class="section-sub">
+          Walk-forward CV даёт <em>i.i.d. bootstrap CI</em> — он
+          предполагает что соседние бары независимы. Но 1-минутные
+          бары коррелированы (если предыдущая минута была up,
+          следующая чаще тоже up). Это <strong>сужает доверительный
+          интервал искусственно</strong>. Здесь применяем строже:
+          <br><br>
+          <strong>Block bootstrap (60-мин блоки)</strong> сохраняет
+          autocorrelation — честная оценка ошибки.
+          <strong>Permutation test</strong> перемешивает истинные
+          метки 1000 раз и строит null distribution; p < 0.01 значит
+          «такой dir_acc не мог получиться случайно». Z-score
+          показывает сколько <em>стандартных отклонений</em> над
+          случайным.
+          <br><br>
+          Считается на полном <code>predictions_log</code> (не на
+          walk-forward) — то есть на реальных live-предсказаниях.
+        </p>
+      </div>
+    </div>
+    <div class="rob-grid" id="rob-grid">
+      <!-- filled by JS -->
     </div>
   </section>
 
@@ -2120,6 +2277,146 @@
       }).join('');
     }
 
+    // ─── Robustness suite (block bootstrap + permutation) ───
+    //
+    // Pulls /api/highfreq/robustness?symbol= for each of BTC/ETH/BNB
+    // and renders a 3-card grid showing:
+    //   * dir_acc point estimate
+    //   * block-bootstrap 95% CI (visual range bar relative to 0.5)
+    //   * permutation p-value + z-score
+    //   * verdict badge (skill / borderline / weak) based on whether
+    //     CI excludes 0.5 AND p < 0.01
+    //   * per-day stability mini bar chart
+    async function refreshRobustness() {
+      const target = document.getElementById('rob-grid');
+      if (!target) return;
+      const SYMBOL_ORDER = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+      try {
+        const reports = await Promise.all(SYMBOL_ORDER.map(async sym => {
+          try {
+            const res = await fetch(`/api/highfreq/robustness?symbol=${sym}`,
+              { cache: 'no-store' });
+            if (!res.ok) return { sym, ok: false };
+            const j = await res.json();
+            return { sym, ...j };
+          } catch (e) {
+            return { sym, ok: false };
+          }
+        }));
+        const cards = reports.map(r => {
+          const ticker = r.sym.replace('USDT', '');
+          const iconCls = ticker.toLowerCase();
+          if (!r.ok || !r.report) {
+            return `
+              <div class="rob-card">
+                <div class="rob-card-head">
+                  <div class="rob-card-symbol"><span class="mini-icon ${iconCls}"></span>${ticker}/USDT</div>
+                  <div class="rob-verdict weak">no data</div>
+                </div>
+                <div class="rob-card-acc muted">—</div>
+                <div class="rob-card-acc-sub">робастность ещё не запущена</div>
+              </div>`;
+          }
+          const rep = r.report;
+          const dirAcc = rep.dir_acc;
+          const ciLo = rep.block_bootstrap_ci_low;
+          const ciHi = rep.block_bootstrap_ci_high;
+          const pVal = rep.permutation_p_value;
+          const z = rep.permutation_z_score;
+
+          // Verdict logic:
+          //   skill      = block-bootstrap CI lo > 0.5 AND p < 0.01
+          //   borderline = CI lo > 0.5 OR p < 0.05 (one of the two)
+          //   weak       = neither condition holds
+          let verdict, verdictTxt;
+          const ciClearsChance = ciLo > 0.5;
+          const pSig = pVal < 0.01;
+          const pBorderline = pVal < 0.05;
+          if (ciClearsChance && pSig) {
+            verdict = 'skill';
+            verdictTxt = 'definitively skill';
+          } else if (ciClearsChance || pBorderline) {
+            verdict = 'borderline';
+            verdictTxt = 'borderline';
+          } else {
+            verdict = 'weak';
+            verdictTxt = 'нет доказательств';
+          }
+
+          // CI bar geometry: map [0.40, 0.65] → [0%, 100%] of bar width
+          // so the 0.5 reference line sits at 40% and we have headroom.
+          const VIS_LO = 0.40, VIS_HI = 0.65;
+          const ciFillLeft = Math.max(0, Math.min(100, (ciLo - VIS_LO) / (VIS_HI - VIS_LO) * 100));
+          const ciFillRight = Math.max(0, Math.min(100, (ciHi - VIS_LO) / (VIS_HI - VIS_LO) * 100));
+          const ciFillWidth = Math.max(2, ciFillRight - ciFillLeft);
+
+          // Per-day stability bars.
+          const perDay = rep.per_day || [];
+          const perDayMin = rep.per_day_min;
+          const perDayMax = rep.per_day_max;
+          const perDayBars = perDay.map(d => {
+            const acc = d.dir_acc;
+            // Bar height: map dir_acc 0.45-0.65 → 5%-100% so we see both
+            // wins and losses with visual punch.
+            const h = Math.max(5, Math.min(100, (acc - 0.45) / 0.20 * 100));
+            const cls = acc >= 0.55 ? '' : (acc >= 0.50 ? 'borderline' : 'weak');
+            const dateShort = d.date ? d.date.slice(5) : '';
+            return `<div class="rob-perday-bar ${cls}" style="height:${h}%" title="${dateShort}: ${(acc*100).toFixed(1)}% (n=${d.n})"></div>`;
+          }).join('');
+
+          const fmt = v => (v === null || v === undefined || isNaN(v)) ? '—' : v;
+          const fmtPct = v => (v === null || v === undefined || isNaN(v)) ? '—' : (v*100).toFixed(2) + '%';
+          const fmtP = v => {
+            if (v === null || v === undefined || isNaN(v)) return '—';
+            if (v < 0.001) return '<0.001';
+            if (v < 0.01) return v.toFixed(3);
+            return v.toFixed(3);
+          };
+
+          return `
+            <div class="rob-card ${verdict}">
+              <div class="rob-card-head">
+                <div class="rob-card-symbol"><span class="mini-icon ${iconCls}"></span>${ticker}/USDT</div>
+                <div class="rob-verdict ${verdict}">${verdictTxt}</div>
+              </div>
+              <div class="rob-card-acc">${fmtPct(dirAcc)}</div>
+              <div class="rob-card-acc-sub">dir_acc на ${rep.n_predictions} live-предсказаниях</div>
+
+              <div class="rob-ci-bar" title="block bootstrap 95% CI: [${(ciLo*100).toFixed(2)}%, ${(ciHi*100).toFixed(2)}%]; вертикальная линия = 50% (chance)">
+                <span class="rob-ci-pct left">${(VIS_LO*100).toFixed(0)}%</span>
+                <span class="rob-ci-pct right">${(VIS_HI*100).toFixed(0)}%</span>
+                <div class="rob-ci-fill ${verdict}" style="left:${ciFillLeft.toFixed(1)}%; width:${ciFillWidth.toFixed(1)}%"></div>
+              </div>
+
+              <div style="margin-top:0.85rem;">
+                <div class="rob-stat-row">
+                  <div class="rob-stat-label">block bootstrap 95% CI</div>
+                  <div class="rob-stat-value">[${fmtPct(ciLo)}, ${fmtPct(ciHi)}]</div>
+                </div>
+                <div class="rob-stat-row">
+                  <div class="rob-stat-label">permutation p-value</div>
+                  <div class="rob-stat-value">${fmtP(pVal)}</div>
+                </div>
+                <div class="rob-stat-row">
+                  <div class="rob-stat-label">z-score (vs random)</div>
+                  <div class="rob-stat-value">${fmt(z === null || z === undefined ? null : z.toFixed(2))}</div>
+                </div>
+                <div class="rob-stat-row">
+                  <div class="rob-stat-label">стабильность по дням</div>
+                  <div class="rob-stat-value muted">[${fmtPct(perDayMin)}, ${fmtPct(perDayMax)}]</div>
+                </div>
+              </div>
+
+              ${perDay.length > 0 ? `<div class="rob-perday">${perDayBars}</div>
+              <div class="rob-perday-label">точность по дням (наведи для детали)</div>` : ''}
+            </div>`;
+        }).join('');
+        target.innerHTML = cards;
+      } catch (err) {
+        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">ошибка загрузки</div>';
+      }
+    }
+
     // ─── Conditional accuracy by confidence bucket ───
     //
     // Calibrated 1-min model: hit-rate climbs as |prob - 0.5| grows.
@@ -2237,6 +2534,7 @@
     refreshTradesAndStats();   // populates _lastHorizonTrades + calls refreshFeeTiers internally
     refreshModelMetrics();
     refreshConditionalAccuracy();
+    refreshRobustness();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
@@ -2249,6 +2547,9 @@
     // cadence (predictions_log accumulates ~1 row/min, no need for
     // sub-minute polling).
     setInterval(refreshConditionalAccuracy, METRICS_REFRESH_MS);
+    // Robustness JSON only changes when the cron job re-runs the suite
+    // (not minute-by-minute), so refresh at the same slow cadence.
+    setInterval(refreshRobustness, METRICS_REFRESH_MS);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
     setInterval(pollHorizonAvailability, 120_000);

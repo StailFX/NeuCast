@@ -1667,6 +1667,62 @@ async def get_conditional_accuracy(
     }))
 
 
+@router.get("/api/highfreq/robustness")
+async def get_robustness(
+    symbol: str = DEFAULT_SYMBOL,
+) -> JSONResponse:
+    """Robustness suite results: block bootstrap CI + permutation test
+    + per-day stability + per-hour heatmap + regime-conditional accuracy.
+
+    The trainer's walk-forward CI uses i.i.d. bootstrap (assumes
+    independent samples → too narrow for autocorrelated time series)
+    and a binomial p-value (tests against a fair-coin null, the
+    weakest possible H₀).  This endpoint serves the output of
+    :mod:`tools.robustness_suite` which closes both gaps:
+
+    * **Block bootstrap CI** (60-min blocks) — preserves
+      autocorrelation; canonical Politis-Romano estimator.
+    * **Permutation test** — shuffles ``y_true`` 1000× to build a
+      null distribution of dir_acc.  Compares the observed point.
+      p < 0.01 means "this dir_acc couldn't plausibly come from a
+      labels-permuted run".
+    * **Per-day / per-hour / per-regime accuracy** — slices the
+      realized predictions to expose regime sensitivity.
+
+    File contract: ``weights/highfreq/<symbol>_1m_robustness.json``
+    written by ``python -m tools.robustness_suite --symbol ...``.
+    Returns 200 always; missing file → ``ok=False`` with reason.
+    """
+    sym = symbol.upper()
+    path = Path(f"weights/highfreq/{sym.lower()}_1m_robustness.json")
+    if not path.exists():
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_robustness_run_yet",
+            "symbol": sym,
+            "hint": (
+                "run `python -m tools.robustness_suite --symbol "
+                f"{sym}` to generate"
+            ),
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("robustness file read failed for %s: %s", sym, exc)
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "malformed",
+            "symbol": sym,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "report": payload,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 @router.get("/api/highfreq/anti_skill")
 async def get_anti_skill(
     symbol: str = DEFAULT_SYMBOL,

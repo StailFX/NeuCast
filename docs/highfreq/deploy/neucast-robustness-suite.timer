@@ -1,0 +1,13 @@
+[Unit]
+Description=NeuCast robustness suite — every 6h
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# Every 6 hours: 00:15, 06:15, 12:15, 18:15 UTC. The :15-min offset
+# avoids the trainer (04:00 UTC) and other on-the-hour cron jobs.
+OnCalendar=00,06,12,18:15:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
