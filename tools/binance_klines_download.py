@@ -209,6 +209,47 @@ def klines_to_minute_df(
     return out.sort_values("minute").reset_index(drop=True)
 
 
+def stream_klines_to_parquet(
+    symbol: str, *, start: datetime, end: datetime | None,
+    interval: str, out_path,
+) -> int:
+    """Fetch klines paginated and stream-write each chunk to parquet.
+
+    Bounded memory: ~one chunk (1000 bars) in flight at a time. The
+    naive ``klines_to_minute_df(list(fetch_klines_range(...)))``
+    accumulates all chunks in a Python list, OOM-killing on Tokyo's
+    3.8 GB box at ~1.5M bars.
+
+    Uses pyarrow's ``ParquetWriter`` to append chunks to a single
+    parquet file — schema inferred from the first chunk and held
+    constant. Returns the total number of bars written.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    writer: pq.ParquetWriter | None = None
+    n_total = 0
+    try:
+        for chunk in fetch_klines_range(
+            symbol, start=start, end=end, interval=interval,
+        ):
+            if not chunk:
+                continue
+            df = klines_to_minute_df([chunk], symbol)
+            if df.empty:
+                continue
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            if writer is None:
+                # First chunk → open writer with the inferred schema.
+                writer = pq.ParquetWriter(str(out_path), table.schema)
+            writer.write_table(table)
+            n_total += len(df)
+    finally:
+        if writer is not None:
+            writer.close()
+    return n_total
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--symbol", action="append", default=None,
@@ -243,24 +284,22 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("=" * 60)
         logger.info("downloading %s [%s..%s]",
                     sym, start.isoformat(), end.isoformat())
+        out_path = out_dir / f"{sym.lower()}_{args.interval}_klines.parquet"
         try:
-            chunks = list(fetch_klines_range(
-                sym, start=start, end=end, interval=args.interval,
-            ))
-            df = klines_to_minute_df(chunks, sym)
+            n_total = stream_klines_to_parquet(
+                sym, start=start, end=end,
+                interval=args.interval, out_path=out_path,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error("FAILED %s: %s", sym, exc, exc_info=True)
             rc = 1
             continue
-        if df.empty:
+        if n_total == 0:
             logger.warning("%s: no bars returned", sym)
             continue
-        out_path = out_dir / f"{sym.lower()}_{args.interval}_klines.parquet"
-        df.to_parquet(out_path, index=False)
         logger.info(
-            "%s: %d bars [%s..%s] → %s",
-            sym, len(df), df["minute"].min().isoformat(),
-            df["minute"].max().isoformat(), out_path,
+            "%s: %d bars → %s (streamed)",
+            sym, n_total, out_path,
         )
 
     return rc
