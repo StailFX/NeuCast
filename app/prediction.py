@@ -2309,25 +2309,100 @@ def apply_sentiment_bias(
 
 
 def fetch_and_preprocess(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """YFinance download + macro features + preprocess.
+    """Daily OHLCV + macro features + preprocess pipeline.
+
+    Source priority for the TARGET ticker:
+    1. **Crypto tickers** (BTC-USD / ETH-USD / SOL-USD / etc., per
+       :func:`app.hourly_skill.is_crypto_ticker`) → Binance Spot via
+       :func:`app.crypto_data.fetch_crypto_ohlcv`. Binance has 7+ years
+       of daily data per pair, real volume, no zero-volume bars, free
+       and rate-limit-friendly. Yahoo Finance is auto-fallback if
+       Binance is unreachable (geo-block / network fail).
+    2. **Stocks / indices** (AAPL / ^GSPC / etc.) → yfinance directly,
+       since Binance doesn't list them.
+
+    Macro features (SP500, VIX, FRED) always come from yfinance/FRED
+    regardless of the target — those tickers are stocks/indices and
+    don't have crypto equivalents.
+
     P2: результат кэшируется в Redis на YF_CACHE_TTL секунд (30 мин).
     Сам фичеринг тяжёлый (Kalman, HMM, indicators), поэтому кэшируем финальный
     DataFrame, а не только raw quotes.
+
+    Release T.16 (2026-05-01): swapped target-ticker source from
+    pure yfinance to Binance-first for crypto. Same model architecture
+    (TCN + LightGBM), but trained on the cleaner Binance OHLCV stream
+    (no zero-volume artefacts, longer history when --lookback >5y).
     """
-    cache_key = "neucast:yf:" + hashlib.md5(
+    cache_key = "neucast:fap:" + hashlib.md5(
         f"{ticker}|{start_date}|{end_date}".encode()
     ).hexdigest()
 
     cached = _cache_get(cache_key)
     if cached is not None:
-        logger.info("YF cache HIT: %s %s..%s", ticker, start_date, end_date)
+        logger.info("fetch_and_preprocess cache HIT: %s %s..%s",
+                    ticker, start_date, end_date)
         return cached
 
-    df_raw = yf.download(ticker, start=start_date, end=end_date, interval="1d", progress=False)
-    if df_raw.empty:
-        raise ValueError("Нет данных по указанному тикеру и диапазону дат")
-    if isinstance(df_raw.columns, pd.MultiIndex):
-        df_raw.columns = df_raw.columns.get_level_values(0)
+    # Try Binance for crypto tickers; fall through to yfinance otherwise
+    # (and as a fallback if Binance returns no data).
+    df_raw = None
+    source = "yfinance"
+    try:
+        from app.hourly_skill import is_crypto_ticker
+        if is_crypto_ticker(ticker):
+            from app.crypto_data import fetch_crypto_ohlcv
+            # Convert (start_date, end_date) → lookback_days for the
+            # Binance fetcher. We over-shoot by 7 days so the result
+            # comfortably brackets the requested range; downstream
+            # filter to [start_date, end_date] preserves the original
+            # contract.
+            days_diff = (
+                pd.Timestamp(end_date) - pd.Timestamp(start_date)
+            ).days + 7
+            df_binance, source = fetch_crypto_ohlcv(
+                ticker,
+                lookback_days=max(7, days_diff),
+                interval="1d",
+                prefer="binance",
+            )
+            if df_binance is not None and not df_binance.empty:
+                # Filter to the requested date range. Index is
+                # tz-aware UTC; pd.Timestamp(start_date) is tz-naive
+                # so localize for comparison.
+                start_ts = pd.Timestamp(start_date, tz="UTC")
+                end_ts = pd.Timestamp(end_date, tz="UTC")
+                df_raw = df_binance.loc[
+                    (df_binance.index >= start_ts) & (df_binance.index <= end_ts)
+                ].copy()
+                # The downstream preprocess() expects tz-naive index
+                # (yfinance is naive), strip tz for parity.
+                df_raw.index = df_raw.index.tz_localize(None)
+                logger.info(
+                    "fetch_and_preprocess: %s using %s (%d daily bars)",
+                    ticker, source, len(df_raw),
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "fetch_and_preprocess: Binance path failed for %s, "
+            "falling through to yfinance: %s", ticker, exc,
+        )
+        df_raw = None
+
+    if df_raw is None or df_raw.empty:
+        df_raw = yf.download(
+            ticker, start=start_date, end=end_date,
+            interval="1d", progress=False,
+        )
+        source = "yfinance"
+        if df_raw.empty:
+            raise ValueError(
+                f"Нет данных по тикеру {ticker} в диапазоне "
+                f"{start_date}..{end_date} (ни на Binance, ни на yfinance)"
+            )
+        if isinstance(df_raw.columns, pd.MultiIndex):
+            df_raw.columns = df_raw.columns.get_level_values(0)
+
     # Fetch cross-asset macro features in parallel date range
     macro_df = _fetch_macro_features(start_date, end_date)
     df = preprocess(df_raw, macro_df)
