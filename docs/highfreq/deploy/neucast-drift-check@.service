@@ -19,7 +19,8 @@ ExecStart=/opt/neucast/venv/bin/python -m tools.drift_check \
     --symbol %I \
     --recent-hours 6 \
     --reference-hours 24 \
-    --threshold 0.15
+    --threshold 0.15 \
+    --reference-mode rolling
 
 # Drift detection failing is itself NOT a production-stopping
 # event. Both exit codes are normal:
