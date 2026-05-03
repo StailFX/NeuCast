@@ -178,6 +178,122 @@ def aggregate_to_minute(df_seconds: pd.DataFrame, *,
     return out.loc[keep].reset_index(drop=True)
 
 
+def build_triple_barrier_labels(
+    df_minutes: pd.DataFrame,
+    *,
+    tp_bps: float = 5.0,
+    sl_bps: float = 5.0,
+    time_stop_bars: int = 10,
+) -> pd.DataFrame:
+    """López de Prado triple-barrier labels — "Advances in Financial
+    Machine Learning" Ch. 3 (release T.17.a, 2026-05-03).
+
+    For each bar :math:`t` we simulate a long entry at
+    ``microprice_close[t]`` and watch the next ``time_stop_bars``
+    bars' high/low trajectories. The label is determined by which
+    barrier the price hits first:
+
+    * ``1`` — take-profit (price rose to ``entry × (1 + tp_bps/1e4)``)
+    * ``0`` — stop-loss   (price fell to ``entry × (1 - sl_bps/1e4)``)
+    * ``2`` — time-stop   (neither barrier hit within the horizon)
+    * ``-1`` — insufficient lookahead (last ``time_stop_bars`` rows)
+
+    Returns a copy of ``df_minutes`` with these added columns:
+
+    * ``tbl_y`` (int8) ∈ {-1, 0, 1, 2} — the label
+    * ``tbl_first_hit_bars`` (int) — bars until first barrier hit
+      (``time_stop_bars`` if neither hit; -1 for insufficient lookahead)
+    * ``tbl_first_hit`` (str) — "tp" / "sl" / "time_stop" / "insufficient"
+
+    Defence story for using TBL over fixed-horizon direction
+    -------------------------------------------------------
+
+    * **Path-dependent**: a binary "up vs down" target ignores the
+      shape of the trajectory. TBL credits a model that picks bars
+      where the move actually unfolds favorably (path-aware).
+    * **Trade-aligned**: the label answers "would a TP-vs-SL bracket
+      trade have won?" — directly actionable for the paper-trader,
+      not a synthetic score.
+    * **Citable**: López de Prado 2018 is the canonical financial-ML
+      labeling textbook reference.
+
+    The downstream trainer typically drops ``tbl_y == -1`` (no
+    lookahead) and ``tbl_y == 2`` (time-stop = ambiguous), training
+    on the binary {0=SL_first, 1=TP_first} subset. That binary
+    classifier directly answers "should I take this long entry?".
+    """
+    if df_minutes.empty:
+        out = df_minutes.copy()
+        out["tbl_y"] = pd.Series(dtype="int8")
+        out["tbl_first_hit_bars"] = pd.Series(dtype="int32")
+        out["tbl_first_hit"] = pd.Series(dtype=str)
+        return out
+    if tp_bps <= 0 or sl_bps <= 0:
+        raise ValueError(
+            f"tp_bps and sl_bps must be positive (got {tp_bps}, {sl_bps})"
+        )
+    if time_stop_bars <= 0:
+        raise ValueError(
+            f"time_stop_bars must be positive (got {time_stop_bars})"
+        )
+
+    out = df_minutes.copy().sort_values(["symbol", "minute"]).reset_index(drop=True)
+
+    # Process per-symbol so future-bar lookups don't bleed across
+    # tickers (a multi-symbol frame would otherwise treat the next
+    # symbol's first bars as the lookahead for this symbol's last).
+    tbl_y = np.full(len(out), -1, dtype=np.int8)
+    tbl_first_hit_bars = np.full(len(out), -1, dtype=np.int32)
+    tbl_first_hit = np.array(["insufficient"] * len(out), dtype=object)
+
+    for sym, group in out.groupby("symbol", sort=False):
+        idx = group.index.to_numpy()
+        n = len(idx)
+        entry_price = group["microprice_close"].to_numpy()
+        future_high = group["microprice_high"].to_numpy()
+        future_low = group["microprice_low"].to_numpy()
+        for i in range(n):
+            entry = entry_price[i]
+            if not np.isfinite(entry) or entry <= 0:
+                continue
+            tp_level = entry * (1.0 + tp_bps / 1e4)
+            sl_level = entry * (1.0 - sl_bps / 1e4)
+            # Look at the NEXT time_stop_bars bars (j = i+1 .. i+time_stop_bars)
+            j_end = i + 1 + time_stop_bars
+            if j_end > n:
+                # Insufficient lookahead — the last `time_stop_bars`
+                # bars of each symbol can't be labeled.
+                continue
+            label = 2  # default: time-stop
+            first_hit = "time_stop"
+            first_hit_at = time_stop_bars
+            for k, j in enumerate(range(i + 1, j_end), start=1):
+                # Within bar j, both high and low are observed. If both
+                # barriers were within reach during the same bar, we
+                # apply the conservative tie-break: SL wins (worst-case
+                # for a long trade — reflects realistic execution where
+                # you can't know intra-bar order without tick data).
+                hit_sl = future_low[j] <= sl_level
+                hit_tp = future_high[j] >= tp_level
+                if hit_sl and hit_tp:
+                    label, first_hit, first_hit_at = 0, "sl", k
+                    break
+                if hit_sl:
+                    label, first_hit, first_hit_at = 0, "sl", k
+                    break
+                if hit_tp:
+                    label, first_hit, first_hit_at = 1, "tp", k
+                    break
+            tbl_y[idx[i]] = label
+            tbl_first_hit_bars[idx[i]] = first_hit_at
+            tbl_first_hit[idx[i]] = first_hit
+
+    out["tbl_y"] = tbl_y
+    out["tbl_first_hit_bars"] = tbl_first_hit_bars
+    out["tbl_first_hit"] = tbl_first_hit
+    return out
+
+
 def build_target(
     df_minutes: pd.DataFrame,
     *,
