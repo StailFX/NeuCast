@@ -257,7 +257,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     from app.highfreq.trainer import (
         _binary_logloss, binom_test_p_greater_half, bootstrap_dir_acc_ci,
-        load_seconds,
+        load_seconds, _make_supervised_for_feature_set,
+    )
+
+    # Read the model's feature_set from its metrics.json so this script
+    # works for cross_asset / long_horizon models, not just the legacy
+    # 18-col microstructure default. Without this dispatch the
+    # CatBoost predict_proba blows up with "Feature N is present in
+    # model but not in pool" because the X matrix is 18-wide while
+    # the model expects 22 (BTC cross_asset) or 27 (ETH/BNB cross_asset).
+    feature_set_for_eval = "microstructure"
+    metrics_path_for_eval = weights_path.with_name(
+        weights_path.stem + "_metrics.json"
+    )
+    if metrics_path_for_eval.exists():
+        try:
+            metrics_json = json.loads(metrics_path_for_eval.read_text())
+            feature_set_for_eval = str(
+                metrics_json.get("feature_set", "microstructure")
+            )
+        except Exception:
+            feature_set_for_eval = "microstructure"
+    logger.info(
+        "model feature_set=%s (read from metrics.json)",
+        feature_set_for_eval,
     )
 
     started = time.monotonic()
@@ -297,7 +320,38 @@ def main(argv: list[str] | None = None) -> int:
         minute_df = aggregate_to_minute(df_secs)
         n_min = len(minute_df)
 
-        X, y, meta = make_supervised(df_secs)
+        # cross_asset on ETH/BNB needs BTC seconds aligned to the same
+        # window as a reference. For BTC itself there's no reference
+        # (would be identity); microstructure / long_horizon don't need
+        # one either.
+        ref_df_secs = None
+        if feature_set_for_eval == "cross_asset" and symbol.upper() != "BTCUSDT":
+            try:
+                ref_df_secs = load_seconds(
+                    dsn, symbol="BTCUSDT",
+                    since_hours=(args.fallback_days + 1) * 24,
+                )
+                ref_df_secs = ref_df_secs.loc[
+                    ref_df_secs["ts"] >= cutoff_ts
+                ].copy()
+                logger.info(
+                    "loaded %d BTCUSDT reference seconds for cross_asset",
+                    len(ref_df_secs),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "failed to load BTC reference for cross_asset; "
+                    "cross-asset cols will be zero-filled: %s", exc,
+                )
+                ref_df_secs = None
+
+        X, y, meta = _make_supervised_for_feature_set(
+            df_secs,
+            feature_set=feature_set_for_eval,
+            bar_minutes=1,
+            reference_df_secs=ref_df_secs,
+            target_symbol=symbol,
+        )
         n_eligible = len(X)
 
         if n_eligible == 0:
@@ -325,7 +379,11 @@ def main(argv: list[str] | None = None) -> int:
             clf = CatBoostClassifier()
             clf.load_model(str(weights_path))
 
-            X_arr = X[FEATURE_COLUMNS].to_numpy()
+            # X is already in the canonical column order returned by
+            # _make_supervised_for_feature_set — pass through directly
+            # rather than reindexing on FEATURE_COLUMNS (which would
+            # silently truncate cross_asset's 22/27 cols to 18).
+            X_arr = X.to_numpy()
             proba = clf.predict_proba(X_arr)
             # Defensive: predict_proba shape (N, 2). Class-1 column is
             # P(up). Mirrors how walk_forward_evaluate consumes it.
