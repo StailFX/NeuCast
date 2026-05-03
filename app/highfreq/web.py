@@ -1667,6 +1667,145 @@ async def get_conditional_accuracy(
     }))
 
 
+@router.get("/api/highfreq/cumulative_pnl")
+async def get_cumulative_pnl(
+    symbol: str = DEFAULT_SYMBOL,
+    limit_points: int = 200,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Cumulative P&L curve from ``paper_trades``, by fee tier.
+
+    Returns a chronological time-series suitable for a line chart on
+    /forecast: "this is what bp-by-bp the model has done since paper-
+    trader spawn, per fee tier".
+
+    Per trade we already have ``pnl_bps`` (gross of fees). For each
+    fee tier we recompute net by subtracting ``2 × fee_bps`` (round-
+    trip cost), then accumulate. ``limit_points`` (default 200) caps
+    the curve length — we evenly downsample to keep the JSON payload
+    small without distorting the shape.
+
+    Tier definitions match the UI's ``TIER_DEFS`` so the legend lines
+    up. Server-side recomputation matters because we want a single
+    source-of-truth for the fee math (the UI currently does the same
+    math client-side; server replication makes the test surface
+    smaller).
+
+    Returns 200 always; DB error → ``ok=False``.
+    """
+    symbol = symbol.upper()
+    if not (10 <= limit_points <= 1000):
+        limit_points = 200
+
+    # Mirrors templates/forecast.html TIER_DEFS — keep in sync.
+    TIERS = [
+        {"key": "gross",     "fee_bps": 0.0,   "name": "Без комиссии"},
+        {"key": "retail",    "fee_bps": 7.5,   "name": "Spot retail"},
+        {"key": "vip5",      "fee_bps": 1.0,   "name": "Spot VIP-5"},
+        {"key": "vip9",      "fee_bps": 0.0,   "name": "Spot VIP-9"},
+        {"key": "futures",   "fee_bps": 2.0,   "name": "Futures maker"},
+        {"key": "mm_rebate", "fee_bps": -0.4,  "name": "MM rebate"},
+    ]
+
+    # Pull entry/exit prices + side so we can RECONSTRUCT gross_bps
+    # — the stored ``pnl_bps`` already has retail fees deducted (see
+    # ``app.highfreq.paper_trader.compute_pnl``), so subtracting fees
+    # again here would double-count. The UI's ``meanGrossBps`` does
+    # the same reconstruction.
+    sql = text(
+        "SELECT exit_ts, entry_price, exit_price, side "
+        "  FROM paper_trades "
+        " WHERE symbol = :symbol "
+        "   AND exit_ts IS NOT NULL "
+        "   AND entry_price IS NOT NULL AND entry_price > 0 "
+        "   AND exit_price IS NOT NULL "
+        "   AND side IN ('long', 'short') "
+        " ORDER BY exit_ts ASC"
+    )
+    try:
+        raw_rows = db.execute(sql, {"symbol": symbol}).all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("cumulative_pnl failed: %s", exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    n_trades = len(raw_rows)
+    if n_trades == 0:
+        return JSONResponse(content={
+            "ok": True,
+            "symbol": symbol,
+            "n_trades": 0,
+            "first_trade_ts": None,
+            "last_trade_ts": None,
+            "tiers": [
+                {**t, "final_bps": 0.0, "win_rate": None}
+                for t in TIERS
+            ],
+            "points": [],
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    # Compute per-tier cumulative series.
+    cumul = {t["key"]: 0.0 for t in TIERS}
+    wins = {t["key"]: 0 for t in TIERS}
+    full_points: list[dict[str, Any]] = []
+    for r in raw_rows:
+        ts_iso = r[0].isoformat() if r[0] is not None else None
+        entry = float(r[1])
+        exit_ = float(r[2])
+        side = str(r[3])
+        # Gross bps return on the trade, sign-corrected for direction.
+        move_bps = ((exit_ - entry) / entry) * 1e4
+        side_mul = 1.0 if side == "long" else -1.0
+        gross_bps = side_mul * move_bps
+        point = {"ts": ts_iso}
+        for t in TIERS:
+            net_bps = gross_bps - 2.0 * t["fee_bps"]
+            cumul[t["key"]] += net_bps
+            if net_bps > 0:
+                wins[t["key"]] += 1
+            point[t["key"]] = round(cumul[t["key"]], 4)
+        full_points.append(point)
+
+    # Downsample if needed — keep first + last, evenly stride the rest.
+    if len(full_points) > limit_points:
+        # Stride preserves order + always includes the last point.
+        # Picks indices [0, S, 2S, ..., n-1] where S = ceil(n / limit).
+        n = len(full_points)
+        stride = max(1, (n - 1) // (limit_points - 1))
+        idx = list(range(0, n, stride))
+        if idx[-1] != n - 1:
+            idx.append(n - 1)
+        points = [full_points[i] for i in idx]
+    else:
+        points = full_points
+
+    tiers_out = [
+        {
+            **t,
+            "final_bps": round(cumul[t["key"]], 4),
+            "win_rate": round(wins[t["key"]] / n_trades, 4),
+        }
+        for t in TIERS
+    ]
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "n_trades": n_trades,
+        "n_points": len(points),
+        "first_trade_ts": full_points[0]["ts"],
+        "last_trade_ts": full_points[-1]["ts"],
+        "tiers": tiers_out,
+        "points": points,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 @router.get("/api/highfreq/reliability_diagram")
 async def get_reliability_diagram(
     db: Session = Depends(_get_db),

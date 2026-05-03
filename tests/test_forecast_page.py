@@ -178,6 +178,31 @@ def test_forecast_template_has_feature_importance_block():
     assert "refreshFeatureImportance" in html
 
 
+def test_forecast_template_has_cumulative_pnl_curve_block():
+    """Release T.17.c (2026-05-03) added the live cumulative P&L
+    curve — SVG line chart per fee tier, showing how each tier's
+    net P&L accumulated over time since paper-trader spawn.
+
+    Pins:
+    * Anchor: ``id="pnl-curve-svg"`` and ``id="pnl-curve-summary"``
+    * Endpoint: ``/api/highfreq/cumulative_pnl``
+    * Symbol + tier pill toggles (``data-pnl-symbol``, ``data-pnl-tier``)
+    * JS function name (``refreshCumulativePnl``)
+    """
+    html = _read_forecast_template()
+    assert 'id="pnl-curve-svg"' in html
+    assert 'id="pnl-curve-summary"' in html
+    assert "/api/highfreq/cumulative_pnl" in html
+    assert "refreshCumulativePnl" in html
+    # Symbol toolbar.
+    assert 'data-pnl-symbol="BTCUSDT"' in html
+    assert 'data-pnl-symbol="ETHUSDT"' in html
+    assert 'data-pnl-symbol="BNBUSDT"' in html
+    # Tier toolbar — all 6 tiers must be selectable.
+    for tier in ("gross", "retail", "vip5", "vip9", "futures", "mm_rebate"):
+        assert f'data-pnl-tier="{tier}"' in html
+
+
 def test_forecast_template_polls_correct_api_endpoints():
     """Pin the API endpoints the page hits.
 
@@ -197,6 +222,8 @@ def test_forecast_template_polls_correct_api_endpoints():
     # T.16 (2026-05-03): reliability diagram + feature importance.
     assert "/api/highfreq/reliability_diagram" in html
     assert "/api/highfreq/feature_importance" in html
+    # T.17.c (2026-05-03): cumulative P&L curve.
+    assert "/api/highfreq/cumulative_pnl" in html
     # Pin lite=1 query param — without it the page would block 18s on
     # cold cache for live_inventory; release T.3 added the flag.
     assert "lite=1" in html

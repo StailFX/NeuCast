@@ -742,6 +742,117 @@
       margin-left: 0.4rem; font-weight: 400;
     }
 
+    /* ── Cumulative P&L curve ── */
+    .pnl-curve-wrapper {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.4rem;
+      margin-top: 1rem;
+    }
+    .pnl-curve-toolbar {
+      display: flex; flex-wrap: wrap; gap: 0.5rem;
+      margin-bottom: 1rem;
+      align-items: center;
+    }
+    .pnl-curve-toolbar-section {
+      display: flex; gap: 0.5rem; align-items: center;
+    }
+    .pnl-curve-toolbar-label {
+      font-size: 0.7rem; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      font-weight: 600;
+      margin-right: 0.4rem;
+    }
+    .pnl-curve-pill {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-variant-numeric: tabular-nums;
+    }
+    .pnl-curve-pill:hover { color: var(--text); }
+    .pnl-curve-pill.active {
+      background: rgba(63, 217, 161, 0.12);
+      border-color: var(--green);
+      color: var(--green);
+    }
+    .pnl-curve-svg {
+      width: 100%; height: 320px;
+      display: block;
+    }
+    .pnl-curve-svg .grid-line {
+      stroke: rgba(255,255,255,0.06); stroke-width: 1;
+    }
+    .pnl-curve-svg .axis-line {
+      stroke: rgba(255,255,255,0.18); stroke-width: 1;
+    }
+    .pnl-curve-svg .zero-line {
+      stroke: rgba(255,255,255,0.30); stroke-width: 1;
+      stroke-dasharray: 4 3;
+    }
+    .pnl-curve-svg .axis-tick {
+      fill: var(--text-dim); font-size: 9px;
+      font-variant-numeric: tabular-nums;
+    }
+    .pnl-curve-svg .pnl-line {
+      fill: none; stroke-width: 2;
+      stroke-linejoin: round; stroke-linecap: round;
+    }
+    .pnl-curve-svg .pnl-line.gross    { stroke: #4ad6ff; }
+    .pnl-curve-svg .pnl-line.retail   { stroke: #ff7e6e; }
+    .pnl-curve-svg .pnl-line.vip5     { stroke: #f0b90b; }
+    .pnl-curve-svg .pnl-line.vip9     { stroke: #3fd9a1; }
+    .pnl-curve-svg .pnl-line.futures  { stroke: #c084fc; }
+    .pnl-curve-svg .pnl-line.mm_rebate { stroke: #f8d442; }
+    .pnl-curve-svg .pnl-fill { opacity: 0.10; }
+    .pnl-curve-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 0.6rem;
+      margin-top: 1rem;
+    }
+    .pnl-summary-cell {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.65rem 0.85rem;
+    }
+    .pnl-summary-cell-label {
+      font-size: 0.62rem; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.06em;
+      font-weight: 600;
+      display: flex; align-items: center; gap: 0.4rem;
+      margin-bottom: 0.25rem;
+    }
+    .pnl-summary-cell-label .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+    .pnl-summary-cell-label .dot.gross    { background: #4ad6ff; }
+    .pnl-summary-cell-label .dot.retail   { background: #ff7e6e; }
+    .pnl-summary-cell-label .dot.vip5     { background: #f0b90b; }
+    .pnl-summary-cell-label .dot.vip9     { background: #3fd9a1; }
+    .pnl-summary-cell-label .dot.futures  { background: #c084fc; }
+    .pnl-summary-cell-label .dot.mm_rebate { background: #f8d442; }
+    .pnl-summary-cell-value {
+      font-size: 1.05rem; font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    .pnl-summary-cell-value.green { color: var(--green); }
+    .pnl-summary-cell-value.red { color: var(--red); }
+    .pnl-summary-cell-value.muted { color: var(--text-muted); }
+    .pnl-summary-cell-sub {
+      font-size: 0.62rem; color: var(--text-dim);
+      margin-top: 0.15rem;
+      font-variant-numeric: tabular-nums;
+    }
+
     /* ── Reliability diagram (calibration curve) ── */
     .reliability-grid {
       display: grid;
@@ -1605,6 +1716,54 @@
     </div>
     <div class="fee-tiers" id="fee-tiers">
       <!-- filled by JS -->
+    </div>
+  </section>
+
+  <!-- Live cumulative P&L curve -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Кривая накопленного P&amp;L</span>
+        <h2>Как model'ы зарабатывали со старта paper-trader'а</h2>
+        <p class="section-sub">
+          Базовые точки тарифов сверху — это <em>среднее</em>. Реальная
+          торговля — это <em>траектория</em>: видно где был drawdown, где
+          восстановление, где flat-периоды. Каждая линия — net P&amp;L
+          накопленный для соответствующего fee tier (gross = «как если бы
+          комиссии не было», retail = реальный розничный спот-сценарий, и т.д.).
+          <br><br>
+          <strong>Defence-grade observation</strong>: положительный gross-trace
+          = модель реально находит direction. Расстояние между gross и retail
+          = fee burden, не model failure. На VIP-9 / mm-rebate расстояние
+          закрывается, модель выходит в плюс.
+        </p>
+      </div>
+    </div>
+    <div class="pnl-curve-wrapper">
+      <div class="pnl-curve-toolbar">
+        <div class="pnl-curve-toolbar-section">
+          <span class="pnl-curve-toolbar-label">символ</span>
+          <button class="pnl-curve-pill active" data-pnl-symbol="BTCUSDT">BTC</button>
+          <button class="pnl-curve-pill" data-pnl-symbol="ETHUSDT">ETH</button>
+          <button class="pnl-curve-pill" data-pnl-symbol="BNBUSDT">BNB</button>
+        </div>
+        <div class="pnl-curve-toolbar-section" style="margin-left:auto;">
+          <span class="pnl-curve-toolbar-label">тарифы</span>
+          <button class="pnl-curve-pill active" data-pnl-tier="gross">без комиссии</button>
+          <button class="pnl-curve-pill active" data-pnl-tier="retail">retail</button>
+          <button class="pnl-curve-pill active" data-pnl-tier="vip9">VIP-9</button>
+          <button class="pnl-curve-pill" data-pnl-tier="vip5">VIP-5</button>
+          <button class="pnl-curve-pill" data-pnl-tier="futures">futures</button>
+          <button class="pnl-curve-pill" data-pnl-tier="mm_rebate">MM rebate</button>
+        </div>
+      </div>
+      <svg class="pnl-curve-svg" id="pnl-curve-svg"
+           viewBox="0 0 800 320" preserveAspectRatio="none">
+        <!-- filled by JS -->
+      </svg>
+      <div class="pnl-curve-summary" id="pnl-curve-summary">
+        <!-- filled by JS -->
+      </div>
     </div>
   </section>
 
@@ -2796,6 +2955,186 @@
       }
     }
 
+    // ─── Cumulative P&L curve ───
+    //
+    // Pulls /api/highfreq/cumulative_pnl?symbol=X for the active
+    // symbol, draws an SVG line chart with one polyline per active
+    // tier. Tier toolbar lets the user toggle which lines render;
+    // by default we show the most informative trio (gross / retail /
+    // VIP-9) so the page isn't a rainbow tangle on first load.
+    let _pnlActiveSymbol = 'BTCUSDT';
+    let _pnlActiveTiers = new Set(['gross', 'retail', 'vip9']);
+    let _pnlLastPayload = null;
+
+    async function refreshCumulativePnl() {
+      const svg = document.getElementById('pnl-curve-svg');
+      const summary = document.getElementById('pnl-curve-summary');
+      if (!svg || !summary) return;
+      try {
+        const res = await fetch(
+          `/api/highfreq/cumulative_pnl?symbol=${encodeURIComponent(_pnlActiveSymbol)}&limit_points=300`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) {
+          svg.innerHTML = '<text x="400" y="160" fill="var(--text-dim)" text-anchor="middle" font-size="14">данных нет</text>';
+          summary.innerHTML = '';
+          return;
+        }
+        const j = await res.json();
+        if (!j.ok) {
+          svg.innerHTML = '<text x="400" y="160" fill="var(--text-dim)" text-anchor="middle" font-size="14">DB unavailable</text>';
+          summary.innerHTML = '';
+          return;
+        }
+        _pnlLastPayload = j;
+        renderPnlCurve();
+      } catch (err) {
+        svg.innerHTML = '<text x="400" y="160" fill="var(--text-dim)" text-anchor="middle" font-size="14">ошибка загрузки</text>';
+        summary.innerHTML = '';
+      }
+    }
+
+    function renderPnlCurve() {
+      const svg = document.getElementById('pnl-curve-svg');
+      const summary = document.getElementById('pnl-curve-summary');
+      const j = _pnlLastPayload;
+      if (!svg || !summary || !j) return;
+      const points = j.points || [];
+      const tiers = j.tiers || [];
+      if (points.length === 0) {
+        svg.innerHTML = '<text x="400" y="160" fill="var(--text-dim)" text-anchor="middle" font-size="14">сделок ещё не было</text>';
+        summary.innerHTML = '';
+        return;
+      }
+
+      // Compute Y-range across only the ACTIVE tiers.
+      const activeKeys = tiers.map(t => t.key).filter(k => _pnlActiveTiers.has(k));
+      let yMin = 0, yMax = 0;
+      for (const p of points) {
+        for (const k of activeKeys) {
+          const v = p[k];
+          if (v < yMin) yMin = v;
+          if (v > yMax) yMax = v;
+        }
+      }
+      // Pad ±10% so curves don't touch the box edge.
+      const pad = Math.max(1, (yMax - yMin) * 0.10);
+      yMin -= pad; yMax += pad;
+      // Always include 0 line.
+      if (yMin > 0) yMin = -pad;
+      if (yMax < 0) yMax = pad;
+
+      // SVG geometry. viewBox is "0 0 800 320".
+      const W = 800, H = 320;
+      const ML = 56, MR = 16, MT = 12, MB = 30;
+      const plotW = W - ML - MR;
+      const plotH = H - MT - MB;
+      const N = points.length;
+
+      const x = (i) => ML + (i / (N - 1 || 1)) * plotW;
+      const y = (v) => MT + (1 - (v - yMin) / (yMax - yMin)) * plotH;
+
+      // Y-axis ticks (5 levels including 0).
+      const ticks = [];
+      const nTicks = 5;
+      for (let i = 0; i <= nTicks; i++) {
+        const v = yMin + (yMax - yMin) * (i / nTicks);
+        ticks.push(v);
+      }
+      // X-axis ticks (5 evenly distributed).
+      const xTicks = [];
+      const nXTicks = 5;
+      for (let i = 0; i <= nXTicks; i++) {
+        xTicks.push(Math.floor((N - 1) * (i / nXTicks)));
+      }
+
+      const fmtBps = (v) => {
+        const s = v >= 0 ? '+' : '';
+        return v >= 1000 || v <= -1000
+          ? `${s}${(v / 100).toFixed(1)}%`
+          : `${s}${v.toFixed(0)}bp`;
+      };
+      const fmtTs = (iso) => {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return `${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+      };
+
+      let svgInner = '';
+      // Grid + ticks.
+      ticks.forEach(v => {
+        const yPos = y(v);
+        svgInner += `<line class="grid-line" x1="${ML}" y1="${yPos}" x2="${W - MR}" y2="${yPos}" />`;
+        svgInner += `<text class="axis-tick" x="${ML - 6}" y="${yPos + 3}" text-anchor="end">${fmtBps(v)}</text>`;
+      });
+      xTicks.forEach(idx => {
+        const xPos = x(idx);
+        svgInner += `<line class="grid-line" x1="${xPos}" y1="${MT}" x2="${xPos}" y2="${MT + plotH}" />`;
+        svgInner += `<text class="axis-tick" x="${xPos}" y="${MT + plotH + 14}" text-anchor="middle">${fmtTs(points[idx]?.ts)}</text>`;
+      });
+      // Zero baseline.
+      svgInner += `<line class="zero-line" x1="${ML}" y1="${y(0)}" x2="${W - MR}" y2="${y(0)}" />`;
+      // Frame.
+      svgInner += `<line class="axis-line" x1="${ML}" y1="${MT}" x2="${ML}" y2="${MT + plotH}" />`;
+      svgInner += `<line class="axis-line" x1="${ML}" y1="${MT + plotH}" x2="${W - MR}" y2="${MT + plotH}" />`;
+
+      // One polyline per active tier.
+      activeKeys.forEach(k => {
+        const pts = points.map((p, i) => `${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`).join(' ');
+        svgInner += `<polyline class="pnl-line ${k}" points="${pts}" />`;
+      });
+      svg.innerHTML = svgInner;
+
+      // Summary cells (current cumulative + win rate per tier).
+      const tierName = {
+        gross: 'Без комиссии',
+        retail: 'Spot retail',
+        vip5: 'Spot VIP-5',
+        vip9: 'Spot VIP-9',
+        futures: 'Futures maker',
+        mm_rebate: 'MM rebate',
+      };
+      summary.innerHTML = tiers.map(t => {
+        const cls = t.final_bps > 0 ? 'green' : (t.final_bps < 0 ? 'red' : 'muted');
+        const sign = t.final_bps >= 0 ? '+' : '';
+        const wr = t.win_rate === null ? '—' : `${(t.win_rate * 100).toFixed(1)}%`;
+        return `
+          <div class="pnl-summary-cell">
+            <div class="pnl-summary-cell-label"><span class="dot ${t.key}"></span>${tierName[t.key] || t.key}</div>
+            <div class="pnl-summary-cell-value ${cls}">${sign}${t.final_bps.toFixed(1)} bp</div>
+            <div class="pnl-summary-cell-sub">win-rate ${wr} · n=${j.n_trades}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Symbol pill click → swap symbol + refetch.
+    document.querySelectorAll('[data-pnl-symbol]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sym = btn.dataset.pnlSymbol;
+        if (sym === _pnlActiveSymbol) return;
+        _pnlActiveSymbol = sym;
+        document.querySelectorAll('[data-pnl-symbol]').forEach(b => {
+          b.classList.toggle('active', b.dataset.pnlSymbol === sym);
+        });
+        refreshCumulativePnl();
+      });
+    });
+    // Tier pill click → toggle visibility, re-render from cached payload.
+    document.querySelectorAll('[data-pnl-tier]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tier = btn.dataset.pnlTier;
+        if (_pnlActiveTiers.has(tier)) {
+          _pnlActiveTiers.delete(tier);
+          btn.classList.remove('active');
+        } else {
+          _pnlActiveTiers.add(tier);
+          btn.classList.add('active');
+        }
+        renderPnlCurve();
+      });
+    });
+
     // ─── Countdown ───
     function refreshCountdowns() {
       const secs = 60 - new Date().getUTCSeconds();
@@ -2845,6 +3184,7 @@
     refreshRobustness();
     refreshReliabilityDiagram();
     refreshFeatureImportance();
+    refreshCumulativePnl();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
@@ -2866,6 +3206,8 @@
     // Feature importance is constant for a given .cbm — only changes
     // when the model retrains (daily). Slow cadence is plenty.
     setInterval(refreshFeatureImportance, METRICS_REFRESH_MS);
+    // Cumulative P&L grows ~1 row/min; refresh on the trades cadence.
+    setInterval(refreshCumulativePnl, TRADES_REFRESH_MS);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
     setInterval(pollHorizonAvailability, 120_000);
