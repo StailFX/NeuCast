@@ -226,3 +226,63 @@ def build_microstructure_v3_features(
         raise RuntimeError(f"v3: missing expected columns {sorted(missing)}")
     # Lock column order — saved-model dispatch depends on it.
     return out[expected]
+
+
+def build_latest_inference_bar_microstructure_v3(
+    df_seconds: pd.DataFrame,
+    futures_df_seconds: pd.DataFrame | None,
+) -> tuple[pd.Series, float] | None:
+    """Live-inference helper for ``microstructure_v3`` (T.23.b).
+
+    Same contract as :func:`feature_pipeline.build_latest_inference_bar`
+    but emits the 23-col v3 vector. Caller is responsible for fetching
+    BOTH the spot seconds (``df_seconds``) and the matching futures
+    seconds (``futures_df_seconds``) over the same wall-clock window
+    — both go through ``aggregate_to_minute`` so the per-minute bars
+    align by ``minute`` floor.
+
+    Cold-start safe: if ``futures_df_seconds`` is None / empty (e.g.
+    the futures ingest is down), the 5 futures cols zero-fill and
+    the model still scores. The caller should still log this as an
+    operational concern via the ``LivePredictor`` status block.
+
+    Returns
+    -------
+    (features, close_microprice) for the most recent COMPLETE 1-min
+    bar; or ``None`` if there isn't enough recent data on the spot
+    side to build a complete bar (we never fail-open on the spot
+    side because spot is the actual prediction target).
+    """
+    from app.highfreq.feature_pipeline import aggregate_to_minute
+
+    if df_seconds.empty:
+        return None
+    df = df_seconds.copy()
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    if df["ts"].empty:
+        return None
+
+    # Drop in-flight current bar (mirrors v1/v2).
+    now_floor = df["ts"].max().floor("1min")
+    df = df.loc[df["ts"] < now_floor].copy()
+    if df.empty:
+        return None
+
+    minute_df = aggregate_to_minute(df, bar_minutes=1)
+    if minute_df.empty:
+        return None
+
+    # build_microstructure_v3_features expects the same shape that
+    # build_target outputs for the trainer — but at inference time
+    # there's no target. We pass the minute-frame directly; build_features
+    # only reads the columns aggregate_to_minute produced. The 5 futures
+    # cols are computed from futures_df_seconds and joined by `minute`.
+    feats = build_microstructure_v3_features(
+        minute_df,
+        futures_seconds_df=futures_df_seconds,
+        bar_minutes=1,
+    )
+    if feats.empty:
+        return None
+    last_close = float(minute_df.iloc[-1]["microprice_close"])
+    return feats.iloc[-1], last_close

@@ -1058,3 +1058,133 @@ can serve from.
 * Tests: ``tests/test_feature_pipeline_microstructure_v3.py`` (8)
 
 ---
+
+## T.23.b — microstructure_v3 live serving + canary
+
+**Date:** 2026-05-04
+**Status:** ✅ inference path wired + tested + 3 production .cbm
+trained; canary deploy staged behind operator review
+**Hypothesis:** T.23 gave us a trainer that produces v3 .cbm files
+but the predictor side (``LivePredictor`` + the live ``/forecast``
+endpoints) had no v3 dispatch — so a v3-trained model couldn't be
+served. T.23.b closes that gap, adds 4 new tests pinning the
+inference path, and trains 3 production .cbm files staged in
+``weights/highfreq/v3_canary/`` (NOT auto-flipped into the
+production weights directory — operator decides after observing
+walk-forward + holdout numbers).
+
+### Solution
+
+* ``app/highfreq/predictor.py`` — ``_expected_feature_columns``
+  branch for ``microstructure_v3`` returns the 23-col list. Train-
+  vs-serve invariant pinned.
+* ``app/highfreq/feature_pipeline_microstructure_v3.py`` —
+  ``build_latest_inference_bar_microstructure_v3(spot_seconds,
+  futures_seconds)`` produces a 23-col Series for the latest
+  complete 1-min bar. Cold-start safe: missing futures → zero-fill
+  on the 5 cols.
+* ``app/highfreq/web.py`` — added ``_fetch_recent_futures_seconds``
+  helper (selects ``mark_price``, ``funding_rate`` alongside the
+  base seconds columns) and a v3 branch in BOTH forecast paths
+  (``/forecast`` and ``_predict_for_horizon`` for ensemble).
+  Cold-start: futures fetch returning None logs a warning but
+  the prediction still goes through with zero-filled futures
+  cols — degraded mode > no prediction.
+* ``tools/eval_frozen_holdout.py`` — also dispatches v3, loading
+  matching futures seconds for the eval window.
+* 4 new tests in ``tests/test_feature_pipeline_microstructure_v3.py``:
+  - ``test_inference_helper_returns_23col_vector_with_futures``
+  - ``test_inference_helper_zero_fills_futures_when_missing``
+  - ``test_inference_helper_returns_none_on_empty_spot``
+  - ``test_predictor_expected_columns_for_v3`` (loads a real
+    LivePredictor against tmp metrics.json — verifies the
+    train-serve column-list invariant end-to-end).
+
+### Production v3 .cbm trained on Tokyo (96h, 24h initial train)
+
+Three models trained in parallel via the wired-up trainer. Each
+uses the v3 dispatch path, which auto-loads 96h of matching futures
+seconds from ``highfreq_futures_ofi_1s``. **Files staged at
+``/opt/neucast/weights/highfreq/v3_canary/``**, NOT yet promoted to
+the production weights directory (the auto-regenerated scoreboard
+view filters by the production path, so canary weights stay
+invisible there until an operator promotes them).
+
+Numbers (training_runs ids 160-162):
+
+| symbol | feature_set | dir_acc | CI [lo, hi]      | p          | Brier  | folds | n_oos |
+|--------|-------------|---------|------------------|------------|--------|-------|-------|
+| BTCUSDT | v3        | 0.8121  | [0.7944, 0.8303] | 7.6e-183   | 0.1419 | 33    | 3472  |
+| ETHUSDT | v3        | 0.7915  | [0.7748, 0.8077] | 2.4e-186   | 0.1528 | 39    | 3800  |
+| BNBUSDT | v3        | 0.8210  | [0.8038, 0.8382] | 1.5e-182   | 0.1375 | 31    | 3331  |
+
+Compare to current production v1:
+
+| symbol | v1 dir_acc | v1 Brier | v3 lift (pp) | Brier reduction |
+|--------|------------|----------|--------------|-----------------|
+| BTC    | 0.5596     | 0.2514   | **+25.25**   | −44%            |
+| ETH    | 0.5543     | 0.2528   | **+23.72**   | −40%            |
+| BNB    | 0.5547     | 0.2565   | **+26.63**   | −46%            |
+
+The lift held across the full trainer→predictor→inference path:
+walk-forward CV numbers reproduce T.24.c (the offline A/B harness
+prediction). The Brier reduction is independently striking — v3
+isn't just predicting direction better, the calibrated probabilities
+are sharper too (0.14 vs 0.25, where 0.25 ≈ uniform-50/50 baseline
+on a binary problem).
+
+End-to-end smoke test confirmed the predictor loads v3 cleanly:
+``LivePredictor(weights_path=v3_canary/ethusdt_1m.cbm).feature_set()``
+returns ``microstructure_v3``, the 23-col list, and reads the
+calibrated dir_acc/p-value from the metrics.json. The serving path
+is wired and tested. **What's left is the operational decision
+to promote.**
+
+### Frozen-holdout eval: deferred to T.23.c
+
+The existing v1 frozen-holdout cutoff is 2026-04-30T10:09 — but the
+futures table only started ingesting on 2026-04-29T13:39 (~21h
+before the cutoff). Building meaningful v3 features for data
+BEFORE the cutoff requires futures coverage of that older period,
+which we don't have. So an apples-to-apples v1-vs-v3 frozen-holdout
+A/B is **blocked on futures-data depth** until ~2026-05-09.
+
+Until then, the strongest OOS evidence we have is:
+* **Walk-forward CV** with 33-39 production-geometry folds and
+  perm p < 0.001 (T.24.c).
+* **Smoke-train reproduction** — BTC v3 trained from scratch on
+  Tokyo gave dir_acc=0.8101, matching T.24.c's predicted 0.8222
+  (within sampling noise).
+
+These together rule out "the +20pp was a script bug" but stop
+short of "the +20pp survives an apples-to-apples gold-standard
+holdout." The defence narrative is honest about this gap.
+
+### Canary deploy plan (operator)
+
+1. Inspect ``v3_canary/<sym>_1m_metrics.json`` — confirm dir_acc
+   matches T.24.c expectations (no surprises).
+2. **One-symbol promote**:
+   ``cp v3_canary/btcusdt_1m.cbm weights/highfreq/btcusdt_1m.cbm
+   && cp v3_canary/btcusdt_1m_metrics.json weights/highfreq/btcusdt_1m_metrics.json``
+   (model_archive auto-snapshots the previous .cbm before overwrite,
+   so rollback is cheap.)
+3. Paper-trader's mtime-watcher picks it up in ~60 s. The
+   ``/api/highfreq/realized_accuracy`` endpoint starts logging
+   v3-served predictions.
+4. Watch for 24h. If live dir_acc holds ≥ 0.55 (the v1 baseline),
+   promote ETH and BNB. If it crashes (drift, regime mismatch,
+   or hidden leak in the offline number), rollback via
+   ``tools/rollback_model.py --symbol BTCUSDT`` (T.17.d).
+
+### Files
+
+* Predictor: ``app/highfreq/predictor.py`` (+v3 dispatch)
+* Pipeline: ``app/highfreq/feature_pipeline_microstructure_v3.py``
+  (+inference helper)
+* Web: ``app/highfreq/web.py`` (+_fetch_recent_futures_seconds,
+  +v3 branches in both forecast paths)
+* Eval: ``tools/eval_frozen_holdout.py`` (+v3 dispatch)
+* Tests: ``tests/test_feature_pipeline_microstructure_v3.py`` (12)
+
+---

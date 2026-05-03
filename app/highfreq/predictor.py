@@ -443,6 +443,16 @@ class LivePredictor:
                 MICROSTRUCTURE_V2_FEATURE_COLUMNS,
             )
             return MICROSTRUCTURE_V2_FEATURE_COLUMNS
+        if fs == "microstructure_v3":
+            # T.23.b (2026-05-04): live serving for the futures-basis
+            # feature_set. The 23-col contract = 18 base + 5 futures.
+            # Train-serve invariant: ``build_latest_inference_bar_v3``
+            # in web.py produces a row in EXACTLY this order, so the
+            # predictor reindexes to the same columns the trainer fit on.
+            from app.highfreq.feature_pipeline_microstructure_v3 import (
+                microstructure_v3_feature_columns,
+            )
+            return microstructure_v3_feature_columns()
         return FEATURE_COLUMNS
 
     def _prepare_features(

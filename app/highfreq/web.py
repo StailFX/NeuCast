@@ -340,6 +340,48 @@ def _fetch_recent_seconds(
     return pd.DataFrame([dict(r) for r in rows])
 
 
+def _fetch_recent_futures_seconds(
+    db: Session, symbol: str, lookback_seconds: int = _FORECAST_LOOKBACK_SECONDS,
+) -> Optional[pd.DataFrame]:
+    """Fetch the last ``lookback_seconds`` of 1-s rows from the FUTURES
+    table for ``symbol`` (T.23.b, 2026-05-04).
+
+    Used by the ``microstructure_v3`` inference path to compute the
+    5 futures-basis features against the matching wall-clock window.
+    Selects the same per-second columns as the spot helper PLUS
+    ``mark_price`` and ``funding_rate`` which are unique to the
+    futures table (populated by ``poll_funding_rate`` cron + the
+    L2 ingest).
+
+    Returns ``None`` on a query failure so the caller can decide
+    whether to fail the request OR proceed with futures-zero-filling
+    (the v3 pipeline is cold-start-safe by design — missing futures
+    just zero-fills those 5 cols, the spot 18 still get computed).
+    """
+    try:
+        rows = db.execute(
+            text(
+                "SELECT ts, symbol, ofi, microprice, depth_imb, "
+                "spread_bps, trade_imb, n_updates, "
+                "mark_price, funding_rate "
+                "FROM highfreq_futures_ofi_1s "
+                "WHERE symbol = :symbol "
+                "  AND ts > now() - make_interval(secs => :secs) "
+                "ORDER BY ts ASC"
+            ),
+            {"symbol": symbol, "secs": int(lookback_seconds)},
+        ).mappings().all()
+    except (ProgrammingError, OperationalError) as exc:
+        # Distinguish from spot helper for log clarity — operator
+        # may not have the futures table populated yet (cold-start).
+        logger.warning(
+            "highfreq_futures_ofi_1s recent-rows fetch failed (%s): %s",
+            symbol, exc,
+        )
+        return None
+    return pd.DataFrame([dict(r) for r in rows])
+
+
 # ── Router ────────────────────────────────────────────────────────────────
 
 # Templates dir is repo-root/templates; resolved relative to this file so the
@@ -530,6 +572,11 @@ async def get_forecast(
         # 6 bars × bar_minutes × 60s + 60s headroom = ≥4 complete bars
         # after the in-flight drop, plenty for lag3 + cross-asset join.
         lookback = max(_FORECAST_LOOKBACK_SECONDS, 6 * bm * 60 + 60)
+    elif fs == "microstructure_v3":
+        # T.23.b: same lookback as base — only thing v3 adds vs base
+        # is the futures-side join, which uses the same wall-clock
+        # window. No extra lag features beyond base 18.
+        lookback = _FORECAST_LOOKBACK_SECONDS
     else:
         lookback = _FORECAST_LOOKBACK_SECONDS
     df_seconds = _fetch_recent_seconds(db, symbol, lookback_seconds=lookback)
@@ -588,6 +635,31 @@ async def get_forecast(
             build_latest_inference_bar_microstructure_v2,
         )
         inference = build_latest_inference_bar_microstructure_v2(df_seconds)
+        feature_row = inference[0] if inference is not None else None
+    elif fs == "microstructure_v3":
+        # T.23.b (2026-05-04): pull matching futures seconds for the
+        # same wall-clock window so the 5 futures-basis features can
+        # be computed. Cold-start safe — if futures fetch returns
+        # None (table missing / ingest down), the v3 builder zero-
+        # fills those 5 cols and the prediction still goes through
+        # using only the 18 base spot features. We log a warning so
+        # an operator notices the degraded mode but don't 503 —
+        # serving zero-filled futures > no prediction at all.
+        from app.highfreq.feature_pipeline_microstructure_v3 import (
+            build_latest_inference_bar_microstructure_v3,
+        )
+        fut_seconds = _fetch_recent_futures_seconds(
+            db, symbol, lookback_seconds=lookback,
+        )
+        if fut_seconds is None:
+            logger.warning(
+                "v3 forecast for %s: futures fetch returned None; "
+                "5 futures features will zero-fill",
+                symbol,
+            )
+        inference = build_latest_inference_bar_microstructure_v3(
+            df_seconds, fut_seconds,
+        )
         feature_row = inference[0] if inference is not None else None
     else:
         feature_row = build_latest_feature_row(df_seconds)
@@ -736,6 +808,19 @@ def _predict_for_horizon(
             build_latest_inference_bar_microstructure_v2,
         )
         inference = build_latest_inference_bar_microstructure_v2(df_seconds)
+        feature_row = inference[0] if inference is not None else None
+    elif fs == "microstructure_v3":
+        # T.23.b: same wire-up as the main /forecast — load matching
+        # futures seconds, build the v3 23-col vector, predict.
+        from app.highfreq.feature_pipeline_microstructure_v3 import (
+            build_latest_inference_bar_microstructure_v3,
+        )
+        fut_seconds = _fetch_recent_futures_seconds(
+            db, symbol, lookback_seconds=lookback,
+        )
+        inference = build_latest_inference_bar_microstructure_v3(
+            df_seconds, fut_seconds,
+        )
         feature_row = inference[0] if inference is not None else None
     else:
         feature_row = build_latest_feature_row(df_seconds)

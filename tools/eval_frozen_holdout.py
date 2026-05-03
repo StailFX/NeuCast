@@ -345,12 +345,40 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 ref_df_secs = None
 
+        # microstructure_v3 (T.23.b): load matching futures seconds for
+        # the same wall-clock window so the 5 futures-basis features
+        # can be computed during eval. Cold-start safe — if the load
+        # fails, the v3 pipeline zero-fills those 5 cols so the eval
+        # still runs (with a degraded feature set, naturally).
+        futures_df_secs = None
+        if feature_set_for_eval == "microstructure_v3":
+            try:
+                futures_df_secs = load_seconds(
+                    dsn, symbol=symbol,
+                    since_hours=(args.fallback_days + 1) * 24,
+                    venue="futures",
+                )
+                futures_df_secs = futures_df_secs.loc[
+                    futures_df_secs["ts"] >= cutoff_ts
+                ].copy()
+                logger.info(
+                    "loaded %d %s futures seconds for microstructure_v3 holdout",
+                    len(futures_df_secs), symbol,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "failed to load %s futures seconds for microstructure_v3; "
+                    "5 futures cols will zero-fill: %s", symbol, exc,
+                )
+                futures_df_secs = None
+
         X, y, meta = _make_supervised_for_feature_set(
             df_secs,
             feature_set=feature_set_for_eval,
             bar_minutes=1,
             reference_df_secs=ref_df_secs,
             target_symbol=symbol,
+            futures_df_secs=futures_df_secs,
         )
         n_eligible = len(X)
 
