@@ -149,8 +149,26 @@ def run_pretrain(
     catboost_learning_rate: float = 0.05,
     random_seed: int = 42,
     walk_forward: bool = True,
+    cv_mode: str = "walk_forward",
+    holdout_test_fraction: float = 0.20,
 ) -> PretrainReport:
-    """Load parquet → build supervised → walk-forward CV → fit final."""
+    """Load parquet → build supervised → CV → fit final.
+
+    ``cv_mode`` (release T.15.i):
+    * ``"walk_forward"`` — original behaviour: many small CV folds via
+      ``walk_forward_evaluate``. Slow on millions of bars (26K+ folds
+      at 1m × 3y), but matches the trainer's CV semantics.
+    * ``"holdout"`` — single chronological split: train on first
+      ``1 - holdout_test_fraction`` of bars, test on the last
+      ``holdout_test_fraction``. Fast (one fit), large test sample
+      (236K bars at 1m × 3y), tight CI.
+    * ``"none"`` — skip CV entirely; only fit the final model. Used
+      when this script's job is just to produce the .cbm checkpoint
+      (e.g. when downstream fine-tuning will run its own CV).
+
+    The ``walk_forward=False`` legacy flag is preserved as an alias
+    for ``cv_mode='none'``.
+    """
     from app.highfreq.trainer import (
         WalkForwardConfig, walk_forward_evaluate,
         bootstrap_dir_acc_ci,
@@ -197,13 +215,21 @@ def run_pretrain(
 
     base_rate = float(max(y.mean(), 1.0 - y.mean()))
 
-    # Walk-forward CV (optional — can skip when pretraining on huge
-    # data and we only care about the final fit).
+    # Resolve cv_mode: legacy walk_forward=False == cv_mode='none'.
+    if not walk_forward and cv_mode == "walk_forward":
+        cv_mode = "none"
+    if cv_mode not in ("none", "holdout", "walk_forward"):
+        raise ValueError(
+            f"cv_mode must be 'none' / 'holdout' / 'walk_forward', "
+            f"got {cv_mode!r}"
+        )
+
+    # CV step.
     n_folds = 0
     dir_acc_mean = None
     ci_lo = ci_hi = None
     log_loss_mean = None
-    if walk_forward:
+    if cv_mode == "walk_forward":
         cfg = WalkForwardConfig(
             initial_train_minutes=24 * 60,
             test_fold_minutes=60,
@@ -234,6 +260,63 @@ def run_pretrain(
                 "walk-forward: %d folds, dir_acc=%.4f CI=[%.4f, %.4f] logloss=%.4f",
                 n_folds, dir_acc_mean, ci_lo, ci_hi, log_loss_mean,
             )
+    elif cv_mode == "holdout":
+        # Single chronological split: train on first (1-frac), test on
+        # last frac. Captures the regime-of-deployment honestly: the
+        # test sample is the MOST RECENT data the model saw last —
+        # closest in distribution to live serving.
+        from catboost import CatBoostClassifier
+
+        if not (0.0 < holdout_test_fraction < 1.0):
+            raise ValueError(
+                f"holdout_test_fraction must be in (0, 1), got "
+                f"{holdout_test_fraction}"
+            )
+        n_total = len(X)
+        n_train = int(n_total * (1.0 - holdout_test_fraction))
+        n_test = n_total - n_train
+        if n_test < 50:
+            raise RuntimeError(
+                f"holdout test would be only {n_test} bars — too small "
+                f"to trust. Need either more data or smaller fraction."
+            )
+        logger.info(
+            "holdout split: %d train + %d test (test_fraction=%.2f)",
+            n_train, n_test, holdout_test_fraction,
+        )
+        clf_cv = CatBoostClassifier(
+            iterations=catboost_iterations,
+            depth=catboost_depth,
+            learning_rate=catboost_learning_rate,
+            loss_function="Logloss",
+            thread_count=2,
+            random_seed=random_seed,
+            verbose=False,
+            allow_writing_files=False,
+        )
+        clf_cv.fit(X.iloc[:n_train].values, y.iloc[:n_train].values)
+        proba = clf_cv.predict_proba(X.iloc[n_train:].values)[:, 1]
+        y_pred = (proba >= 0.5).astype(np.int8)
+        y_true = y.iloc[n_train:].to_numpy()
+        dir_acc_mean = float((y_pred == y_true).mean())
+        n_folds = 1  # one holdout split == "1 fold"
+        # Wilson-style CI is tighter on this large n than bootstrap,
+        # but bootstrap is consistent with what the rest of the
+        # pipeline reports. Use bootstrap so cross-experiment numbers
+        # are comparable.
+        _, ci_lo, ci_hi = bootstrap_dir_acc_ci(
+            y_true, y_pred, seed=random_seed,
+        )
+        # log-loss on the holdout test partition.
+        eps = 1e-7
+        p = np.clip(proba, eps, 1.0 - eps)
+        log_loss_mean = float(
+            -np.mean(y_true * np.log(p) + (1 - y_true) * np.log(1 - p))
+        )
+        logger.info(
+            "holdout: dir_acc=%.4f CI=[%.4f, %.4f] logloss=%.4f n_test=%d",
+            dir_acc_mean, ci_lo, ci_hi, log_loss_mean, n_test,
+        )
 
     # Final fit on FULL data — this is the pre-trained checkpoint.
     weights_path: str | None = None
@@ -290,8 +373,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--depth", type=int, default=5)
     p.add_argument("--learning-rate", type=float, default=0.05)
     p.add_argument("--no-walk-forward", action="store_true",
-                   help="skip walk-forward CV (faster — useful when "
-                        "you just want the .cbm checkpoint)")
+                   help="legacy alias for --cv-mode none. Skip CV "
+                        "entirely; only fit + save .cbm.")
+    p.add_argument(
+        "--cv-mode", default="walk_forward",
+        choices=("none", "holdout", "walk_forward"),
+        help="how to score the pretrained model. "
+             "'walk_forward' (default) fires the trainer's k-fold "
+             "walk-forward CV — slow on millions of bars (26K+ folds "
+             "at 1m × 3y). "
+             "'holdout' does ONE chronological train/test split "
+             "(default 80/20) — fast, large test sample, tight CI. "
+             "'none' skips CV.",
+    )
+    p.add_argument(
+        "--holdout-test-fraction", type=float, default=0.20,
+        help="fraction of bars used as holdout test set (default 0.20). "
+             "Test partition is chronologically the LAST X% — closest "
+             "in distribution to live serving.",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log-level", default=os.getenv("LOG_LEVEL", "INFO"))
     args = p.parse_args(argv)
@@ -324,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
         catboost_learning_rate=args.learning_rate,
         random_seed=args.seed,
         walk_forward=not args.no_walk_forward,
+        cv_mode=args.cv_mode,
+        holdout_test_fraction=args.holdout_test_fraction,
     )
     report_path.write_text(report.to_json())
     logger.info(
