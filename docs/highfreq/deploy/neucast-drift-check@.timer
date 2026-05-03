@@ -1,0 +1,16 @@
+[Unit]
+Description=NeuCast HF feature-drift schedule for %I — hourly
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# Hourly at minute 0 with a 5-min randomised delay (spreads the 3
+# symbols across :00..:05 so we don't spike load with concurrent KS
+# computations).
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+
+# Implicit Unit=neucast-drift-check@%i.service.
+
+[Install]
+WantedBy=timers.target

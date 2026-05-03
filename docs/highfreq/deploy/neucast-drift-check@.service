@@ -1,0 +1,38 @@
+[Unit]
+Description=NeuCast HF feature-drift KS check for %I
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=PYTHONPATH=/opt/neucast
+
+# %I = unescaped instance name (e.g. "btcusdt"). Trainer uppercases
+# --symbol internally; symbol convention is uppercase in the DB but
+# lowercase in artifact filenames.
+ExecStart=/opt/neucast/venv/bin/python -m tools.drift_check \
+    --symbol %I \
+    --recent-hours 6 \
+    --reference-hours 24 \
+    --threshold 0.15
+
+# Drift detection failing is itself NOT a production-stopping
+# event. Both exit codes are normal:
+#   0 = no drift detected
+#   1 = drift detected (TG alert was sent)
+#   2 = config error
+SuccessExitStatus=0 1
+
+MemoryMax=1500M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=300
+
+[Install]
+# Activated by the .timer template, not socket / multi-user.
