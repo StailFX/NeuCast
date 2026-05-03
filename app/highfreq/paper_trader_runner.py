@@ -225,6 +225,22 @@ _SELECT_RECENT_ROWS_SQL = """
      ORDER BY ts ASC
 """
 
+# T.23.b (2026-05-04): futures-side per-second fetch for the
+# microstructure_v3 inference path. Carries the two extra columns
+# (mark_price + funding_rate) the v3 feature pipeline consumes.
+# Backwards compatible — only called when the loaded model's
+# feature_set is microstructure_v3, so existing v1/v2 trader behaviour
+# is unchanged.
+_SELECT_RECENT_FUTURES_ROWS_SQL = """
+    SELECT ts, symbol, ofi, microprice, depth_imb,
+           spread_bps, trade_imb, n_updates,
+           mark_price, funding_rate
+      FROM highfreq_futures_ofi_1s
+     WHERE symbol = $1
+       AND ts > now() - make_interval(secs => $2)
+     ORDER BY ts ASC
+"""
+
 # INSERT for closed paper trades.
 _INSERT_PAPER_TRADE_SQL = """
     INSERT INTO paper_trades (
@@ -256,6 +272,45 @@ async def fetch_recent_seconds(
         return pd.DataFrame(columns=[
             "ts", "symbol", "ofi", "microprice", "depth_imb",
             "spread_bps", "trade_imb", "n_updates",
+        ])
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+async def fetch_recent_futures_seconds(
+    pool: asyncpg.Pool, symbol: str, lookback_seconds: int = LOOKBACK_SECONDS,
+) -> pd.DataFrame:
+    """Fetch the last ``lookback_seconds`` of 1-s rows from the FUTURES
+    table for ``symbol`` (T.23.b, 2026-05-04).
+
+    Selects the same per-second columns as the spot helper PLUS
+    ``mark_price`` and ``funding_rate`` which are the columns the v3
+    feature pipeline consumes (basis_bps, mark_premium, funding_bps).
+
+    Returns an empty DataFrame on no rows (NEVER None) so callers
+    have a uniform contract — the v3 inference pipeline is cold-
+    start safe and will zero-fill the 5 futures cols when the frame
+    is empty.
+    """
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                _SELECT_RECENT_FUTURES_ROWS_SQL, symbol, lookback_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Distinguish from spot fetch — futures table may not exist
+            # yet on a fresh deploy or the funding poller may be down.
+            # Log + return empty so the v3 zero-fill path engages.
+            logger.warning(
+                "futures recent-rows fetch failed for %s: %s — "
+                "v3 will zero-fill the 5 futures cols this tick",
+                symbol, exc,
+            )
+            rows = []
+    if not rows:
+        return pd.DataFrame(columns=[
+            "ts", "symbol", "ofi", "microprice", "depth_imb",
+            "spread_bps", "trade_imb", "n_updates",
+            "mark_price", "funding_rate",
         ])
     return pd.DataFrame([dict(r) for r in rows])
 
@@ -379,6 +434,23 @@ async def process_one_tick(
             build_latest_inference_bar_microstructure_v2,
         )
         inference = build_latest_inference_bar_microstructure_v2(df)
+    elif fs == "microstructure_v3":
+        # T.23.b (2026-05-04): base microstructure + 5 futures-basis
+        # cols (basis_bps, mark_premium, funding_bps, ofi_diff,
+        # basis_change). Pulls matching futures seconds for the same
+        # wall-clock window. Cold-start safe — if the futures fetch
+        # returns empty, the v3 builder zero-fills those 5 cols and
+        # the prediction still goes through with the 18 base cols
+        # carrying real values.
+        from app.highfreq.feature_pipeline_microstructure_v3 import (
+            build_latest_inference_bar_microstructure_v3,
+        )
+        fut_df = await fetch_recent_futures_seconds(
+            pool, symbol, lookback_seconds=lookback,
+        )
+        inference = build_latest_inference_bar_microstructure_v3(
+            df, fut_df if not fut_df.empty else None,
+        )
     else:
         inference = build_latest_inference_bar(df)
     if inference is None:

@@ -1137,8 +1137,7 @@ End-to-end smoke test confirmed the predictor loads v3 cleanly:
 ``LivePredictor(weights_path=v3_canary/ethusdt_1m.cbm).feature_set()``
 returns ``microstructure_v3``, the 23-col list, and reads the
 calibrated dir_acc/p-value from the metrics.json. The serving path
-is wired and tested. **What's left is the operational decision
-to promote.**
+is wired and tested. **Promoted to production in T.23.c (below).**
 
 ### Frozen-holdout eval: deferred to T.23.c
 
@@ -1186,5 +1185,123 @@ holdout." The defence narrative is honest about this gap.
   +v3 branches in both forecast paths)
 * Eval: ``tools/eval_frozen_holdout.py`` (+v3 dispatch)
 * Tests: ``tests/test_feature_pipeline_microstructure_v3.py`` (12)
+
+---
+
+## T.23.c — Production promote of v3 (canary → all 3 live)
+
+**Date:** 2026-05-04
+**Status:** ✅ deployed live, paper-traders trading, drift fix landed
+**Hypothesis:** With the v3 inference path tested + 3 canary models
+trained, the operational decision is "promote." Paper-trader is
+the ground-truth measurement; promoting all 3 simultaneously gives
+us 3 parallel live tests rather than serialised single-symbol.
+
+### Promotion sequence
+
+1. ``app.highfreq.model_archive.archive_existing`` snapshotted all 3
+   v1 weights (timestamp 2026-05-03T22:02:36Z) — rollback via
+   ``tools/rollback_model.py --symbol BTCUSDT`` is one CLI away.
+2. ``cp v3_canary/<sym>_1m.{cbm,metrics.json,calibrator.pkl}
+    weights/highfreq/<sym>_1m.{...}`` for all 3 symbols.
+3. ``systemctl restart neucast-highfreq-web.service`` to flush the
+   predictor singletons → next /forecast call rebuilt from disk.
+4. ``systemctl restart neucast-paper-trader@<sym>.service`` × 3 to
+   make the runners read the new metrics + .cbm.
+5. systemd drop-in updated:
+   ``/etc/systemd/system/neucast-highfreq-trainer@<sym>.service.d/
+    feature-set.conf`` replaced with v3 invocation
+   (``--feature-set microstructure_v3 --since-hours 96
+    --frozen-holdout-days 0``) for all 3 symbols. **Critical**: without
+   this, tomorrow's 04:00 UTC trainer would have rebuilt v1 over the
+   top of v3. Tracked file:
+   ``docs/highfreq/deploy/neucast-highfreq-trainer-v3.feature-set.conf.example``.
+
+### Bugs surfaced + fixed during promote
+
+* **Paper-trader had no v3 dispatch.** The ``process_one_tick``
+  branch table covered microstructure / long_horizon / cross_asset
+  / microstructure_v2, but fell through to the legacy 18-col path
+  for v3. CatBoost raised ``Feature 18 is present in model but not
+  in pool`` on every tick. Fixed by adding
+  ``fetch_recent_futures_seconds`` helper + a ``microstructure_v3``
+  branch in ``process_one_tick``. Pinned by 3 new tests.
+* **Drift detector reference window was 3-days-stale.** Earlier
+  drift JSONs reported severity=high with KS=0.95+ on
+  ``spread_bps_mean``. Root cause: ``drift_check.py`` read the
+  model's ``holdout_cutoff_iso`` from metrics.json as the END of
+  the reference window, and the v1 cutoff was 2026-04-30T10:09 (3
+  days old). Reference vs recent comparison was effectively
+  "3-days-ago vs last-hour" which always shows huge drift on
+  fast-moving features. Fix: explicit ``--reference-mode
+  {rolling,training_cutoff,auto}`` flag with ``rolling`` as the
+  default for v3 (since v3 metrics has no holdout_cutoff). Result:
+  KS dropped from 0.95+ to 0.40 on all 3 symbols — still high
+  (genuine intra-day variation), but no longer dominated by stale-
+  reference artifact.
+* **Drift check was zero-filling v3 futures cols.** Drift check
+  used ``_make_supervised_for_feature_set`` without
+  ``futures_df_secs``, so for v3 the 5 futures cols zero-filled,
+  producing KS=0 on them uniformly. Fix: drift_check now loads
+  matching futures seconds for v3 too. After this,
+  ``funding_bps_mean`` lit up at KS=1.0 on BTC — funding rate is
+  piecewise-constant on 8h boundaries and crossed a step inside
+  the comparison window. Working as intended; the drift-driven
+  retrain timer will pick it up after cooldown.
+
+### Live verification (2026-05-04, ~22:08 UTC)
+
+| symbol  | live prob_up | dir_acc (training) | n_features | calibrated |
+|---------|--------------|---------------------|------------|------------|
+| BTCUSDT | 0.866        | 0.8121              | 23         | yes        |
+| ETHUSDT | 0.204        | 0.7915              | 23         | yes        |
+| BNBUSDT | 0.281        | 0.8210              | 23         | yes        |
+
+Paper-trader BTC opened a long @ 79030 immediately after restart
+(prob_up=0.92, qty=0.000527, fee=0.031). ETH and BNB were sitting
+on short signals — divergent across symbols, which is plausible
+given v3 distinguishes per-symbol regimes via its futures-basis
+features.
+
+### What we're watching for in the next 24h
+
+* **Live dir_acc** via ``/api/highfreq/realized_accuracy``. If it
+  holds ≥ 0.55 (the v1 baseline) on ≥ 100 closed trades, we're
+  good. If it crashes to 0.50 or below, that's evidence the
+  offline +25pp was regime-overfit and we rollback.
+* **paper_trades P&L** via ``/api/highfreq/cumulative_pnl``. The
+  defence story is dir_acc, but P&L (after fees, after slippage
+  via the paper-trader's micro spread model) is the real-world
+  test.
+* **Drift** via the hourly cron. Funding-rate steps may cause
+  ``high`` severity blips even on a healthy v3; the drift-driven
+  retrain has 6h cooldown so we don't thrash.
+
+### Rollback plan if v3 collapses
+
+::
+
+    # 1. Stop trading
+    sudo systemctl stop neucast-paper-trader@btcusdt.service
+    # 2. Restore v1 weights (CLI archives current first, then
+    # copies the latest pre-v3 archive snapshot back).
+    sudo -u stailfx /opt/neucast/venv/bin/python \
+        -m tools.rollback_model --symbol BTCUSDT
+    # 3. Revert the systemd drop-in (microstructure / cross_asset
+    # config from before T.23.c).
+    # 4. Restart paper-trader.
+    sudo systemctl start neucast-paper-trader@btcusdt.service
+
+### Files
+
+* Paper-trader: ``app/highfreq/paper_trader_runner.py``
+  (+_SELECT_RECENT_FUTURES_ROWS_SQL, +fetch_recent_futures_seconds,
+  +v3 dispatch in process_one_tick)
+* Drift check: ``tools/drift_check.py`` (+--reference-mode flag,
+  +futures-seconds load for v3, +mode tag in JSON output)
+* Trainer drop-in template:
+  ``docs/highfreq/deploy/neucast-highfreq-trainer-v3.feature-set.conf.example``
+* Tests: ``tests/test_highfreq_paper_trader_runner.py`` (+3:
+  fetch_recent_futures_seconds happy / empty / DB-error paths)
 
 ---

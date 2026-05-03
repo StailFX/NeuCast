@@ -1,0 +1,16 @@
+# T.23.c per-symbol drop-in template (place at
+# /etc/systemd/system/neucast-highfreq-trainer@<sym>.service.d/feature-set.conf
+# for each of btcusdt, ethusdt, bnbusdt; swap %i with the symbol).
+#
+# When futures-OFI table reaches ≥ 14 days of depth, bump
+# --since-hours to 240 (= 10 days, leaving 3-day holdout slack)
+# and --frozen-holdout-days to 3.
+[Service]
+ExecStart=
+ExecStart=/opt/neucast/venv/bin/python -m app.highfreq.trainer \
+    --symbol %I \
+    --since-hours 96 \
+    --feature-set microstructure_v3 \
+    --out /opt/neucast/weights/highfreq/%i_1m.cbm \
+    --report /opt/neucast/weights/highfreq/%i_1m_metrics.json \
+    --frozen-holdout-days 0

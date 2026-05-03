@@ -197,6 +197,69 @@ def test_fetch_recent_seconds_returns_populated_df():
     assert (df["symbol"] == "BTCUSDT").all()
 
 
+# ──────────────────── fetch_recent_futures_seconds (T.23.b) ───────────────
+
+
+def test_fetch_recent_futures_seconds_empty_returns_typed_empty_frame():
+    """Cold start: futures table has no rows in the lookback window.
+    Helper MUST return an empty DataFrame with the FULL 10-col shape
+    (incl. mark_price + funding_rate) so the v3 inference builder's
+    zero-fill path engages cleanly."""
+    from app.highfreq.paper_trader_runner import fetch_recent_futures_seconds
+    pool = _mock_pool_returning([])
+    df = asyncio.run(fetch_recent_futures_seconds(pool, "BTCUSDT"))
+    assert df.empty
+    assert list(df.columns) == [
+        "ts", "symbol", "ofi", "microprice", "depth_imb",
+        "spread_bps", "trade_imb", "n_updates",
+        "mark_price", "funding_rate",
+    ]
+
+
+def test_fetch_recent_futures_seconds_handles_db_error_returns_empty():
+    """If the futures table doesn't exist (early deploy / cold cluster)
+    or the funding poller is offline, we MUST log + return empty frame
+    rather than crash the runner. Cold-start safety: missing futures
+    just degrades to v1-style features via the v3 zero-fill path."""
+    from app.highfreq.paper_trader_runner import fetch_recent_futures_seconds
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=Exception("table missing"))
+    acquire_cm = MagicMock()
+    acquire_cm.__aenter__ = AsyncMock(return_value=conn)
+    acquire_cm.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=acquire_cm)
+    df = asyncio.run(fetch_recent_futures_seconds(pool, "BTCUSDT"))
+    # Empty frame with the full schema — runner can pass it to v3
+    # builder which will zero-fill.
+    assert df.empty
+    assert "mark_price" in df.columns
+    assert "funding_rate" in df.columns
+
+
+def test_fetch_recent_futures_seconds_returns_populated_df():
+    """Happy path: futures rows present, helper returns them with
+    the 10-col schema including mark_price + funding_rate."""
+    from app.highfreq.paper_trader_runner import fetch_recent_futures_seconds
+    rows = []
+    t0 = pd.Timestamp("2026-05-04T00:00:00Z")
+    for s in range(30):
+        rows.append({
+            "ts": t0 + pd.Timedelta(seconds=s),
+            "symbol": "BTCUSDT",
+            "ofi": 0.1, "microprice": 79000.5,
+            "depth_imb": 0.05, "spread_bps": 0.9,
+            "trade_imb": 0.01, "n_updates": 5,
+            "mark_price": 79002.0, "funding_rate": 0.0001,
+        })
+    pool = _mock_pool_returning(rows)
+    df = asyncio.run(fetch_recent_futures_seconds(pool, "BTCUSDT"))
+    assert not df.empty
+    assert len(df) == 30
+    assert df["mark_price"].iloc[0] == pytest.approx(79002.0)
+    assert df["funding_rate"].iloc[0] == pytest.approx(0.0001)
+
+
 # ───────────────────────── write_paper_trade ─────────────────────────
 
 

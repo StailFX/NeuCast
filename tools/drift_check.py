@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 def _build_minute_features(
     df_secs, *, feature_set: str, bar_minutes: int,
     target_symbol: str, reference_df_secs=None,
+    futures_df_secs=None,
 ):
     """Run the supervised pipeline (no target) just to get the
     feature DataFrame matching what the trainer fit on.
@@ -44,6 +45,12 @@ def _build_minute_features(
     For drift, we only need the feature columns — the target
     isn't relevant. We piggyback on ``_make_supervised_for_feature_set``
     and ignore the (y, meta) outputs.
+
+    ``futures_df_secs`` (T.23.b extension): when feature_set is
+    ``microstructure_v3``, the supervised builder needs futures
+    seconds at the same wall-clock window so the 5 futures-basis
+    cols can be computed. Without it those cols zero-fill and the
+    drift KS on them is uniformly 0 (uninformative).
     """
     from app.highfreq.trainer import _make_supervised_for_feature_set
 
@@ -53,6 +60,7 @@ def _build_minute_features(
         bar_minutes=bar_minutes,
         reference_df_secs=reference_df_secs,
         target_symbol=target_symbol,
+        futures_df_secs=futures_df_secs,
     )
     return X, meta
 
@@ -77,6 +85,22 @@ def main(argv: list[str] | None = None) -> int:
                    help="size of trainer-reference window in hours")
     p.add_argument("--recent-hours", type=float, default=1.0,
                    help="size of recent serve window in hours")
+    p.add_argument(
+        "--reference-mode", choices=("rolling", "training_cutoff", "auto"),
+        default="auto",
+        help="how to position the reference window's right edge:\n"
+             "  rolling — always [now - recent_hours - reference_hours, "
+             "now - recent_hours] (the LAST 24h before this hour, always "
+             "fresh). Use this when you want to detect intra-day regime "
+             "variation.\n"
+             "  training_cutoff — pin to the model's metrics.json "
+             "holdout_cutoff_iso. Use this to detect drift WRT the data "
+             "the model was trained on (slow-moving, may be stale).\n"
+             "  auto (default) — training_cutoff if metrics has it, else "
+             "rolling. (T.22-extension fix, 2026-05-04: prior behaviour "
+             "was 'training_cutoff with rolling fallback' but the silent "
+             "fallback hid stale-reference bugs — now mode is explicit.)",
+    )
     p.add_argument("--out", default=None,
                    help="JSON output path; default "
                         "weights/highfreq/<sym>_drift.json")
@@ -113,12 +137,26 @@ def main(argv: list[str] | None = None) -> int:
     bar_minutes = int(metrics.get("bar_minutes", 1))
     cutoff_iso = metrics.get("holdout_cutoff_iso")
 
-    # Reference window: from cutoff back ``reference_hours``. If
-    # holdout is disabled, fall back to "from the END of training
-    # data" which we approximate as ``now - reference_hours - 1h``.
-    if cutoff_iso:
+    # Reference window: explicit mode selection (T.22-extension fix
+    # 2026-05-04). Earlier code did ``training_cutoff with silent
+    # rolling fallback`` — but when an old model's metrics.json carried
+    # a 3-day-stale holdout_cutoff_iso, the reference window was
+    # 3-days-old vs 1-hour-recent, producing KS=0.95+ false positives
+    # on stable features like ``spread_bps_mean``. Now the operator
+    # picks the policy explicitly via --reference-mode.
+    mode = args.reference_mode
+    if mode == "auto":
+        mode = "training_cutoff" if cutoff_iso else "rolling"
+    if mode == "training_cutoff":
+        if not cutoff_iso:
+            logger.error(
+                "--reference-mode=training_cutoff requested but metrics.json "
+                "lacks holdout_cutoff_iso. Use --reference-mode=rolling or "
+                "retrain with --frozen-holdout-days >= 1."
+            )
+            return 2
         ref_end = datetime.fromisoformat(cutoff_iso)
-    else:
+    else:  # rolling
         ref_end = datetime.now(tz=timezone.utc) - timedelta(hours=args.recent_hours)
     ref_start = ref_end - timedelta(hours=args.reference_hours)
 
@@ -155,14 +193,47 @@ def main(argv: list[str] | None = None) -> int:
         ref_btc = df_btc[(df_btc["ts"] >= ref_start) & (df_btc["ts"] < ref_end)].copy()
         rec_btc = df_btc[(df_btc["ts"] >= rec_start) & (df_btc["ts"] <= rec_end)].copy()
 
+    # microstructure_v3 needs futures seconds at the same windows so
+    # the basis_bps / mark_premium / funding_bps cols can be computed.
+    # Without this, the 5 futures cols zero-fill in BOTH ref and recent
+    # → KS=0 on those cols → drift only detects the 18 base cols.
+    ref_fut, rec_fut = None, None
+    if feature_set == "microstructure_v3":
+        try:
+            df_fut = load_seconds(
+                dsn, symbol=sym, since_hours=union_hours, venue="futures",
+            )
+            df_fut["ts"] = __import__("pandas").to_datetime(
+                df_fut["ts"], utc=True,
+            )
+            ref_fut = df_fut[
+                (df_fut["ts"] >= ref_start) & (df_fut["ts"] < ref_end)
+            ].copy()
+            rec_fut = df_fut[
+                (df_fut["ts"] >= rec_start) & (df_fut["ts"] <= rec_end)
+            ].copy()
+            logger.info(
+                "loaded %d ref futures seconds, %d recent futures seconds (v3)",
+                len(ref_fut), len(rec_fut),
+            )
+        except Exception:
+            logger.warning(
+                "failed to load %s futures seconds for v3 drift; "
+                "5 futures cols will zero-fill (KS will be 0 on them)",
+                sym, exc_info=True,
+            )
+            ref_fut, rec_fut = None, None
+
     # Build features for both windows.
     X_ref, _ = _build_minute_features(
         df_ref_secs, feature_set=feature_set, bar_minutes=bar_minutes,
         target_symbol=sym, reference_df_secs=ref_btc,
+        futures_df_secs=ref_fut,
     )
     X_rec, _ = _build_minute_features(
         df_rec_secs, feature_set=feature_set, bar_minutes=bar_minutes,
         target_symbol=sym, reference_df_secs=rec_btc,
+        futures_df_secs=rec_fut,
     )
 
     if X_ref.empty or X_rec.empty:
@@ -182,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         "start": ref_start.isoformat(),
         "end": ref_end.isoformat(),
         "n_bars": int(len(X_ref)),
+        "mode": mode,  # rolling | training_cutoff
     }
     payload["recent_window"] = {
         "start": rec_start.isoformat(),
