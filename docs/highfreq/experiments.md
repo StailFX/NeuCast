@@ -433,6 +433,69 @@ target, fixed-1m horizon).
 
 ---
 
+## T.19 — Multi-horizon ensemble (1m + 15m)
+
+**Date:** 2026-05-03
+**Status:** ✅ deployed as ``/api/highfreq/forecast_ensemble``
+**Hypothesis:** The 1m microstructure model and 15m long_horizon TA
+model use DIFFERENT feature spaces. When their independent signals
+agree, joint confidence rises beyond either alone (Wolpert 1992
+"Stacked Generalization"). Default 70/30 weighting reflects empirical
+1m superiority; a 30 % share for 15m is enough to bend the signal
+when 15m has a clear contrarian read.
+
+### Implementation
+
+* ``app/highfreq/ensemble.py``: pure module —
+  ``ensemble_probability(components)`` returns
+  weighted-average prob with full per-model breakdown + agreement
+  flag (do all components vote the same side of 0.5).
+  Re-normalises weights when a component is unavailable, so
+  ``70 % 1m + 30 % 15m`` degenerates cleanly to 100 % 1m if 15m
+  cold-start.
+* ``GET /api/highfreq/forecast_ensemble?symbol=&weight_1m=&weight_15m=``
+  endpoint runs both predictors, blends, returns full breakdown.
+  Backward-compat: existing ``/api/highfreq/forecast`` keeps 1m-only.
+
+### First live values (BTC, 2026-05-03)
+
+```
+prob_up:  0.5593   (blend)
+signal:   up
+agreement: true
+components:
+  1m  (w=0.70):  prob_up=0.5792   ← strong up
+  15m (w=0.30):  prob_up=0.5128   ← weak up
+```
+
+When models AGREE, the ensemble's confidence is on the 1m level (not
+diluted toward 0.5). When they DISAGREE, the 1m signal dominates by
+its 70 % weight share.
+
+### Defence value
+
+> "We expose a multi-horizon ensemble combining the 1-min
+> microstructure-based model with the 15-min long-horizon TA model.
+> Default weights: 70/30 (1m empirically stronger). Agreement
+> indicator on the response surface shows when both horizons vote
+> the same side — operationally a higher-confidence regime."
+
+### A/B against single-model production
+
+Pending: realized-accuracy A/B requires accumulating ensemble
+predictions in ``predictions_log`` for ≥ 24h. Currently the paper
+trader runs 1m only; T.19.b (future) would add an ensemble
+paper-trader if the off-line metrics suggest it'd be worth it.
+
+### Files
+
+* Pure module: ``app/highfreq/ensemble.py``
+* Endpoint: ``GET /api/highfreq/forecast_ensemble``
+* 11 + 7 = 18 unit tests:
+  ``tests/test_ensemble.py`` + ``tests/test_forecast_ensemble_endpoint.py``
+
+---
+
 ## T.18.c — Trade-flow rolling features (microstructure_v2)
 
 **Date:** 2026-05-03

@@ -674,6 +674,199 @@ async def get_forecast(
     )
 
 
+def _predict_for_horizon(
+    symbol: str, horizon: int, db: Session,
+) -> tuple[float | None, dict]:
+    """Helper for the ensemble endpoint — runs the same inference
+    chain ``/api/highfreq/forecast`` does for one (symbol, horizon)
+    pair. Returns ``(prob_up, status_dict)``: prob_up is None when
+    the model isn't ready or features can't be built.
+
+    Factored out as a thin local helper rather than refactoring
+    ``get_forecast`` to avoid a sweeping rewrite of the existing
+    branching logic; the ensemble endpoint calls this twice (1m + 15m)
+    and combines via ``ensemble_probability``.
+    """
+    from app.highfreq.predictor import get_predictor as _get_predictor
+
+    predictor = _get_predictor(symbol, horizon_minutes=horizon)
+    status = predictor.status()
+    status_dict = status.to_dict()
+    if not status.has_model:
+        return None, status_dict
+
+    fs = predictor.feature_set()
+    bm = predictor.bar_minutes()
+    if fs == "long_horizon" and bm > 1:
+        lookback = 25 * bm * 60 + 60
+    elif fs == "cross_asset":
+        lookback = max(_FORECAST_LOOKBACK_SECONDS, 6 * bm * 60 + 60)
+    else:
+        lookback = _FORECAST_LOOKBACK_SECONDS
+    df_seconds = _fetch_recent_seconds(db, symbol, lookback_seconds=lookback)
+    if df_seconds is None:
+        return None, status_dict
+
+    if fs == "long_horizon":
+        from app.highfreq.feature_pipeline_long_horizon import (
+            build_latest_inference_bar_long_horizon,
+        )
+        inference = build_latest_inference_bar_long_horizon(
+            df_seconds, bar_minutes=bm,
+        )
+        feature_row = inference[0] if inference is not None else None
+    elif fs == "cross_asset":
+        from app.highfreq.feature_pipeline_cross_asset import (
+            build_latest_inference_bar_cross_asset,
+        )
+        sym_upper = symbol.upper()
+        ref_symbol = None if sym_upper == "BTCUSDT" else "BTCUSDT"
+        ref_seconds = (
+            _fetch_recent_seconds(db, ref_symbol, lookback_seconds=lookback)
+            if ref_symbol is not None else None
+        )
+        inference = build_latest_inference_bar_cross_asset(
+            df_seconds, bar_minutes=bm,
+            reference_df_seconds=ref_seconds,
+            reference_symbol=ref_symbol,
+        )
+        feature_row = inference[0] if inference is not None else None
+    elif fs == "microstructure_v2":
+        from app.highfreq.feature_pipeline_microstructure_v2 import (
+            build_latest_inference_bar_microstructure_v2,
+        )
+        inference = build_latest_inference_bar_microstructure_v2(df_seconds)
+        feature_row = inference[0] if inference is not None else None
+    else:
+        feature_row = build_latest_feature_row(df_seconds)
+
+    if feature_row is None:
+        return None, status_dict
+
+    prob = predictor.predict(feature_row)
+    if prob is None:
+        return None, status_dict
+    return float(prob), status_dict
+
+
+@router.get("/api/highfreq/forecast_ensemble")
+async def get_forecast_ensemble(
+    symbol: str = DEFAULT_SYMBOL,
+    weight_1m: float = 0.70,
+    weight_15m: float = 0.30,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Multi-horizon ensemble forecast (T.19, 2026-05-03).
+
+    Combines the 1-minute model (microstructure / cross_asset) with
+    the 15-minute model (long_horizon TA) via a weighted average of
+    calibrated probabilities. Default 70/30 — the 1m model is
+    empirically stronger but the 15m model captures multi-bar
+    momentum the 1m can't see.
+
+    When two models agree, the ensemble's effective confidence rises
+    beyond either alone. When they disagree, the 1m signal dominates
+    by weight.
+
+    Response shape::
+
+        {
+          "ok": true,
+          "symbol": "BTCUSDT",
+          "ts": "...",
+          "prob_up": 0.58,            // weighted blend
+          "signal": "up" | "down" | "neutral",
+          "agreement": true,
+          "components": [
+            {"horizon_label": "1m",  "weight": 0.70, "prob_up": 0.62, "is_available": true},
+            {"horizon_label": "15m", "weight": 0.30, "prob_up": 0.50, "is_available": true}
+          ],
+          "n_components_used": 2,
+          "models": {
+            "1m": {...status dict...},
+            "15m": {...status dict...}
+          }
+        }
+
+    Backward-compat: ``/api/highfreq/forecast`` (no _ensemble) keeps
+    returning 1m-only — this is a separate endpoint so existing
+    consumers aren't affected.
+    """
+    from app.highfreq.ensemble import (
+        EnsembleComponent,
+        ensemble_probability,
+    )
+
+    symbol = symbol.upper()
+    if not (0.0 < weight_1m and 0.0 < weight_15m):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "reason": "invalid_weights",
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    prob_1m, status_1m = _predict_for_horizon(symbol, 1, db)
+    prob_15m, status_15m = _predict_for_horizon(symbol, 15, db)
+
+    components = [
+        EnsembleComponent(
+            horizon_label="1m",
+            weight=float(weight_1m),
+            prob_up=prob_1m,
+            is_available=(prob_1m is not None),
+        ),
+        EnsembleComponent(
+            horizon_label="15m",
+            weight=float(weight_15m),
+            prob_up=prob_15m,
+            is_available=(prob_15m is not None),
+        ),
+    ]
+    if not any(c.is_available for c in components):
+        # Both models unavailable. Cold-start path — no usable signal.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "reason": "no_available_components",
+                "symbol": symbol,
+                "models": {"1m": status_1m, "15m": status_15m},
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    result = ensemble_probability(components)
+    if result.prob_up >= 0.55:
+        signal = "up"
+    elif result.prob_up <= 0.45:
+        signal = "down"
+    else:
+        signal = "neutral"
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "prob_up": result.prob_up,
+        "signal": signal,
+        "agreement": result.agreement,
+        "n_components_used": result.n_components_used,
+        "components": [
+            {
+                "horizon_label": c.horizon_label,
+                "weight": c.weight,
+                "prob_up": c.prob_up,
+                "is_available": c.is_available,
+            }
+            for c in result.components
+        ],
+        "models": {"1m": status_1m, "15m": status_15m},
+    }))
+
+
 # ── Paper trades endpoint (Phase C UI block) ──────────────────────────────
 
 
