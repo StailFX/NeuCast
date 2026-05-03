@@ -580,6 +580,15 @@ async def get_forecast(
             reference_symbol=ref_symbol,
         )
         feature_row = inference[0] if inference is not None else None
+    elif fs == "microstructure_v2":
+        # T.18.c: base microstructure + 4 trade-flow rolling features.
+        # Same single-symbol contract as base — no reference seconds.
+        # Needs ≥4 complete bars so lag1 + 3-bar rolling are defined.
+        from app.highfreq.feature_pipeline_microstructure_v2 import (
+            build_latest_inference_bar_microstructure_v2,
+        )
+        inference = build_latest_inference_bar_microstructure_v2(df_seconds)
+        feature_row = inference[0] if inference is not None else None
     else:
         feature_row = build_latest_feature_row(df_seconds)
 

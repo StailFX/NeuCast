@@ -94,11 +94,15 @@ def _resolve_feature_set(feature_set: str, bar_minutes: int) -> str:
     5+ minute bars → long_horizon TA (microstructure decays into noise
     at that scale; OHLC/EMA/RSI capture multi-bar momentum + regime).
     """
+    valid = (
+        "microstructure", "long_horizon", "cross_asset",
+        "microstructure_v2",
+    )
     if feature_set != "auto":
-        if feature_set not in ("microstructure", "long_horizon", "cross_asset"):
+        if feature_set not in valid:
             raise ValueError(
-                f"feature_set must be 'auto' / 'microstructure' / "
-                f"'long_horizon' / 'cross_asset', got {feature_set!r}"
+                f"feature_set must be 'auto' or one of {valid}, "
+                f"got {feature_set!r}"
             )
         return feature_set
     return "microstructure" if bar_minutes <= 1 else "long_horizon"
@@ -156,6 +160,35 @@ def _make_supervised_for_feature_set(
         keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
         targeted = targeted.loc[keep].reset_index(drop=True)
         X = build_long_horizon_features(targeted)[LONG_HORIZON_FEATURE_COLUMNS]
+        y = targeted["y"].astype(np.int8)
+        meta = targeted[
+            ["symbol", "minute", "microprice_close", "return_bps"]
+        ].copy()
+        return X, y, meta
+
+    if resolved == "microstructure_v2":
+        # T.18.c (2026-05-03): base 18 microstructure cols +
+        # 4 trade-flow rolling features. Same supervised contract
+        # as base — just a wider feature matrix.
+        from app.highfreq.feature_pipeline_microstructure_v2 import (
+            MICROSTRUCTURE_V2_FEATURE_COLUMNS,
+            build_microstructure_v2_features,
+        )
+        minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
+        targeted = build_target(
+            minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps,
+        )
+        if targeted.empty:
+            empty_X = pd.DataFrame(columns=MICROSTRUCTURE_V2_FEATURE_COLUMNS)
+            empty_y = pd.Series(dtype=np.int8, name="y")
+            empty_meta = pd.DataFrame(columns=[
+                "symbol", "minute", "microprice_close", "return_bps",
+            ])
+            return empty_X, empty_y, empty_meta
+        keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
+        targeted = targeted.loc[keep].reset_index(drop=True)
+        X = build_microstructure_v2_features(targeted)
+        X = X[MICROSTRUCTURE_V2_FEATURE_COLUMNS]
         y = targeted["y"].astype(np.int8)
         meta = targeted[
             ["symbol", "minute", "microprice_close", "return_bps"]
@@ -1184,7 +1217,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--feature-set", default="auto",
-        choices=("auto", "microstructure", "long_horizon", "cross_asset"),
+        choices=("auto", "microstructure", "long_horizon", "cross_asset", "microstructure_v2"),
         help="feature pipeline. 'auto' (default) picks microstructure "
              "for 1m bars and long_horizon TA for ≥5m. 'cross_asset' "
              "adds BTC reference features to ETH/BNB models — empirically "

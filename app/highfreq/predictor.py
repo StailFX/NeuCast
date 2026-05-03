@@ -438,6 +438,11 @@ class LivePredictor:
             sym = self.weights_path.stem.split("_")[0].upper()
             ref = None if sym == "BTCUSDT" else "BTCUSDT"
             return feature_columns_for(ref)
+        if fs == "microstructure_v2":
+            from app.highfreq.feature_pipeline_microstructure_v2 import (
+                MICROSTRUCTURE_V2_FEATURE_COLUMNS,
+            )
+            return MICROSTRUCTURE_V2_FEATURE_COLUMNS
         return FEATURE_COLUMNS
 
     def _prepare_features(

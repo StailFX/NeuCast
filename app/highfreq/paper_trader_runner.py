@@ -371,6 +371,14 @@ async def process_one_tick(
             reference_df_seconds=ref_df,
             reference_symbol=ref_symbol,
         )
+    elif fs == "microstructure_v2":
+        # T.18.c: base microstructure + 4 trade-flow rolling.
+        # Single-symbol contract; needs ≥4 complete bars for lag1
+        # + 3-bar rolling on the latest row.
+        from app.highfreq.feature_pipeline_microstructure_v2 import (
+            build_latest_inference_bar_microstructure_v2,
+        )
+        inference = build_latest_inference_bar_microstructure_v2(df)
     else:
         inference = build_latest_inference_bar(df)
     if inference is None:
