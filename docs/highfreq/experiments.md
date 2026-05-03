@@ -861,3 +861,200 @@ fixed-at-train-time.
   ``tests/test_forecast_page.py`` (+2 tests)
 
 ---
+
+## T.22 — Drift-driven retrain (closes the feedback loop)
+
+**Date:** 2026-05-04
+**Status:** ✅ deployed (Tokyo systemd timer, every 30 min)
+**Hypothesis:** T.18.b detects feature-distribution drift hourly, but
+the response was manual: SSH to Tokyo, ``systemctl start
+neucast-highfreq-trainer@<sym>``. T.22 closes that loop **with two
+safety rails** — cooldown + severity gate — so a stuck-high drift
+JSON can't trigger a retrain storm.
+
+### Solution
+
+* Pure policy module: ``app/highfreq/drift_retrain_policy.py`` —
+  ``evaluate_drift_retrain_policy(severity, last_train_started_at,
+  cooldown_hours, fire_on_severities)`` returns a frozen
+  ``RetrainDecision`` with ``should_retrain`` + ``reason`` strings.
+  14 unit tests pin every safety-rail branch (warn-no-trigger,
+  cooldown-block, cold-start, boundary cases, normalisation).
+* CLI: ``tools/drift_driven_retrain.py`` — reads
+  ``weights/highfreq/<sym>_drift.json`` for each symbol, looks up
+  the latest ``training_runs.run_started_at``, calls the policy, and
+  if it says trigger executes
+  ``systemctl start neucast-highfreq-trainer@<sym>.service``.
+  12 unit tests cover JSON parsing, dry-run, Prometheus textfile
+  output, systemctl-failure-doesn't-crash. Total: 26 tests.
+* systemd: ``neucast-drift-driven-retrain.{service,timer}`` runs the
+  CLI every 30 min. Idempotent — cooldown rail in the policy
+  guarantees ≥6h between trainer starts even if drift stays high
+  all day.
+* Telemetry: writes
+  ``/var/lib/node_exporter/textfile_collector/drift_retrain.prom``
+  with two metrics:
+  - ``neucast_drift_retrain_decision{symbol,severity}`` — 1/0 gauge.
+  - ``neucast_drift_retrain_hours_since_last{symbol}`` — gauge.
+  Grafana panel can chart cooldown countdown per symbol.
+
+### Live behaviour at deploy time
+
+The drift JSONs were severity=high on all 3 symbols (T.21 finding),
+last training had been 1.7-2.3 h ago (today's 04:00 UTC trainer +
+the per-symbol 04:30 holdout-eval). Policy correctly suppressed all
+3 with ``hours=1.7-2.3 < cooldown=6.0``. Next eligible retrain
+windows: BTC at ~01:42 UTC, ETH at ~02:18 UTC, BNB at ~02:18 UTC.
+This is exactly the desired behaviour — no thrashing on a transient
+"high" reading, but the timer will pick up genuine sustained drift
+within 30 min after the cooldown clears.
+
+### Operator escape hatches
+
+* ``--dry-run`` — evaluate + log decision, do not exec systemctl.
+* ``--cooldown-hours 0`` — disable the rail (Phase 4 retrain-storm
+  testing only; never use in production).
+* ``--severity warn`` (repeatable) — opt-in to retrain on warn too;
+  default is ``--severity high`` only.
+
+### Files
+
+* Pure module: ``app/highfreq/drift_retrain_policy.py``
+* CLI: ``tools/drift_driven_retrain.py``
+* systemd: ``docs/highfreq/deploy/neucast-drift-driven-retrain.{service,timer}``
+* Tests: ``tests/test_drift_retrain_policy.py`` (14),
+  ``tests/test_drift_driven_retrain_cli.py`` (12)
+
+---
+
+## T.24 — Futures-basis features A/B (eval harness)
+
+**Date:** 2026-05-03 → 2026-05-04
+**Status:** ✅ confirmed +20pp lift across 3 replications
+**Hypothesis:** The Tokyo box has been ingesting Binance perpetual
+L2 + funding data into ``highfreq_futures_ofi_1s`` since 2026-04-29.
+The classic futures-vs-spot lead-lag (Hasbrouck 1995, Stoll-Whaley
+1990 for equity index futures; replicated in crypto by Makarov-
+Schoar 2020) says the perpetual mark price leads spot microprice by
+seconds-to-minutes. We hypothesised that 5 carefully-chosen basis
+features capture that lead at 1-minute aggregation:
+
+1. ``basis_bps_close`` — (fut - spot) / spot × 1e4
+2. ``basis_change_bps`` — 1-bar diff of basis (lead-lag dynamics)
+3. ``ofi_diff_sum`` — fut OFI − spot OFI (cross-venue divergence)
+4. ``funding_bps_mean`` — funding rate × 1e4 per bar (cost of carry)
+5. ``mark_premium_bps_close`` — (mark - spot) / spot × 1e4
+
+### Solution + harness
+
+* ``tools/futures_basis_eval.py`` — A/B harness loading spot + futures
+  seconds, building both the baseline (microstructure 18 cols) and
+  augmented (microstructure + 5 futures cols) feature matrices at
+  IDENTICAL fold geometry, training CatBoost on each, and reporting
+  the dir_acc delta + permutation p-value.
+* 5 smoke tests in ``tests/test_futures_basis_eval.py`` pin column
+  contract + zero-fill semantics + numerical correctness of basis_bps.
+
+### Three replications
+
+To rule out regime-overfit on the small early eval window, the A/B
+was run three times at different geometries:
+
+| run    | window | initial train | folds (BTC) | BTC Δ      | ETH Δ      | BNB Δ      | perm p   |
+|--------|--------|---------------|-------------|------------|------------|------------|----------|
+| T.24   | 36h    | 10h           | 6           | +0.2583    | +0.2241    | +0.2458    | 0.001    |
+| T.24.b | 96h    | 10h           | 48          | +0.1962    | +0.2094    | +0.2222    | 0.001    |
+| T.24.c | 96h    | **24h** (production) | 33-39 | **+0.2303** | **+0.2179** | **+0.2188** | 0.001 |
+
+The lift is **stable at +20-23pp on all three symbols** across all
+three geometries. Baseline dir_acc 0.59 vs augmented 0.78-0.82.
+``mark_premium_bps_close`` dominates feature importance (~30) — the
+mark-vs-spot premium captures the futures lead directly.
+
+### What this means + what it doesn't
+
+* **Directional lead-lag is real.** Mark price leads spot at the
+  seconds scale; even after 60-second aggregation enough lead
+  survives to give a strong predictive signal.
+* **The +20pp number is offline backtest.** It reflects walk-forward
+  CV with 1h test folds on a 4-day window. Live OOS may be smaller —
+  drift, regime shifts, and the calibration gap between offline
+  CatBoost and live paper-trader can erode part of this. The defence
+  story is "we measured +20pp offline, deployed canary, watched
+  paper-trader for 24h, then expanded" — see T.23.
+* **mark_premium importance ≈ 30 vs ~3-5 for the others.** This is
+  one feature doing most of the work. We deliberately keep the
+  other 4 in the matrix because (a) interpretability (basis_change
+  is human-readable as "is the basis widening?"), (b) regularisation
+  (multiple correlated features stabilise the model under regime
+  shift), (c) ablation safety (we'd notice if mark_premium ever
+  becomes uninformative).
+
+### Files
+
+* Harness: ``tools/futures_basis_eval.py``
+* Tests: ``tests/test_futures_basis_eval.py`` (5)
+* Result JSONs (Tokyo):
+  ``weights/highfreq/futures_basis_eval.json`` (T.24, 36h),
+  ``weights/highfreq/futures_basis_eval_96h.json`` (T.24.b),
+  ``weights/highfreq/futures_basis_eval_prod.json`` (T.24.c)
+
+---
+
+## T.23 — microstructure_v3 feature pipeline (futures-basis production)
+
+**Date:** 2026-05-04
+**Status:** ✅ pipeline + trainer wiring + smoke train; canary deploy pending
+**Hypothesis:** T.24's +20pp lift survives at production training
+geometry → bake the 5 futures-basis features into a new feature_set
+that the trainer can produce, save, and (eventually) the predictor
+can serve from.
+
+### Solution
+
+* New module: ``app/highfreq/feature_pipeline_microstructure_v3.py``
+  - ``microstructure_v3_feature_columns()`` returns the 23-col list
+    (18 base + 5 futures).
+  - ``build_microstructure_v3_features(targeted, futures_seconds_df)``
+    builds the full matrix; cold-start safe (zero-fills the 5 futures
+    cols when futures data is missing — model still trains).
+  - 8 unit tests pin column order, zero-fill semantics, no-NaN/Inf,
+    basis_bps numerical correctness.
+* Trainer wiring: ``app/highfreq/trainer.py``
+  - ``microstructure_v3`` added to ``--feature-set`` choices.
+  - ``run_training`` auto-loads matching futures seconds when
+    ``feature_set=microstructure_v3``.
+  - ``load_seconds(venue="futures")`` now SELECTs ``mark_price`` +
+    ``funding_rate`` (was previously skipped — release S phase 3
+    deferred it).
+* Predictor wire-up DEFERRED to T.23.b: the live ``/forecast`` path
+  doesn't yet load recent futures seconds at inference time. So a
+  ``microstructure_v3``-trained .cbm trains and saves cleanly, but
+  the live paper-trader keeps loading the existing
+  ``microstructure``-trained .cbm. This is **deliberate scoping**
+  for safety — we want to first compare offline v3 metrics against
+  the running production v1, NOT auto-flip live trading on a
+  feature-set we haven't observed in production.
+
+### Defence narrative
+
+> "We hypothesised that perpetual-futures mark price contains
+> directional information about spot price within the next minute.
+> An offline A/B at production walk-forward geometry measured a
+> +20pp dir_acc lift across all 3 symbols (perm p < 0.001 with
+> 31-39 folds, replicated three times at different windows). We
+> built a v3 feature pipeline carrying 5 futures-basis features
+> alongside the base 18 microstructure features. Trainer wiring
+> + zero-fill cold-start handling are tested. Live deployment is
+> staged: train v3 model offline → compare to production v1 on
+> frozen holdout → canary on BTC paper-trader for 24h → expand."
+
+### Files
+
+* Pipeline: ``app/highfreq/feature_pipeline_microstructure_v3.py``
+* Trainer changes: ``app/highfreq/trainer.py`` (load_seconds
+  futures cols, _make_supervised_for_feature_set v3 path,
+  run_training futures-load, CLI choice)
+* Tests: ``tests/test_feature_pipeline_microstructure_v3.py`` (8)
+
+---

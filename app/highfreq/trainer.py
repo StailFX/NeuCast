@@ -96,7 +96,7 @@ def _resolve_feature_set(feature_set: str, bar_minutes: int) -> str:
     """
     valid = (
         "microstructure", "long_horizon", "cross_asset",
-        "microstructure_v2",
+        "microstructure_v2", "microstructure_v3",
     )
     if feature_set != "auto":
         if feature_set not in valid:
@@ -117,6 +117,7 @@ def _make_supervised_for_feature_set(
     neutral_band_bps: float = NEUTRAL_BAND_BPS,
     reference_df_secs: pd.DataFrame | None = None,
     target_symbol: str | None = None,
+    futures_df_secs: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
     """Pipeline-aware (X, y, meta) builder.
 
@@ -160,6 +161,41 @@ def _make_supervised_for_feature_set(
         keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
         targeted = targeted.loc[keep].reset_index(drop=True)
         X = build_long_horizon_features(targeted)[LONG_HORIZON_FEATURE_COLUMNS]
+        y = targeted["y"].astype(np.int8)
+        meta = targeted[
+            ["symbol", "minute", "microprice_close", "return_bps"]
+        ].copy()
+        return X, y, meta
+
+    if resolved == "microstructure_v3":
+        # T.23 (2026-05-04): base 18 microstructure cols + 5
+        # futures-basis cols (basis_bps, basis_change, ofi_diff,
+        # funding_bps, mark_premium_bps). T.24 A/B at production
+        # geometry measured +20pp dir_acc lift. The futures seconds
+        # come in via the new ``futures_df_secs`` param.
+        from app.highfreq.feature_pipeline_microstructure_v3 import (
+            build_microstructure_v3_features,
+            microstructure_v3_feature_columns,
+        )
+        cols_v3 = microstructure_v3_feature_columns()
+        minute_df = aggregate_to_minute(df_secs, bar_minutes=bar_minutes)
+        targeted = build_target(
+            minute_df, horizon=horizon, neutral_band_bps=neutral_band_bps,
+        )
+        if targeted.empty:
+            empty_X = pd.DataFrame(columns=cols_v3)
+            empty_y = pd.Series(dtype=np.int8, name="y")
+            empty_meta = pd.DataFrame(columns=[
+                "symbol", "minute", "microprice_close", "return_bps",
+            ])
+            return empty_X, empty_y, empty_meta
+        keep = (targeted["y"] != -1) & (~targeted["in_neutral_band"])
+        targeted = targeted.loc[keep].reset_index(drop=True)
+        X = build_microstructure_v3_features(
+            targeted, futures_seconds_df=futures_df_secs,
+            bar_minutes=bar_minutes,
+        )
+        X = X[cols_v3]
         y = targeted["y"].astype(np.int8)
         meta = targeted[
             ["symbol", "minute", "microprice_close", "return_bps"]
@@ -714,10 +750,10 @@ def load_seconds(
 
     Returns a DataFrame with the columns required by the
     feature-pipeline aggregator. Futures rows additionally carry
-    ``mark_price`` / ``funding_rate`` / ``next_funding_ms`` — those
-    are NOT selected here (release S phase 3 doesn't yet feed them
-    to the feature pipeline; that's planned for phase 4 via a
-    futures-specific feature module).
+    ``mark_price`` / ``funding_rate`` — these are SELECTED for
+    futures venue only (release T.23, 2026-05-04: needed by the
+    ``microstructure_v3`` feature pipeline which computes basis
+    and mark-premium features against the spot side).
     """
     if venue not in VENUE_TABLES:
         raise ValueError(
@@ -727,13 +763,20 @@ def load_seconds(
 
     from sqlalchemy import create_engine, text  # local import keeps CLI lightweight
 
+    # Futures rows carry two extra columns the spot table doesn't —
+    # they're populated by ``app.highfreq.poll_funding_rate`` and
+    # required by the v3 feature pipeline. Keep the spot SELECT clean
+    # so the existing microstructure / cross_asset / v2 paths are
+    # untouched.
+    extra_cols = ", mark_price, funding_rate" if venue == "futures" else ""
+
     eng = create_engine(database_url, future=True)
     # Table name is interpolated into the query string (NOT bound) —
     # safe because we validated against the whitelist above. Do NOT
     # accept arbitrary venue strings in this function.
     query = text(f"""
         SELECT ts, symbol, ofi, microprice, depth_imb, spread_bps,
-               trade_imb, vpin, n_updates, local_recv_ms
+               trade_imb, vpin, n_updates, local_recv_ms{extra_cols}
         FROM {table}
         WHERE symbol = :symbol
           AND ts >= now() - (:hours * interval '1 hour')
@@ -914,6 +957,32 @@ def run_training(
             )
             reference_df_secs = None
 
+    # microstructure_v3 (T.23, 2026-05-04): also load the same window
+    # of FUTURES seconds (perpetual). Used to compute basis_bps,
+    # mark_premium, ofi_diff, funding_bps over each spot bar. Cold-
+    # start safe — the v3 pipeline zero-fills when futures rows are
+    # missing, so a futures-ingest gap doesn't block training.
+    futures_df_secs: pd.DataFrame | None = None
+    if fs == "microstructure_v3":
+        try:
+            futures_df_secs = load_seconds(
+                database_url,
+                symbol=symbol,
+                since_hours=since_hours,
+                venue="futures",
+            )
+            logger.info(
+                "loaded %d futures seconds for %s (microstructure_v3)",
+                len(futures_df_secs), symbol,
+            )
+        except Exception:
+            logger.warning(
+                "failed to load %s futures seconds for microstructure_v3; "
+                "v3 will zero-fill the 5 futures cols",
+                symbol, exc_info=True,
+            )
+            futures_df_secs = None
+
     minute_df = aggregate_to_minute(df_secs, bar_minutes=bm)
     n_min = len(minute_df)
     logger.info("aggregated to %d %d-minute bars", n_min, bm)
@@ -924,6 +993,7 @@ def run_training(
         bar_minutes=bm,
         reference_df_secs=reference_df_secs,
         target_symbol=symbol,
+        futures_df_secs=futures_df_secs,
     )
     n_min_kept = len(X)
     logger.info(
@@ -1217,7 +1287,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--feature-set", default="auto",
-        choices=("auto", "microstructure", "long_horizon", "cross_asset", "microstructure_v2"),
+        choices=("auto", "microstructure", "long_horizon", "cross_asset",
+                 "microstructure_v2", "microstructure_v3"),
         help="feature pipeline. 'auto' (default) picks microstructure "
              "for 1m bars and long_horizon TA for ≥5m. 'cross_asset' "
              "adds BTC reference features to ETH/BNB models — empirically "

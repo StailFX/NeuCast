@@ -1,0 +1,19 @@
+[Unit]
+# T.22 — fires neucast-drift-driven-retrain.service every 30 min.
+#
+# Why 30 min: the drift cron itself is hourly (HF_DRIFT_RECENT_HOURS=1)
+# but we want a maximum of ~30 min between drift detection and
+# retrain trigger so the production model doesn't ride out a full
+# additional hour of bad-distribution serving. The cooldown rail
+# in the policy module guarantees we don't actually retrain more
+# than once per 6h regardless.
+Description=NeuCast — drift-driven retrain timer (T.22)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

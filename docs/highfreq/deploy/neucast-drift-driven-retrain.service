@@ -1,0 +1,42 @@
+[Unit]
+# T.22 — drift-driven retrain (closes the feedback loop between
+# the hourly drift_check cron and the per-symbol trainer service).
+#
+# Runs every 30 min via the paired .timer. Reads weights/highfreq/
+# <sym>_drift.json, asks app.highfreq.drift_retrain_policy whether
+# to fire, and if yes runs `systemctl start
+# neucast-highfreq-trainer@<sym>.service`. Two safety rails:
+#  • cooldown (default 6h) prevents retrain storms when drift JSON
+#    stays high all day;
+#  • severity gate — only "high" triggers (warn alone is too noisy).
+#
+# Idempotent — re-running the unit on a stuck-high drift JSON just
+# logs "cooldown not yet elapsed" and exits 0.
+Description=NeuCast — drift-driven retrain trigger (T.22)
+After=neucast-highfreq.service
+Wants=neucast-highfreq.service
+
+[Service]
+# Runs as root because `systemctl start neucast-highfreq-trainer@*`
+# requires it. The trainer unit itself runs as stailfx and writes
+# .cbm files owned by stailfx — so root here only fires the start,
+# never touches model weights directly.
+Type=oneshot
+User=root
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+# `sudo -u stailfx` for the actual python invocation so the policy
+# evaluation (which only reads weights + DB) doesn't run as root —
+# defence in depth. The systemctl start at the end is a child of
+# this Python process, so it inherits root. Wait — that's the
+# opposite. We need the python to RUN as root for systemctl.start
+# to succeed. Keeping the python process as root; tests cover
+# that the policy logic itself is read-only and side-effect-free
+# except for the textfile + the systemctl.start call.
+ExecStart=/opt/neucast/venv/bin/python -m tools.drift_driven_retrain \
+    --symbol BTCUSDT --symbol ETHUSDT --symbol BNBUSDT \
+    --cooldown-hours 6 \
+    --textfile-out /var/lib/node_exporter/textfile_collector/drift_retrain.prom
+
+[Install]
+WantedBy=multi-user.target
