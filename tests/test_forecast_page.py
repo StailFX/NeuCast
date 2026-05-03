@@ -148,6 +148,36 @@ def test_forecast_template_has_robustness_block():
     assert "block_bootstrap_ci_low" in html
 
 
+def test_forecast_template_has_reliability_diagram_block():
+    """Release T.16 (2026-05-03) added a calibration / reliability
+    diagram block: per-symbol SVG plotting predicted prob_up vs
+    realized rate with a y=x reference line, plus Brier and ECE
+    single-number summaries. Canonical defence-grade plot for
+    "is the model honest about its uncertainty?".
+    """
+    html = _read_forecast_template()
+    assert 'id="reliability-grid"' in html
+    assert "/api/highfreq/reliability_diagram" in html
+    assert "refreshReliabilityDiagram" in html
+    # The diagonal y=x reference line must be drawn — a reliability
+    # diagram WITHOUT the reference is illegible.
+    assert "ref-line" in html
+    # Brier + ECE single-number summary must appear on each card.
+    assert "Brier=" in html
+    assert "ECE=" in html
+
+
+def test_forecast_template_has_feature_importance_block():
+    """Release T.16 (2026-05-03) added a feature importance block
+    showing top-10 CatBoost gains per symbol. Defence story: see
+    that the model isn't overfit to one feature (long-tail of
+    contributions is healthy)."""
+    html = _read_forecast_template()
+    assert 'id="featimp-grid"' in html
+    assert "/api/highfreq/feature_importance" in html
+    assert "refreshFeatureImportance" in html
+
+
 def test_forecast_template_polls_correct_api_endpoints():
     """Pin the API endpoints the page hits.
 
@@ -164,6 +194,9 @@ def test_forecast_template_polls_correct_api_endpoints():
     assert "/api/highfreq/microprice_history" in html
     assert "/api/highfreq/conditional_accuracy" in html
     assert "/api/highfreq/robustness" in html
+    # T.16 (2026-05-03): reliability diagram + feature importance.
+    assert "/api/highfreq/reliability_diagram" in html
+    assert "/api/highfreq/feature_importance" in html
     # Pin lite=1 query param — without it the page would block 18s on
     # cold cache for live_inventory; release T.3 added the flag.
     assert "lite=1" in html

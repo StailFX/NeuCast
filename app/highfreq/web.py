@@ -1667,6 +1667,164 @@ async def get_conditional_accuracy(
     }))
 
 
+@router.get("/api/highfreq/reliability_diagram")
+async def get_reliability_diagram(
+    db: Session = Depends(_get_db),
+    n_bins: int = 10,
+) -> JSONResponse:
+    """Calibration / reliability curve per symbol.
+
+    For a calibrated probabilistic classifier, ``P(realized=1 | prob=p)``
+    should equal ``p`` for every p ∈ [0, 1]. The reliability diagram
+    plots empirical realized-rate vs predicted-probability across
+    equal-width bins — a perfectly calibrated model lies on the
+    diagonal y = x.
+
+    This is the canonical defence-grade plot for "is your model
+    actually telling the truth about its uncertainty?". A model with
+    high dir_acc but a hump-shaped curve is overconfident; one with
+    low dir_acc but on-diagonal is honest. Both matter for trading.
+
+    Bucketing logic: equal-width bins of ``prob_up`` from 0 to 1.
+    Per bin: count predictions, count realized=1, compute realized
+    rate. Bins with n=0 are returned with realized_rate=null so the
+    UI can plot a gap (don't pretend we have data we don't).
+
+    Brier score and ECE (expected calibration error) per symbol are
+    also returned for the academic-defence-grade single-number
+    summary alongside the curve.
+
+    Returns 200 always; DB error degrades to ``ok=False``.
+    """
+    import math
+
+    if not (3 <= n_bins <= 30):
+        n_bins = 10
+
+    # Pull ALL predictions+realizations per symbol. We stream at the
+    # python level rather than try to bucket in SQL — the bucket
+    # boundaries are clean numerical operations on the prob_up float.
+    sql = text(
+        "SELECT symbol, prob_up, realized_correct, signal "
+        "  FROM predictions_log "
+        " WHERE realized_correct IS NOT NULL"
+    )
+    try:
+        raw_rows = db.execute(sql).all()
+    except (ProgrammingError, OperationalError) as exc:
+        logger.warning("reliability_diagram failed: %s", exc)
+        return JSONResponse(content={
+            "ok": False,
+            "db_status": "unavailable",
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
+    # Build per-symbol bucketing.
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for r in raw_rows:
+        sym = r[0]
+        prob = float(r[1])
+        # ``realized_correct`` is bool; convert to {0, 1} of "realized
+        # direction matched the predicted direction". We need
+        # realized_outcome ∈ {0, 1} where 1 = price went UP. That's
+        # different from realized_correct (which is True if model's
+        # prediction matched). Reconstruct: signal='up' AND correct →
+        # outcome=1; signal='down' AND correct → outcome=0;
+        # signal='up' AND wrong → outcome=0; signal='down' AND wrong
+        # → outcome=1. Skip 'neutral' (no direction was bet on).
+        signal = (r[3] or "").lower()
+        if signal not in ("up", "down"):
+            continue
+        correct = bool(r[2])
+        if signal == "up":
+            outcome = 1 if correct else 0
+        else:  # signal == "down"
+            outcome = 0 if correct else 1
+        # The prob we're calibrating is P(price goes up | x). The
+        # predictor.signal is "up" iff prob_up >= 0.55, "down" iff
+        # prob_up <= 0.45. Either way, prob_up reflects the model's
+        # belief in price-up — that's what we plot vs realized "up"
+        # outcome.
+        if sym not in by_symbol:
+            by_symbol[sym] = {
+                "symbol": sym,
+                "n_total": 0,
+                "buckets": [
+                    {
+                        "bin_idx": i,
+                        "p_lo": i / n_bins,
+                        "p_hi": (i + 1) / n_bins,
+                        "p_mid": (i + 0.5) / n_bins,
+                        "n": 0, "n_pos": 0,
+                        "predicted_mean": 0.0,
+                        "_p_sum": 0.0,
+                    }
+                    for i in range(n_bins)
+                ],
+                "_brier_sum": 0.0,
+            }
+        sym_state = by_symbol[sym]
+        # Bucket index. Clamp prob to [0, 1) so bin = n_bins - 1 for prob = 1.
+        bin_idx = min(n_bins - 1, max(0, int(prob * n_bins)))
+        b = sym_state["buckets"][bin_idx]
+        b["n"] += 1
+        b["n_pos"] += outcome
+        b["_p_sum"] += prob
+        sym_state["n_total"] += 1
+        sym_state["_brier_sum"] += (prob - outcome) ** 2
+
+    # Finalise bucket aggregates + ECE.
+    out_rows: list[dict[str, Any]] = []
+    for sym, state in by_symbol.items():
+        n_total = state["n_total"]
+        if n_total == 0:
+            out_rows.append({
+                "symbol": sym, "n_total": 0,
+                "brier": None, "ece": None,
+                "buckets": [
+                    {
+                        "bin_idx": b["bin_idx"],
+                        "p_mid": b["p_mid"],
+                        "p_lo": b["p_lo"], "p_hi": b["p_hi"],
+                        "n": 0, "realized_rate": None,
+                        "predicted_mean": None,
+                    }
+                    for b in state["buckets"]
+                ],
+            })
+            continue
+        ece = 0.0
+        for b in state["buckets"]:
+            if b["n"] > 0:
+                b["realized_rate"] = b["n_pos"] / b["n"]
+                b["predicted_mean"] = b["_p_sum"] / b["n"]
+                # ECE contribution: (n_bin / n_total) * |realized - predicted|
+                ece += (b["n"] / n_total) * abs(
+                    b["realized_rate"] - b["predicted_mean"]
+                )
+            else:
+                b["realized_rate"] = None
+                b["predicted_mean"] = None
+            # Drop the internal accumulator before returning.
+            b.pop("_p_sum", None)
+        brier = state["_brier_sum"] / n_total
+        out_rows.append({
+            "symbol": sym,
+            "n_total": n_total,
+            "brier": brier,
+            "ece": ece,
+            "buckets": state["buckets"],
+        })
+
+    out_rows.sort(key=lambda r: r["symbol"])
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "n_bins": n_bins,
+        "rows": out_rows,
+    }))
+
+
 @router.get("/api/highfreq/robustness")
 async def get_robustness(
     symbol: str = DEFAULT_SYMBOL,

@@ -742,6 +742,118 @@
       margin-left: 0.4rem; font-weight: 400;
     }
 
+    /* ── Reliability diagram (calibration curve) ── */
+    .reliability-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+    .reliability-card {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem 1.15rem;
+    }
+    .reliability-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.6rem;
+    }
+    .reliability-card-symbol { font-weight: 700; font-size: 0.9rem; }
+    .reliability-card-symbol .mini-icon {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: inline-block; vertical-align: middle; margin-right: 0.45rem;
+    }
+    .reliability-card-symbol .mini-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .reliability-card-symbol .mini-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .reliability-card-symbol .mini-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .reliability-stats {
+      font-size: 0.65rem; color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
+    }
+    .reliability-stats b { color: var(--text); font-weight: 600; }
+    .reliability-svg {
+      width: 100%; height: auto;
+      display: block;
+    }
+    .reliability-svg .ref-line {
+      stroke: rgba(255,255,255,0.18);
+      stroke-width: 1; stroke-dasharray: 3 3; fill: none;
+    }
+    .reliability-svg .axis {
+      stroke: rgba(255,255,255,0.12); stroke-width: 1; fill: none;
+    }
+    .reliability-svg .axis-label {
+      fill: var(--text-dim); font-size: 8px;
+      font-variant-numeric: tabular-nums;
+    }
+    .reliability-svg .curve-line {
+      stroke: var(--green); stroke-width: 2; fill: none;
+      stroke-linejoin: round;
+    }
+    .reliability-svg .curve-dot {
+      fill: var(--green);
+    }
+
+    /* ── Feature importance ── */
+    .featimp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+    .featimp-card {
+      background: var(--bg-card-soft);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem 1.15rem;
+    }
+    .featimp-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.85rem;
+    }
+    .featimp-card-symbol {
+      font-weight: 700; font-size: 0.9rem;
+    }
+    .featimp-card-symbol .mini-icon {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: inline-block; vertical-align: middle; margin-right: 0.45rem;
+    }
+    .featimp-card-symbol .mini-icon.btc { background: linear-gradient(135deg, #f7931a, #ffb84d); }
+    .featimp-card-symbol .mini-icon.eth { background: linear-gradient(135deg, #627eea, #8a96f0); }
+    .featimp-card-symbol .mini-icon.bnb { background: linear-gradient(135deg, #f0b90b, #f8d442); }
+    .featimp-row {
+      display: grid;
+      grid-template-columns: 130px 1fr 36px;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .featimp-name {
+      font-size: 0.7rem; color: var(--text-muted);
+      font-family: 'SF Mono', Menlo, Consolas, monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .featimp-bar {
+      height: 6px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .featimp-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--text-muted), var(--green));
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .featimp-pct {
+      text-align: right;
+      font-size: 0.7rem; color: var(--text);
+      font-weight: 600;
+    }
+
     /* ── Roadmap timeline ── */
     .roadmap {
       display: grid;
@@ -1349,6 +1461,54 @@
       </div>
     </div>
     <div class="conf-grid" id="conf-grid">
+      <!-- filled by JS -->
+    </div>
+  </section>
+
+  <!-- Reliability diagram (calibration curve) -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Калибровка вероятностей</span>
+        <h2>Reliability diagram — модель честна о своей уверенности?</h2>
+        <p class="section-sub">
+          Канонический academic-defence plot. По оси X — что модель сказала
+          (<code>predicted prob_up</code>), по Y — что реально произошло
+          (<code>realized rate</code>). Идеально откалиброванная модель
+          лежит ровно на диагонали <code>y=x</code>.
+          <br><br>
+          <strong>Почему важно</strong>: высокая dir_acc + горбатая кривая =
+          модель overconfident (бьёт по верхнему регистру вероятностей).
+          Низкая dir_acc + кривая на диагонали = модель честна о своей
+          неуверенности. Для torgovли важны обе вещи. Brier score (меньше —
+          лучше) и ECE (expected calibration error) — single-number summary.
+        </p>
+      </div>
+    </div>
+    <div class="reliability-grid" id="reliability-grid">
+      <!-- filled by JS -->
+    </div>
+  </section>
+
+  <!-- Feature importance -->
+  <section class="section">
+    <div class="section-head">
+      <div class="section-head-text">
+        <span class="section-label">Что использует модель</span>
+        <h2>Feature importance — какие сигналы реально работают</h2>
+        <p class="section-sub">
+          CatBoost gain-based importance: насколько каждая фича сокращает
+          loss относительно среднего сплита. Сумма = 100. Если 1-2 фичи
+          забирают 80% веса — модель возможно overfits на одну переменную;
+          здоровое распределение — top 5 ≈ 50-60% общего влияния, длинный
+          хвост остальных. Видно сразу что доминирует:
+          <strong>order-flow imbalance</strong> (depth_imb*, ofi_*),
+          <strong>aggression</strong> (trade_imb*) или <strong>price
+          action</strong> (microprice_*).
+        </p>
+      </div>
+    </div>
+    <div class="featimp-grid" id="featimp-grid">
       <!-- filled by JS -->
     </div>
   </section>
@@ -2488,6 +2648,154 @@
       }
     }
 
+    // ─── Reliability diagram (calibration curve) ───
+    //
+    // Pure SVG render — no Chart.js dependency. One small chart per
+    // symbol showing (predicted_mean, realized_rate) points + diagonal
+    // y=x reference. Brier + ECE single-number summaries above each.
+    async function refreshReliabilityDiagram() {
+      const target = document.getElementById('reliability-grid');
+      if (!target) return;
+      try {
+        const res = await fetch('/api/highfreq/reliability_diagram?n_bins=10', { cache: 'no-store' });
+        if (!res.ok) {
+          target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">данных пока нет</div>';
+          return;
+        }
+        const j = await res.json();
+        if (!j.ok || !Array.isArray(j.rows) || j.rows.length === 0) {
+          target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">накапливаем live-предсказания…</div>';
+          return;
+        }
+        const SYMBOL_ORDER = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'];
+        const rows = j.rows.slice().sort((a, b) =>
+          SYMBOL_ORDER.indexOf(a.symbol) - SYMBOL_ORDER.indexOf(b.symbol),
+        );
+        // SVG canvas. 200×200 viewBox; we plot in [10, 190] both axes
+        // so labels fit. Reserve 18px below for tick labels.
+        const W = 220, H = 220;
+        const PAD = 22;     // chart area starts 22px from left/top
+        const PB = 30;      // 30px reserved at bottom for x labels
+        const px = (p) => PAD + p * (W - PAD - 8);
+        const py = (p) => H - PB - p * (H - PAD - PB);
+        target.innerHTML = rows.map(r => {
+          const sym = r.symbol;
+          const ticker = sym.replace('USDT', '');
+          const iconCls = ticker.toLowerCase();
+          const brier = r.brier === null ? '—' : r.brier.toFixed(4);
+          const ece = r.ece === null ? '—' : r.ece.toFixed(4);
+          const nTotal = r.n_total || 0;
+          // Build polyline from buckets that have data.
+          const points = (r.buckets || [])
+            .filter(b => b.realized_rate !== null && b.predicted_mean !== null)
+            .map(b => ({
+              x: px(b.predicted_mean),
+              y: py(b.realized_rate),
+              n: b.n,
+            }));
+          const polyline = points.length >= 2
+            ? `<polyline class="curve-line" points="${points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')}" />`
+            : '';
+          const dots = points.map(p => {
+            // Dot radius scales with bucket size: log1p(n) capped at 5.
+            const r = Math.min(5, 1.5 + Math.log1p(p.n) * 0.6);
+            return `<circle class="curve-dot" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r.toFixed(1)}" />`;
+          }).join('');
+          const svg = `
+            <svg class="reliability-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+              <!-- axis box -->
+              <rect class="axis" x="${PAD}" y="${PAD}" width="${W - PAD - 8}" height="${H - PAD - PB}" />
+              <!-- diagonal y=x reference -->
+              <line class="ref-line" x1="${px(0)}" y1="${py(0)}" x2="${px(1)}" y2="${py(1)}" />
+              <!-- 0.5 / 0.5 reference -->
+              <line class="ref-line" x1="${px(0.5)}" y1="${py(0)}" x2="${px(0.5)}" y2="${py(1)}" />
+              <line class="ref-line" x1="${px(0)}" y1="${py(0.5)}" x2="${px(1)}" y2="${py(0.5)}" />
+              <!-- tick labels -->
+              <text class="axis-label" x="${px(0)}" y="${H - PB + 12}" text-anchor="middle">0</text>
+              <text class="axis-label" x="${px(0.5)}" y="${H - PB + 12}" text-anchor="middle">0.5</text>
+              <text class="axis-label" x="${px(1)}" y="${H - PB + 12}" text-anchor="middle">1</text>
+              <text class="axis-label" x="${PAD - 4}" y="${py(0) + 3}" text-anchor="end">0</text>
+              <text class="axis-label" x="${PAD - 4}" y="${py(0.5) + 3}" text-anchor="end">0.5</text>
+              <text class="axis-label" x="${PAD - 4}" y="${py(1) + 3}" text-anchor="end">1</text>
+              <text class="axis-label" x="${W / 2}" y="${H - 4}" text-anchor="middle">predicted prob_up</text>
+              <text class="axis-label" x="6" y="${H / 2 - 6}" text-anchor="middle" transform="rotate(-90, 6, ${H / 2 - 6})">realized rate</text>
+              ${polyline}
+              ${dots}
+            </svg>
+          `;
+          return `
+            <div class="reliability-card">
+              <div class="reliability-card-head">
+                <div class="reliability-card-symbol"><span class="mini-icon ${iconCls}"></span>${ticker}/USDT</div>
+                <div class="reliability-stats">n=<b>${nTotal}</b> · Brier=<b>${brier}</b> · ECE=<b>${ece}</b></div>
+              </div>
+              ${svg}
+            </div>`;
+        }).join('');
+      } catch (err) {
+        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">ошибка загрузки</div>';
+      }
+    }
+
+    // ─── Feature importance ───
+    //
+    // Per-symbol top-10 feature bars. Sums to 100 in the response so
+    // we render percentages directly. One fetch per symbol because
+    // the endpoint takes ?symbol=.
+    async function refreshFeatureImportance() {
+      const target = document.getElementById('featimp-grid');
+      if (!target) return;
+      const SYMBOLS = [
+        { sym: 'BTCUSDT', ticker: 'BTC', cls: 'btc' },
+        { sym: 'ETHUSDT', ticker: 'ETH', cls: 'eth' },
+        { sym: 'BNBUSDT', ticker: 'BNB', cls: 'bnb' },
+      ];
+      try {
+        const results = await Promise.all(
+          SYMBOLS.map(s =>
+            fetch(`/api/highfreq/feature_importance?symbol=${s.sym}`, { cache: 'no-store' })
+              .then(r => r.ok ? r.json() : null)
+              .then(j => ({ ...s, payload: j }))
+              .catch(() => ({ ...s, payload: null })),
+          ),
+        );
+        target.innerHTML = results.map(r => {
+          const j = r.payload;
+          if (!j || !j.ok || !Array.isArray(j.importance) || j.importance.length === 0) {
+            return `
+              <div class="featimp-card">
+                <div class="featimp-card-head">
+                  <div class="featimp-card-symbol"><span class="mini-icon ${r.cls}"></span>${r.ticker}/USDT</div>
+                </div>
+                <div class="empty-state">данных нет</div>
+              </div>`;
+          }
+          // Top 10 by importance (server already sorts descending).
+          const top = j.importance.slice(0, 10);
+          const max = top[0]?.importance || 1;
+          const rowsHtml = top.map(it => {
+            const pct = it.importance.toFixed(1);
+            const barPct = Math.max(2, (it.importance / max) * 100);
+            return `
+              <div class="featimp-row">
+                <div class="featimp-name" title="${it.feature}">${it.feature}</div>
+                <div class="featimp-bar"><div class="featimp-bar-fill" style="width: ${barPct.toFixed(0)}%"></div></div>
+                <div class="featimp-pct">${pct}</div>
+              </div>`;
+          }).join('');
+          return `
+            <div class="featimp-card">
+              <div class="featimp-card-head">
+                <div class="featimp-card-symbol"><span class="mini-icon ${r.cls}"></span>${r.ticker}/USDT</div>
+              </div>
+              ${rowsHtml}
+            </div>`;
+        }).join('');
+      } catch (err) {
+        target.innerHTML = '<div class="empty-state" style="grid-column: 1 / -1;">ошибка загрузки</div>';
+      }
+    }
+
     // ─── Countdown ───
     function refreshCountdowns() {
       const secs = 60 - new Date().getUTCSeconds();
@@ -2535,6 +2843,8 @@
     refreshModelMetrics();
     refreshConditionalAccuracy();
     refreshRobustness();
+    refreshReliabilityDiagram();
+    refreshFeatureImportance();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
@@ -2550,6 +2860,12 @@
     // Robustness JSON only changes when the cron job re-runs the suite
     // (not minute-by-minute), so refresh at the same slow cadence.
     setInterval(refreshRobustness, METRICS_REFRESH_MS);
+    // Reliability diagram needs predictions_log to accumulate enough
+    // rows per bucket — slow refresh.
+    setInterval(refreshReliabilityDiagram, METRICS_REFRESH_MS);
+    // Feature importance is constant for a given .cbm — only changes
+    // when the model retrains (daily). Slow cadence is plenty.
+    setInterval(refreshFeatureImportance, METRICS_REFRESH_MS);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
     setInterval(pollHorizonAvailability, 120_000);
