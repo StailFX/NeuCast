@@ -374,6 +374,25 @@
     .confidence-fill.down { background: linear-gradient(90deg, var(--red), #fb7185); }
     .confidence-fill.neutral { background: linear-gradient(90deg, var(--amber), #fbbf24); }
     .confidence-text { font-size: 0.75rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .conformal-text {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+      margin-top: 0.15rem;
+      letter-spacing: 0.02em;
+      cursor: help;
+    }
+    .conformal-text::before {
+      content: "90% CI";
+      font-size: 0.55rem;
+      color: var(--text-dim);
+      opacity: 0.7;
+      margin-right: 0.35rem;
+      padding: 0.05rem 0.3rem;
+      background: rgba(255,255,255,0.05);
+      border-radius: 3px;
+      vertical-align: middle;
+    }
 
     .card-meta-row {
       display: flex; justify-content: space-between; gap: 0.75rem;
@@ -1332,6 +1351,7 @@
                 <div class="confidence-fill" data-bind="conf-fill" style="width:0%"></div>
               </div>
               <div class="confidence-text" data-bind="conf-text">уверенность —</div>
+              <div class="conformal-text" data-bind="conformal-text" title="Split-conformal 90% prediction interval — статистическая гарантия coverage на калибровочном сете" style="display:none;">±—</div>
             </div>
           </div>
         </div>
@@ -1370,6 +1390,7 @@
                 <div class="confidence-fill" data-bind="conf-fill" style="width:0%"></div>
               </div>
               <div class="confidence-text" data-bind="conf-text">уверенность —</div>
+              <div class="conformal-text" data-bind="conformal-text" title="Split-conformal 90% prediction interval — статистическая гарантия coverage на калибровочном сете" style="display:none;">±—</div>
             </div>
           </div>
         </div>
@@ -1408,6 +1429,7 @@
                 <div class="confidence-fill" data-bind="conf-fill" style="width:0%"></div>
               </div>
               <div class="confidence-text" data-bind="conf-text">уверенность —</div>
+              <div class="conformal-text" data-bind="conformal-text" title="Split-conformal 90% prediction interval — статистическая гарантия coverage на калибровочном сете" style="display:none;">±—</div>
             </div>
           </div>
         </div>
@@ -1919,6 +1941,21 @@
         get('verdict').className = `verdict-text ${v.cls}`; get('verdict').textContent = v.label;
         get('conf-fill').className = `confidence-fill ${v.cls}`; get('conf-fill').style.width = `${v.confidence}%`;
         get('conf-text').textContent = `уверенность ${v.confidence}%`;
+
+        // Conformal 90% prediction interval (T.17.b). Hide if not
+        // available (legacy model or training-time skip).
+        const conformalEl = get('conformal-text');
+        if (conformalEl) {
+          if (data.conformal_90 && isFinite(data.conformal_90.low) && isFinite(data.conformal_90.high)) {
+            const lo = (data.conformal_90.low * 100).toFixed(0);
+            const hi = (data.conformal_90.high * 100).toFixed(0);
+            const p  = (data.prob_up * 100).toFixed(0);
+            conformalEl.style.display = '';
+            conformalEl.textContent = `prob_up=${p}% · CI [${lo}%, ${hi}%]`;
+          } else {
+            conformalEl.style.display = 'none';
+          }
+        }
         const updatedAge = (Date.now() - new Date(data.ts).getTime()) / 1000;
         get('updated').textContent = `обновлено ${fmtAge(updatedAge)} назад`;
         if (data.model && isFinite(data.model.model_age_seconds)) {

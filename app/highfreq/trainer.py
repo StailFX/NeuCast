@@ -778,6 +778,25 @@ class TrainingReport:
     #: serve (microstructure, 18 cols) that broke the first 15m
     #: paper-trader spawn.
     feature_set: str = "microstructure"
+    #: Split-conformal nonconformity quantile q at α = 0.10 (T.17.b).
+    #: Defines a 90 %-coverage prediction interval around the live
+    #: ``prob_up``: ``[max(0, prob - q), min(1, prob + q)]``.
+    #:
+    #: Conformal scores are |proba_oos - y_oos| over the pooled
+    #: walk-forward predictions; ``q`` is the
+    #: ⌈(n+1)(1-α)⌉ / n quantile of those scores. The coverage
+    #: guarantee — ``P(true_outcome ∈ interval) ≥ 1 - α`` — holds
+    #: under exchangeability of calibration vs test data, which the
+    #: walk-forward CV approximately satisfies (rolling-origin
+    #: contemporaneous folds). Modern academic mainstream:
+    #: Vovk-Gammerman-Shafer 2005, Angelopoulos-Bates 2023.
+    #:
+    #: ``None`` when no folds produced (cold start). The predictor
+    #: reads from metrics.json and emits the interval on the
+    #: forecast endpoint when present.
+    conformal_q_alpha_0_10: float | None = None
+    conformal_q_alpha_0_05: float | None = None
+    conformal_n_calibration: int | None = None
 
     def to_json(self) -> str:
         """JSON-serialise the report. NaN/Inf are emitted as ``null`` so
@@ -906,6 +925,41 @@ def run_training(
     base_rate = float(max(y.mean(), 1.0 - y.mean())) if len(y) else float("nan")
 
     folds, preds = walk_forward_evaluate(X, y, meta, config=cfg)
+    # Split-conformal nonconformity quantiles. Computed on the pooled
+    # walk-forward OOS predictions (which already approximate
+    # exchangeable calibration vs test data via rolling-origin
+    # contemporaneous folds). For each row the score is
+    # |proba_oos - y_true|; the (n+1)(1-α)/n quantile of those scores
+    # gives a 1-α-coverage prediction-interval halfwidth. Released as
+    # T.17.b. ``None`` when no folds (cold start).
+    conformal_q_alpha_0_10: float | None = None
+    conformal_q_alpha_0_05: float | None = None
+    conformal_n_calibration: int | None = None
+    if folds and len(preds) > 0:
+        proba_arr = preds["proba"].to_numpy()
+        y_arr = preds["y_true"].to_numpy()
+        scores = np.abs(proba_arr - y_arr)
+        n_cal = int(len(scores))
+        conformal_n_calibration = n_cal
+        # Inflated quantile per Angelopoulos & Bates 2023 — accounts
+        # for finite-sample exchangeability so coverage holds at
+        # the nominal 1-α level rather than slightly under.
+        for alpha, target in (
+            (0.10, "conformal_q_alpha_0_10"),
+            (0.05, "conformal_q_alpha_0_05"),
+        ):
+            q_idx = math.ceil((n_cal + 1) * (1.0 - alpha)) / n_cal
+            q_idx_clipped = min(1.0, max(0.0, q_idx))
+            q_value = float(np.quantile(scores, q_idx_clipped))
+            if target == "conformal_q_alpha_0_10":
+                conformal_q_alpha_0_10 = q_value
+            else:
+                conformal_q_alpha_0_05 = q_value
+        logger.info(
+            "conformal: q@α=0.10 = %.4f, q@α=0.05 = %.4f (n_cal=%d)",
+            conformal_q_alpha_0_10, conformal_q_alpha_0_05, n_cal,
+        )
+
     if folds:
         dir_acc_arr = np.array([f.dir_acc for f in folds])
         ll_arr = np.array([f.log_loss for f in folds])
@@ -1014,6 +1068,9 @@ def run_training(
         dir_acc_bayesian_ci_high=bayes_hi,
         bar_minutes=bm,
         feature_set=fs,
+        conformal_q_alpha_0_10=conformal_q_alpha_0_10,
+        conformal_q_alpha_0_05=conformal_q_alpha_0_05,
+        conformal_n_calibration=conformal_n_calibration,
         folds=[asdict(f) for f in folds],
         # Cautious default: claim "we have skill" only when the 95 % CI
         # lower bound is strictly above chance. NaN (no data) keeps the

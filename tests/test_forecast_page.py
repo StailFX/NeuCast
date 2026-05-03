@@ -178,6 +178,19 @@ def test_forecast_template_has_feature_importance_block():
     assert "refreshFeatureImportance" in html
 
 
+def test_forecast_template_has_conformal_interval_on_cards():
+    """Release T.17.b (2026-05-03) added split-conformal 90% prediction
+    intervals on each prediction card. Pins the data-bind anchor +
+    JS rendering of the CI."""
+    html = _read_forecast_template()
+    # Anchor on each of the 3 cards.
+    assert html.count('data-bind="conformal-text"') == 3
+    # Endpoint emits ``conformal_90`` field — JS reads it.
+    assert "data.conformal_90" in html
+    # CSS class for the small CI annotation text.
+    assert ".conformal-text" in html
+
+
 def test_forecast_template_has_cumulative_pnl_curve_block():
     """Release T.17.c (2026-05-03) added the live cumulative P&L
     curve — SVG line chart per fee tier, showing how each tier's

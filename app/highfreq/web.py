@@ -621,6 +621,34 @@ async def get_forecast(
     else:
         signal = "neutral"
 
+    # Conformal prediction interval (T.17.b) — wraps prob_up with a
+    # 90 %-coverage band ``[max(0, p - q), min(1, p + q)]`` where q is
+    # the split-conformal nonconformity quantile from training. The
+    # UI shows this as "0.62 ± [0.55, 0.69]" so reviewers see the
+    # uncertainty alongside the point estimate.
+    conformal_90: dict[str, Any] | None = None
+    conformal_95: dict[str, Any] | None = None
+    try:
+        ci_90 = predictor.conformal_interval(float(prob_up), alpha=0.10)
+        if ci_90 is not None:
+            conformal_90 = {
+                "alpha": 0.10,
+                "low": float(ci_90[0]),
+                "high": float(ci_90[1]),
+                "halfwidth": float(predictor.conformal_quantile(alpha=0.10) or 0.0),
+            }
+        ci_95 = predictor.conformal_interval(float(prob_up), alpha=0.05)
+        if ci_95 is not None:
+            conformal_95 = {
+                "alpha": 0.05,
+                "low": float(ci_95[0]),
+                "high": float(ci_95[1]),
+                "halfwidth": float(predictor.conformal_quantile(alpha=0.05) or 0.0),
+            }
+    except Exception:  # noqa: BLE001
+        # Conformal is best-effort — never fail the forecast over it.
+        conformal_90 = conformal_95 = None
+
     return JSONResponse(
         content=_scrub({
             "ok": True,
@@ -630,6 +658,8 @@ async def get_forecast(
             "prob_up": float(prob_up),
             "signal": signal,
             "calibrated": bool(status.is_calibrated),
+            "conformal_90": conformal_90,
+            "conformal_95": conformal_95,
             "model": status.to_dict(),
         })
     )

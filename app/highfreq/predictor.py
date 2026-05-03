@@ -325,6 +325,46 @@ class LivePredictor:
         ts = time.time() if now is None else now
         return max(0.0, ts - self._weights_mtime)
 
+    def conformal_quantile(self, alpha: float = 0.10) -> float | None:
+        """Read the split-conformal nonconformity quantile from
+        ``metrics.json`` for the requested coverage level.
+
+        ``alpha`` ∈ {0.05, 0.10}. Returns ``None`` when the model was
+        trained before T.17.b landed (metrics.json missing the field)
+        or when no folds were available at training time. Predictor
+        callers wrap with ``conformal_interval(prob_up, alpha)`` to
+        get a usable [low, high] interval.
+        """
+        self._maybe_reload_metrics()
+        if self._metrics is None:
+            return None
+        if alpha == 0.10:
+            key = "conformal_q_alpha_0_10"
+        elif alpha == 0.05:
+            key = "conformal_q_alpha_0_05"
+        else:
+            return None
+        v = self._metrics.get(key)
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def conformal_interval(
+        self, prob_up: float, *, alpha: float = 0.10,
+    ) -> tuple[float, float] | None:
+        """Wrap ``prob_up`` with a 1-α-coverage prediction interval
+        ``[max(0, prob - q), min(1, prob + q)]`` using the model's
+        stored conformal quantile. Returns ``None`` if no quantile
+        was recorded (legacy model).
+        """
+        q = self.conformal_quantile(alpha=alpha)
+        if q is None:
+            return None
+        return (max(0.0, prob_up - q), min(1.0, prob_up + q))
+
     def status(self, now: float | None = None) -> PredictorStatus:
         """JSON-friendly snapshot for the forecast endpoint / UI."""
         # Trigger reload pass once so the snapshot is consistent.
