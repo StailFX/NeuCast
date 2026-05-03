@@ -1028,9 +1028,28 @@ def run_training(
                     calibrator_path_for,
                     compute_reliability_curve,
                     fit_platt_calibrator,
+                    fit_isotonic_calibrator,
                     save_calibrator,
                 )
-                cal = fit_platt_calibrator(
+                # T.18.a (2026-05-03): default to isotonic regression
+                # for n_oos ≥ 1000 (Niculescu-Mizil & Caruana 2005
+                # crossover point). Fall back to Platt if env opts in.
+                cal_type = os.getenv("HF_CALIBRATOR_TYPE", "auto").strip().lower()
+                if cal_type == "platt":
+                    cal_fit = fit_platt_calibrator
+                elif cal_type == "isotonic":
+                    cal_fit = fit_isotonic_calibrator
+                else:  # auto
+                    cal_fit = (
+                        fit_isotonic_calibrator
+                        if len(preds) >= 1000
+                        else fit_platt_calibrator
+                    )
+                logger.info(
+                    "calibrator: %s (HF_CALIBRATOR_TYPE=%s, n_oos=%d)",
+                    cal_fit.__name__, cal_type, len(preds),
+                )
+                cal = cal_fit(
                     preds["proba"].to_numpy(),
                     preds["y_true"].to_numpy(),
                 )

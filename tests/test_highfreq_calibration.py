@@ -12,6 +12,7 @@ from app.highfreq.calibration import (
     apply_calibrator,
     calibrator_path_for,
     compute_reliability_curve,
+    fit_isotonic_calibrator,
     fit_platt_calibrator,
     load_calibrator,
     save_calibrator,
@@ -108,6 +109,113 @@ def test_fit_returns_passthrough_on_single_class():
 def test_fit_raises_on_length_mismatch():
     with pytest.raises(ValueError, match="length mismatch"):
         fit_platt_calibrator(np.array([0.5, 0.6]), np.array([1, 0, 1]))
+
+
+# ─────────── isotonic calibrator (T.18.a) ───────────
+
+
+def test_fit_isotonic_returns_estimator_with_predict_proba():
+    raw, y = _well_calibrated_data()
+    cal = fit_isotonic_calibrator(raw, y)
+    assert hasattr(cal, "predict_proba")
+    # Same predict_proba contract as Platt: shape (n, 2) with col 1 = P(up).
+    out = apply_calibrator(cal, np.array([0.3, 0.5, 0.7]))
+    assert out.shape == (3,)
+    assert np.all((out >= 0) & (out <= 1))
+
+
+def test_fit_isotonic_passes_well_calibrated_through():
+    """On already-calibrated data, isotonic should produce probas
+    close to the input — not perfect identity (sample noise) but
+    within tight tolerance. Brier on the test set should be at or
+    near base-rate variance."""
+    raw, y = _well_calibrated_data(n=2000)
+    cal = fit_isotonic_calibrator(raw, y)
+    cal_p = apply_calibrator(cal, raw)
+    # Mean error is small.
+    assert np.abs(cal_p - raw).mean() < 0.05
+    # Brier on calibrated == roughly base-rate * (1-base-rate).
+    brier = np.mean((cal_p - y) ** 2)
+    base = float(np.mean(y))
+    assert brier <= base * (1 - base) + 0.02
+
+
+def test_isotonic_corrects_overconfidence():
+    """The miscalibrated generator: raw 0.9 corresponds to true rate
+    ~0.74. After isotonic fit + apply, calibrated 0.9 should map
+    closer to 0.74. Same scenario as the Platt test but tighter
+    tolerance because isotonic is a more flexible function."""
+    raw, y = _miscalibrated_data(n=4000)
+    cal = fit_isotonic_calibrator(raw, y)
+    # Probe mid + extreme values.
+    cal_at_high = apply_calibrator(cal, np.array([0.85]))[0]
+    # Generator: true rate at raw=0.85 is 0.5 + 0.6 * (0.85 - 0.5) = 0.71
+    assert 0.62 <= cal_at_high <= 0.79, (
+        f"isotonic cal_at_0.85 = {cal_at_high}, expected ~0.71"
+    )
+
+
+def test_isotonic_preserves_monotonicity():
+    """Isotonic regression by construction must produce a monotone
+    non-decreasing function. Pin: raw_probas[i] < raw_probas[j]
+    implies cal[i] ≤ cal[j]."""
+    raw, y = _miscalibrated_data(n=2000)
+    cal = fit_isotonic_calibrator(raw, y)
+    test_grid = np.linspace(0.01, 0.99, 50)
+    cal_grid = apply_calibrator(cal, test_grid)
+    diffs = np.diff(cal_grid)
+    assert np.all(diffs >= -1e-9), "isotonic output must be monotone"
+
+
+def test_fit_isotonic_returns_passthrough_on_single_class():
+    raw = np.linspace(0.1, 0.9, 50)
+    y_all_one = np.ones(50, dtype=int)
+    cal = fit_isotonic_calibrator(raw, y_all_one)
+    assert isinstance(cal, _PassthroughCalibrator)
+
+
+def test_fit_isotonic_raises_on_length_mismatch():
+    with pytest.raises(ValueError, match="length mismatch"):
+        fit_isotonic_calibrator(np.array([0.5, 0.6]), np.array([1, 0, 1]))
+
+
+def test_isotonic_save_load_roundtrip(tmp_path):
+    """Pickled isotonic calibrator must restore producing identical
+    output. Predictor's hot path depends on this round-trip after
+    every weights reload."""
+    raw, y = _miscalibrated_data(n=2000)
+    cal = fit_isotonic_calibrator(raw, y)
+    p = tmp_path / "iso.pkl"
+    save_calibrator(cal, p)
+    loaded = load_calibrator(p)
+    assert loaded is not None
+    np.testing.assert_allclose(
+        apply_calibrator(cal, np.array([0.2, 0.5, 0.8])),
+        apply_calibrator(loaded, np.array([0.2, 0.5, 0.8])),
+        rtol=1e-9,
+    )
+
+
+def test_isotonic_brier_better_than_platt_on_miscalibrated_data():
+    """The textbook claim: on n ≥ 1000 with non-sigmoid miscalibration,
+    isotonic produces a tighter Brier score than Platt. We pin the
+    direction (≤) but not the magnitude — sample-to-sample variation
+    is real but the order should be stable."""
+    raw, y = _miscalibrated_data(n=4000, seed=0)
+    # Split: fit on first half, score on second.
+    n_half = len(raw) // 2
+    raw_fit, y_fit = raw[:n_half], y[:n_half]
+    raw_test, y_test = raw[n_half:], y[n_half:]
+    platt_cal = fit_platt_calibrator(raw_fit, y_fit)
+    iso_cal = fit_isotonic_calibrator(raw_fit, y_fit)
+    platt_p = apply_calibrator(platt_cal, raw_test)
+    iso_p = apply_calibrator(iso_cal, raw_test)
+    brier_platt = float(np.mean((platt_p - y_test) ** 2))
+    brier_iso = float(np.mean((iso_p - y_test) ** 2))
+    # Isotonic should be at least as good (≤ tolerance).
+    assert brier_iso <= brier_platt + 0.005, (
+        f"isotonic Brier {brier_iso:.4f} should be ≤ Platt {brier_platt:.4f}"
+    )
 
 
 # ─────────── persistence ───────────
