@@ -1,6 +1,6 @@
 # NeuCast
 
-![tests](https://img.shields.io/badge/tests-414%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-961%20passing-brightgreen)
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 ![status](https://img.shields.io/badge/status-Phase%20D%20%C2%B7%20sim--only-orange)
@@ -25,7 +25,7 @@ AI-платформа для прогнозирования финансовых
 | Status | Production at [neucast.ru](https://neucast.ru) | **Phase D sim-only · 3 symbols live · [docs/highfreq/](docs/highfreq/README.md)** |
 | Symbols | 200+ tickers (yfinance) | BTCUSDT · ETHUSDT · BNBUSDT |
 | Update cadence | Daily / hourly | 1 row/sec into Postgres, prediction every minute |
-| Test suite | inherits root | **414 tests · 100% passing** |
+| Test suite | inherits root | **961 tests · 100% passing** |
 | Observability | systemd + nginx logs | Prometheus + Grafana + Telegram alerts (5 rules) |
 | Cold storage | none | Yandex S3 (Parquet+snappy, hot-cold pattern, 7-day hot retention) |
 
@@ -80,16 +80,29 @@ than buried.
 
 * **Latency:** TCP RTT Tokyo ↔ Binance ≈ **19 ms** (median; vs ~250 ms from Finland)
 * **Architecture decisions:** 11 ADRs in [`docs/highfreq/architecture.md`](docs/highfreq/architecture.md)
-* **Test coverage:** 414 tests, every state-machine branch + endpoint pinned
+* **Test coverage:** 961 tests, every state-machine branch + endpoint pinned
 * **Live UIs:**
-    * [`/highfreq`](https://neucast.ru/highfreq) — business dashboard: symbol dropdown, live microprice, **orderbook density heatmap**, predictor status, paper-trader log, **feature importance**, walk-forward **calibration plot**
-    * [`/grafana`](https://neucast.ru/grafana) — operations dashboard: ingest health, predictor latency, system metrics, paper P&L trends
+    * [`/forecast`](https://neucast.ru/forecast) — public dashboard: prediction cards per symbol, **drift badge** (KS-test severity, T.21), **ensemble strip** (1m+15m blend, T.19), **conformal CI** (split-conformal 90 %, T.17.b), **cumulative P&L curve** (T.17.c), reliability diagram (T.16), feature importance, robustness suite, conditional accuracy
+    * [`/grafana`](https://neucast.ru/grafana) — operations dashboard: ingest health, predictor latency, system metrics, paper P&L trends, **drift KS gauge** (T.18.b), **drift-driven retrain decision** (T.22)
+* **Production training rigour:**
+    * **Frozen holdout** (3 days reserved at training time, T.16): BTC 0.5839 [0.5642, 0.6032], ETH 0.5733 [0.5555, 0.5915], BNB 0.5654 [0.5448, 0.5847] — **the trainer literally cannot see this slice**, gold-standard OOS
+    * **Walk-forward CV** with rolling-origin folds + 1-min embargo (López de Prado)
+    * **Calibration**: isotonic regression for n ≥ 1000 (T.18.a), split-conformal prediction intervals (Vovk-Gammerman-Shafer, T.17.b)
+    * **Auto-regenerated [`scoreboard.md`](docs/highfreq/scoreboard.md)** (T.20): every production run, every metric, config-delta tags
+* **Layered safety system** (defence pillar):
+    * Walk-forward CV catches simple overfitting
+    * Frozen holdout catches train-test contamination
+    * **Paper-trader live test** (Phase D) catches what offline backtests miss — see T.23.d in [`docs/highfreq/experiments.md`](docs/highfreq/experiments.md) for the canonical example: a +25 pp offline lift that was 0/15 in live, blocked by `max_consecutive_losses=5` kill-switch within 5 min, rolled back via `tools/rollback_model.py` within 11 min
+    * **Drift detector** (T.18.b, KS-test on rolling 24h reference) + auto-retrain on severity=high with 6h cooldown (T.22)
+    * **Anti-skill detector** (release I): if recent winrate's bootstrap CI upper bound < 0.5, halt or invert
 * **Single source of truth:** all HFT data lives in Tokyo Postgres; Finland nginx reverse-proxies the read endpoints over the encrypted WireGuard tunnel
 * **Hot-cold storage:** 7-day hot Postgres + cold Yandex S3 archival via daily atomic verify-before-delete cron (Parquet+snappy)
 * **Observability:** self-hosted Prometheus + Grafana on Tokyo, daily TSDB snapshots backed up to Yandex S3, 5 alert rules → Telegram bot
 * **Operational hardening:** SSH key-only, password auth disabled, UFW deny-all + explicit allow rules, EnvironmentFile root-only, 2-layer auth on Grafana (nginx Basic + Grafana login)
 
 → Detailed write-up: [`docs/highfreq/README.md`](docs/highfreq/README.md)
+→ Release log + negative results: [`docs/highfreq/experiments.md`](docs/highfreq/experiments.md)
+→ Production scoreboard (auto-regen): [`docs/highfreq/scoreboard.md`](docs/highfreq/scoreboard.md)
 
 ---
 
