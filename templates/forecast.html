@@ -400,6 +400,41 @@
       padding-top: 0.85rem;
       border-top: 1px solid var(--border-soft);
     }
+    /* T.21: feature-drift status badge on prediction card. */
+    .drift-badge {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      cursor: help;
+    }
+    .drift-badge::before {
+      content: ""; display: inline-block;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: currentColor;
+      opacity: 0.85;
+    }
+    .drift-badge.ok    { color: var(--green);  background: rgba(63, 217, 161, 0.10); }
+    .drift-badge.warn  { color: var(--amber);  background: rgba(245, 184, 33, 0.12); }
+    .drift-badge.high  { color: var(--red);    background: rgba(255, 100, 100, 0.12); }
+    .drift-badge.muted { color: var(--text-dim); background: rgba(255,255,255,0.05); }
+
+    /* T.21: ensemble breakdown shown under the main verdict.
+       Compact one-liner: "ансамбль 58% (1m=62 · 15m=50 ✓)" so
+       reviewers can see how the 1m + 15m models combine into the
+       headline blend. Hidden by default until the ensemble fetch
+       returns ok=true (one of the two models may be cold-starting). */
+    .ensemble-text {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      margin-top: 0.35rem;
+      cursor: help;
+      letter-spacing: 0.01em;
+    }
+    .ensemble-text .ens-agree { color: var(--green); margin-left: 0.25rem; }
+    .ensemble-text .ens-disagree { color: var(--amber); margin-left: 0.25rem; }
 
     /* ── Stats strip — bigger & more visual ── */
     .stats {
@@ -1352,11 +1387,13 @@
               </div>
               <div class="confidence-text" data-bind="conf-text">уверенность —</div>
               <div class="conformal-text" data-bind="conformal-text" title="Split-conformal 90% prediction interval — статистическая гарантия coverage на калибровочном сете" style="display:none;">±—</div>
+              <div class="ensemble-text" data-bind="ensemble-text" title="Multi-horizon ensemble (T.19) — weighted blend of the 1m microstructure model and the 15m long-horizon model. Default weights 0.70/0.30." style="display:none;">ансамбль —</div>
             </div>
           </div>
         </div>
         <div class="card-meta-row">
           <span data-bind="model-age">модель: —</span>
+          <span class="drift-badge muted" data-bind="drift-badge" title="Feature distribution drift status — KS-test on serving vs training distribution. Green: no drift; yellow: noticeable shift; red: high drift.">drift —</span>
           <span data-bind="next-bar">след. бар: —</span>
         </div>
       </div>
@@ -1391,11 +1428,13 @@
               </div>
               <div class="confidence-text" data-bind="conf-text">уверенность —</div>
               <div class="conformal-text" data-bind="conformal-text" title="Split-conformal 90% prediction interval — статистическая гарантия coverage на калибровочном сете" style="display:none;">±—</div>
+              <div class="ensemble-text" data-bind="ensemble-text" title="Multi-horizon ensemble (T.19) — weighted blend of the 1m microstructure model and the 15m long-horizon model. Default weights 0.70/0.30." style="display:none;">ансамбль —</div>
             </div>
           </div>
         </div>
         <div class="card-meta-row">
           <span data-bind="model-age">модель: —</span>
+          <span class="drift-badge muted" data-bind="drift-badge" title="Feature distribution drift status — KS-test on serving vs training distribution. Green: no drift; yellow: noticeable shift; red: high drift.">drift —</span>
           <span data-bind="next-bar">след. бар: —</span>
         </div>
       </div>
@@ -1430,11 +1469,13 @@
               </div>
               <div class="confidence-text" data-bind="conf-text">уверенность —</div>
               <div class="conformal-text" data-bind="conformal-text" title="Split-conformal 90% prediction interval — статистическая гарантия coverage на калибровочном сете" style="display:none;">±—</div>
+              <div class="ensemble-text" data-bind="ensemble-text" title="Multi-horizon ensemble (T.19) — weighted blend of the 1m microstructure model and the 15m long-horizon model. Default weights 0.70/0.30." style="display:none;">ансамбль —</div>
             </div>
           </div>
         </div>
         <div class="card-meta-row">
           <span data-bind="model-age">модель: —</span>
+          <span class="drift-badge muted" data-bind="drift-badge" title="Feature distribution drift status — KS-test on serving vs training distribution. Green: no drift; yellow: noticeable shift; red: high drift.">drift —</span>
           <span data-bind="next-bar">след. бар: —</span>
         </div>
       </div>
@@ -2992,6 +3033,145 @@
       }
     }
 
+    // ─── Drift badge (T.21) ───
+    //
+    // Hourly cron (`tools/drift_check.py`) runs a two-sample KS test
+    // on every numeric feature comparing the recent serving window to
+    // the training distribution and writes a per-symbol JSON. We pull
+    // it via /api/highfreq/drift_status and tint the small "drift"
+    // badge in each card's meta-row green/amber/red so reviewers can
+    // see at a glance whether the production model is still operating
+    // on in-distribution inputs.
+    //
+    // Severity → class mapping mirrors the server-side buckets:
+    //   ok    (max_ks < threshold)        → green
+    //   warn  (threshold ≤ max_ks < 0.30) → amber
+    //   high  (max_ks ≥ 0.30)             → red
+    //   no_check_yet / malformed / err    → muted (em-dash, not red,
+    //   because drift detection is best-effort cron — a missing file
+    //   is "we haven't checked yet", not "the model is broken").
+    async function refreshDriftStatus() {
+      const cards = document.querySelectorAll('.card[data-symbol]');
+      await Promise.all([...cards].map(async (card) => {
+        const symbol = card.dataset.symbol;
+        const badge = card.querySelector('.drift-badge');
+        if (!badge) return;
+        try {
+          const res = await fetch(
+            `/api/highfreq/drift_status?symbol=${symbol}`,
+            { cache: 'no-store' });
+          if (!res.ok) {
+            badge.className = 'drift-badge muted';
+            badge.textContent = 'drift —';
+            badge.title = 'Drift status unavailable (HTTP error).';
+            return;
+          }
+          const j = await res.json();
+          if (!j.ok) {
+            // no_check_yet | malformed → muted, friendly tooltip.
+            badge.className = 'drift-badge muted';
+            badge.textContent = 'drift —';
+            const reason = j.reason === 'no_check_yet'
+              ? 'Drift cron has not yet run for this symbol.'
+              : 'Drift snapshot is malformed; awaiting next cron pass.';
+            badge.title = reason;
+            return;
+          }
+          const sev = (j.severity || 'ok').toLowerCase();
+          const cls = (sev === 'high' || sev === 'warn' || sev === 'ok')
+            ? sev : 'muted';
+          badge.className = `drift-badge ${cls}`;
+          // Label is short — "drift ok" / "drift warn" / "drift high" —
+          // because reviewers will read it as "is the model drifting"
+          // not as a precise statistic; the precise number lives in
+          // the tooltip.
+          const labelMap = { ok: 'ok', warn: 'warn', high: 'high' };
+          badge.textContent = `drift ${labelMap[cls] || '—'}`;
+          // Tooltip: max_ks + which feature drove it + top-3 features.
+          const ks = isFinite(j.max_ks) ? Number(j.max_ks).toFixed(3) : '—';
+          const feat = j.max_ks_feature || '—';
+          const thr = isFinite(j.threshold)
+            ? Number(j.threshold).toFixed(2) : '—';
+          let tooltip = `KS-test drift vs training distribution.\n`
+            + `severity: ${sev} (threshold=${thr})\n`
+            + `max_ks: ${ks} on "${feat}"`;
+          if (Array.isArray(j.top_features) && j.top_features.length) {
+            const top3 = j.top_features.slice(0, 3)
+              .map(f => `  • ${f.feature}: ${Number(f.ks_stat).toFixed(3)}`)
+              .join('\n');
+            tooltip += `\ntop drifters:\n${top3}`;
+          }
+          if (j.evaluated_at) {
+            tooltip += `\nevaluated_at: ${j.evaluated_at}`;
+          }
+          badge.title = tooltip;
+        } catch (err) {
+          badge.className = 'drift-badge muted';
+          badge.textContent = 'drift —';
+          badge.title = 'Drift status fetch failed.';
+        }
+      }));
+    }
+
+    // ─── Ensemble forecast strip (T.21) ───
+    //
+    // Pulls /api/highfreq/forecast_ensemble per card and shows a tiny
+    // "ансамбль 58% (1m=62 · 15m=50 ✓)" line under the conformal CI.
+    // The ✓ / ✗ flag tells reviewers at a glance whether the two
+    // horizons agree on direction. Hidden when 15m model is cold-
+    // starting (rare — 15m trains daily on Klines, not OFI) or when
+    // the ensemble endpoint 5xx's — falls back to existing 1m verdict.
+    async function refreshEnsemble() {
+      const cards = document.querySelectorAll('.card[data-symbol]');
+      await Promise.all([...cards].map(async (card) => {
+        const symbol = card.dataset.symbol;
+        const el = card.querySelector('.ensemble-text');
+        if (!el) return;
+        try {
+          const res = await fetch(
+            `/api/highfreq/forecast_ensemble?symbol=${symbol}`,
+            { cache: 'no-store' });
+          if (!res.ok) {
+            el.style.display = 'none';
+            return;
+          }
+          const j = await res.json();
+          if (!j.ok || !Array.isArray(j.components) || !j.components.length) {
+            el.style.display = 'none';
+            return;
+          }
+          const blendPct = (j.prob_up * 100).toFixed(0);
+          const partsHtml = j.components.map(c => {
+            const lbl = c.horizon_label;
+            if (!c.is_available || c.prob_up == null) {
+              return `${lbl}=—`;
+            }
+            return `${lbl}=${(c.prob_up * 100).toFixed(0)}`;
+          }).join(' · ');
+          const agreeHtml = j.agreement
+            ? '<span class="ens-agree" title="Both horizons on same side of 0.5">✓</span>'
+            : '<span class="ens-disagree" title="Horizons disagree on direction; blend dominates by weight">✗</span>';
+          el.innerHTML = `ансамбль ${blendPct}% (${partsHtml}) ${agreeHtml}`;
+          // Tooltip: full model status incl. weights + ages.
+          const lines = [
+            `Ensemble blend prob_up = ${(j.prob_up * 100).toFixed(1)}%`,
+            `signal: ${j.signal}, agreement: ${j.agreement ? 'yes' : 'no'}`,
+            'components:',
+            ...j.components.map(c => {
+              const w = (c.weight * 100).toFixed(0);
+              const p = (c.is_available && c.prob_up != null)
+                ? `${(c.prob_up * 100).toFixed(1)}%` : 'unavailable';
+              return `  • ${c.horizon_label} (w=${w}%): ${p}`;
+            }),
+          ];
+          el.title = lines.join('\n');
+          el.style.display = '';
+        } catch (err) {
+          el.style.display = 'none';
+        }
+      }));
+    }
+
     // ─── Cumulative P&L curve ───
     //
     // Pulls /api/highfreq/cumulative_pnl?symbol=X for the active
@@ -3222,6 +3402,8 @@
     refreshReliabilityDiagram();
     refreshFeatureImportance();
     refreshCumulativePnl();
+    refreshDriftStatus();
+    refreshEnsemble();
     refreshCountdowns();
     pollHorizonAvailability();   // auto-enable pills as new horizons train
     setInterval(refreshAllPredictions, PREDICT_REFRESH_MS);
@@ -3245,6 +3427,13 @@
     setInterval(refreshFeatureImportance, METRICS_REFRESH_MS);
     // Cumulative P&L grows ~1 row/min; refresh on the trades cadence.
     setInterval(refreshCumulativePnl, TRADES_REFRESH_MS);
+    // Drift JSON only changes when the hourly cron re-runs
+    // (`tools/drift_check.py`). Slow refresh — same cadence as
+    // robustness / reliability — is plenty.
+    setInterval(refreshDriftStatus, METRICS_REFRESH_MS);
+    // Ensemble blend follows the predictions cadence — same minute
+    // bar fires both 1m and 15m re-evaluation under the hood.
+    setInterval(refreshEnsemble, PREDICT_REFRESH_MS);
     // Check every 2 minutes for newly-trained horizons (5m / 60m) so
     // the user doesn't have to reload the page when a model lands.
     setInterval(pollHorizonAvailability, 120_000);

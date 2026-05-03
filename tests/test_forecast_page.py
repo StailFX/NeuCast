@@ -216,6 +216,46 @@ def test_forecast_template_has_cumulative_pnl_curve_block():
         assert f'data-pnl-tier="{tier}"' in html
 
 
+def test_forecast_template_has_drift_badge_on_cards():
+    """Release T.21 (2026-05-03) surfaces the per-symbol KS-test drift
+    snapshot (``tools/drift_check.py``) as a green/amber/red pill on
+    each prediction card's meta-row. Pins:
+
+    * Anchor: ``data-bind="drift-badge"`` exists once per card (×3).
+    * CSS classes for all four severity buckets.
+    * JS handler ``refreshDriftStatus`` calls
+      ``/api/highfreq/drift_status``.
+    """
+    html = _read_forecast_template()
+    assert html.count('data-bind="drift-badge"') == 3
+    # Severity colour classes — green / amber / red / muted.
+    assert ".drift-badge.ok" in html
+    assert ".drift-badge.warn" in html
+    assert ".drift-badge.high" in html
+    assert ".drift-badge.muted" in html
+    # JS function + endpoint.
+    assert "refreshDriftStatus" in html
+    assert "/api/highfreq/drift_status" in html
+
+
+def test_forecast_template_has_ensemble_strip_on_cards():
+    """Release T.21 (2026-05-03) shows the multi-horizon ensemble
+    blend (T.19) inline under each card's verdict so reviewers can
+    see how the 1m + 15m models combine. Pins:
+
+    * Anchor: ``data-bind="ensemble-text"`` exists once per card (×3).
+    * JS handler ``refreshEnsemble`` calls
+      ``/api/highfreq/forecast_ensemble``.
+    * Agreement/disagreement marker classes for the ✓/✗ glyph.
+    """
+    html = _read_forecast_template()
+    assert html.count('data-bind="ensemble-text"') == 3
+    assert "refreshEnsemble" in html
+    assert "/api/highfreq/forecast_ensemble" in html
+    assert ".ens-agree" in html
+    assert ".ens-disagree" in html
+
+
 def test_forecast_template_polls_correct_api_endpoints():
     """Pin the API endpoints the page hits.
 

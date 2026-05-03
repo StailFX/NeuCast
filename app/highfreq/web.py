@@ -1899,6 +1899,65 @@ async def get_conditional_accuracy(
     }))
 
 
+@router.get("/api/highfreq/drift_status")
+async def get_drift_status(
+    symbol: str = DEFAULT_SYMBOL,
+) -> JSONResponse:
+    """Latest feature-drift snapshot for ``symbol`` (T.18.b).
+
+    Reads ``weights/highfreq/<sym>_drift.json`` written by the hourly
+    ``tools/drift_check.py`` cron. Surfaces the max-KS feature + a
+    severity bucket so the UI can render a green/yellow/red badge on
+    the prediction card.
+
+    Returns 200 always:
+    * file present + valid → ``ok=True`` with severity / max_ks /
+      max_ks_feature / top_features.
+    * file missing (drift cron hasn't run yet) → ``ok=False``,
+      ``reason="no_check_yet"``.
+    * file malformed → ``ok=False``, ``reason="malformed"``.
+
+    UI policy: a missing file should render as muted "—", not an
+    alarming red — drift detection is best-effort cron-driven, not a
+    runtime guarantee.
+    """
+    symbol = symbol.upper()
+    weights_dir = Path("weights/highfreq")
+    drift_path = weights_dir / f"{symbol.lower()}_drift.json"
+    if not drift_path.exists():
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_check_yet",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    try:
+        payload = json.loads(drift_path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("drift_status read failed for %s: %s", symbol, exc)
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "malformed",
+            "symbol": symbol,
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+        })
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": symbol,
+        "severity": payload.get("severity", "ok"),
+        "drifted": bool(payload.get("drifted", False)),
+        "max_ks": payload.get("max_ks"),
+        "max_ks_feature": payload.get("max_ks_feature"),
+        "threshold": payload.get("threshold"),
+        "n_features": payload.get("n_features"),
+        "n_features_alarming": payload.get("n_features_alarming"),
+        "top_features": payload.get("top_features", []),
+        "evaluated_at": payload.get("evaluated_at"),
+        "feature_set": payload.get("feature_set"),
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+    }))
+
+
 @router.get("/api/highfreq/cumulative_pnl")
 async def get_cumulative_pnl(
     symbol: str = DEFAULT_SYMBOL,

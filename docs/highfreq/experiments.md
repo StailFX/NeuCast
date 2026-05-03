@@ -757,3 +757,107 @@ and we lose the previous (good) model.
 * 10 unit tests: ``tests/test_model_archive.py``
 
 ---
+
+## T.20 — Auto-regenerated training scoreboard
+
+**Date:** 2026-05-03
+**Status:** ✅ landed (committed as ``31ab5e8``)
+**Hypothesis:** A defence reviewer should be able to read **one
+document** that lists every production training run on every symbol,
+the metrics they produced, and what config changed between them —
+without trusting any human's memo of "what we tried." That document
+must regenerate from the append-only ``training_runs`` table, not
+from a hand-maintained changelog.
+
+### Solution
+
+* ``tools/scoreboard.py`` reads ``training_runs`` from Postgres,
+  filters to spot-production runs, renders Markdown:
+  - **Latest production metrics** — one row per symbol with
+    dir-acc + 95% Wilson CI + p-value + Brier + ECE + conformal q.
+  - **Frozen-holdout summary** (if any holdout JSONs exist).
+  - **Per-symbol timeline** — every training run, oldest first,
+    with a ``config delta`` column auto-tagged from neighbouring runs.
+* ``_release_tag`` heuristic emits human-readable transitions
+  (``feature_set: microstructure→cross_asset``, ``holdout_days: 0→3``,
+  ``conformal added``, ``calibrator change``). Tiny Brier jitter
+  (< 0.005) is filtered as run-to-run noise so the column doesn't
+  drown in false positives.
+* 16 unit tests (``tests/test_scoreboard.py``) pin the document
+  structure (section order, em-dash for missing metrics, footer run
+  count) and the config-delta heuristic.
+* Output: ``docs/highfreq/scoreboard.md``, ~7.7 KB at the time of
+  landing — committed alongside the tool so the GitHub repo always
+  carries the snapshot.
+
+---
+
+## T.21 — UI surface for drift status + ensemble forecast
+
+**Date:** 2026-05-03
+**Status:** ✅ deployed (Tokyo web.py + Finland forecast.html)
+**Hypothesis:** T.18.b (KS-test drift detector) and T.19 (multi-
+horizon ensemble) shipped as **server-only artifacts** — the cron
+writes ``<sym>_drift.json`` every hour and the ensemble has its own
+endpoint, but neither was visible on ``/forecast``. Reviewers
+opening the public dashboard couldn't see "is the production model
+operating on in-distribution data?" or "how does the 1m signal
+combine with the 15m signal in real time?". This release surfaces
+both inline on each prediction card.
+
+### Solution
+
+* New endpoint ``GET /api/highfreq/drift_status?symbol=…`` reads
+  ``weights/highfreq/<sym>_drift.json`` and returns severity / max_ks /
+  max_ks_feature / top_features. Returns 200 with ``ok=False,
+  reason=no_check_yet`` when the cron hasn't run (best-effort, not a
+  runtime guarantee — UI renders muted "—", not alarming red).
+* Per-card ``.drift-badge`` pill (green / amber / red / muted) reads
+  from that endpoint at the same cadence as the other slow refreshers
+  (5 min). Tooltip shows the top-3 KS features so reviewers can see
+  *which* feature is drifting.
+* Per-card ``.ensemble-text`` mini-strip pulls
+  ``/api/highfreq/forecast_ensemble`` and renders
+  ``ансамбль 58% (1m=62 · 15m=50 ✓)`` — the ✓/✗ glyph signals whether
+  the two horizons agree on direction. Hidden when a component
+  cold-starts so the page falls back gracefully to the existing 1m
+  verdict.
+* Two new test files in ``tests/test_forecast_page.py``
+  (``test_forecast_template_has_drift_badge_on_cards`` +
+  ``test_forecast_template_has_ensemble_strip_on_cards``) pin the
+  data-bind anchors, the CSS classes, and the JS function names so
+  future template refactors can't silently strip these features.
+* Endpoint tests: ``tests/test_drift_status_endpoint.py`` (5 tests
+  covering happy path / no-check-yet / malformed / severity-ok /
+  symbol uppercasing).
+
+### What we observed at deploy time
+
+The drift detector immediately flagged **HIGH severity on all 3
+symbols** with ``spread_bps_mean`` as the top drifter:
+
+| symbol  | severity | max_ks | feature           | alarming features |
+|---------|----------|--------|-------------------|-------------------|
+| BTCUSDT | high     | 0.961  | ``spread_bps_mean`` | 10 / 14         |
+| ETHUSDT | high     | 0.994  | ``spread_bps_mean`` | 13 / 23         |
+| BNBUSDT | high     | 0.898  | ``spread_bps_mean`` | 11 / 23         |
+
+Reading: KS ≥ 0.90 means the recent serving distribution barely
+overlaps with the training reference window. The likely cause is
+real liquidity-regime change (spreads tightened markedly vs the
+older training window), not a code bug — but the badge is doing
+exactly what it's supposed to: alerting an operator that the
+production inputs no longer look like the training inputs. Open
+follow-up: T.22 candidate is **either** retrain on a fresh window
+**or** widen the reference window to be rolling rather than
+fixed-at-train-time.
+
+### Files
+
+* Endpoint: ``app/highfreq/web.py`` (``/api/highfreq/drift_status``)
+* UI: ``templates/forecast.html`` (CSS + HTML slots + JS handlers)
+* Tests:
+  ``tests/test_drift_status_endpoint.py`` (5 tests),
+  ``tests/test_forecast_page.py`` (+2 tests)
+
+---

@@ -77,4 +77,4 @@ Re-generate via ``python -m tools.scoreboard`` (after each release).
 | 2026-05-03 11:05 | cross_asset | 3 | 38 | 6168 | 0.5601 | 0.5399 | 0.5798 | 5.2e-09 | 0.2520 | 0.0688 | 0.685 | conformal added |
 | 2026-05-03 16:27 | cross_asset | 3 | 39 | 6169 | 0.5547 | 0.5355 | 0.5756 | 6.6e-08 | 0.2565 | 0.0821 | 0.688 |  |
 
-_Generated at 2026-05-03T20:13:19.859183+00:00 from 42 training runs._
+_Generated at 2026-05-03T20:56:15.578640+00:00 from 42 training runs._

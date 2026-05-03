@@ -49,7 +49,16 @@ _bar_minutes() {
 }
 
 # Run holdout on every interval × symbol combo where parquet exists.
-for interval in 1m 5m 15m 30m 1h 4h 1d; do
+#
+# 1m INTENTIONALLY SKIPPED: 1m × 3y = 1.58M bars × 24 long_horizon
+# features × 800 CatBoost iter → ~1 GB RSS during fit; OOM-killed
+# on the 4 GB Tokyo box. We don't actually NEED a Klines 1m holdout
+# because the production trainer's --frozen-holdout-days 3 already
+# gives us a tight-CI live-OFI 1m holdout (T.16): BTC 0.5839,
+# ETH 0.5733, BNB 0.5654 on n=2400-2750 unseen bars. The Klines
+# 1m would only confirm the same thing on synthetic OHLC features
+# without the L2 microstructure signal.
+for interval in 5m 15m 30m 1h 4h 1d; do
   bar_minutes=$(_bar_minutes $interval)
   for sym in BTCUSDT ETHUSDT BNBUSDT; do
     symlower=$(echo $sym | tr A-Z a-z)
