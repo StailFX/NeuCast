@@ -1000,6 +1000,17 @@ def run_training(
     if out_path is not None and len(X) >= cfg.min_train_samples:
         clf = fit_final_model(X, y, config=cfg, init_from=init_from)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Archive the existing weights (if any) BEFORE we overwrite —
+        # T.17.d production safety. If today's training produces a
+        # regressing model we can rollback in 1 command.
+        try:
+            from app.highfreq.model_archive import archive_existing
+            archive_existing(out_path, keep_last_n=7)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "model archive failed (non-fatal); proceeding with overwrite",
+                exc_info=True,
+            )
         clf.save_model(str(out_path), format="cbm")
         weights_path = str(out_path)
         logger.info("saved final model to %s", out_path)
