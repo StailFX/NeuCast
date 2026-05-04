@@ -733,6 +733,164 @@ async def logout(request: Request, db: Session = Depends(get_db)):
     return resp
 
 
+# ============================================================
+# JSON auth endpoints — used by the Next.js v2 frontend
+# (frontend/src/lib/auth.ts). The legacy form-based ``/login`` /
+# ``/register`` / ``/logout`` routes above are preserved for
+# server-rendered Jinja flows; these new endpoints expose the
+# same machinery with a JSON contract so a static-export SPA can
+# call them via fetch().
+#
+# Code-review C-2 + C-3 hardening continues to apply: argon2-cffi
+# password verification + transparent re-hash on success +
+# constant-time dummy verify on miss + secrets.compare_digest in
+# the legacy SHA-256 path. Cookie flags (httponly, samesite=lax,
+# secure=NEUCAST_COOKIES_SECURE) match the form-based path.
+# ============================================================
+from pydantic import BaseModel, Field as _PydField  # noqa: E402
+
+
+class _LoginPayload(BaseModel):
+    username: str = _PydField(min_length=1, max_length=128)
+    password: str = _PydField(min_length=1, max_length=512)
+
+
+class _RegisterPayload(BaseModel):
+    username: str = _PydField(min_length=1, max_length=128)
+    email: str = ""
+    password: str = _PydField(min_length=1, max_length=512)
+    password2: str = _PydField(min_length=1, max_length=512)
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(
+    payload: _LoginPayload,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """JSON login — symmetric to ``/login`` form-post above.
+
+    On success: 200 ``{ok: true, user: {id, username, role}}`` plus
+    HttpOnly session cookie. On failure: 401 with a generic message
+    so attackers can't distinguish "wrong username" from "wrong
+    password" via response body. (Timing parity comes from the
+    constant-time dummy verify in the no-user branch.)
+    """
+    user = db.query(User).filter(User.username == payload.username).first()
+    if user and verify_password(payload.password, user.password):
+        try:
+            if needs_rehash(user.password):
+                user.password = hash_password(payload.password)
+        except Exception:
+            pass
+        token = secrets.token_hex(32)
+        user.session_token = token
+        db.commit()
+        response.set_cookie(
+            "session", token,
+            httponly=True, samesite="lax",
+            secure=os.getenv("NEUCAST_COOKIES_SECURE", "1") == "1",
+        )
+        return {
+            "ok": True,
+            "user": {
+                "id": int(user.id),
+                "username": user.username,
+                "role": user.role.name if user.role else "user",
+            },
+        }
+    # Constant-time dummy verify — same defence the legacy path uses.
+    if user is None:
+        verify_password(
+            payload.password,
+            "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+    raise HTTPException(status_code=401, detail="invalid credentials")
+
+
+@app.post("/api/auth/register")
+async def api_auth_register(
+    payload: _RegisterPayload,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """JSON register — symmetric to ``/register`` form-post above.
+    Same rules: 12-char minimum, no duplicate username."""
+    if payload.password != payload.password2:
+        raise HTTPException(status_code=400, detail="passwords do not match")
+    if len(payload.password) < 12:
+        raise HTTPException(
+            status_code=400, detail="password must be at least 12 chars",
+        )
+    if db.query(User).filter_by(username=payload.username).first():
+        raise HTTPException(status_code=400, detail="username already taken")
+
+    user_role = db.query(Role).filter_by(name="user").first()
+    new_user = User(
+        username=payload.username,
+        email=payload.email or None,
+        password=hash_password(payload.password),
+        role_id=user_role.id,
+    )
+    token = secrets.token_hex(32)
+    new_user.session_token = token
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    response.set_cookie(
+        "session", token,
+        httponly=True, samesite="lax",
+        secure=os.getenv("NEUCAST_COOKIES_SECURE", "1") == "1",
+    )
+    return {
+        "ok": True,
+        "user": {
+            "id": int(new_user.id),
+            "username": new_user.username,
+            "role": user_role.name,
+        },
+    }
+
+
+@app.get("/api/auth/me")
+async def api_auth_me(
+    user: User = Depends(get_current_user),
+):
+    """Current-session probe. Returns ``authenticated=false`` when
+    the cookie is missing/expired so the SPA can render the
+    public-only navbar without flicker."""
+    if user is None:
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "user": {
+            "id": int(user.id),
+            "username": user.username,
+            "role": user.role.name if user.role else "user",
+        },
+    }
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """JSON logout — clears the cookie and invalidates the
+    server-side session token (so the cookie can't be replayed
+    even if it leaks)."""
+    token = request.cookies.get("session")
+    if token:
+        user = db.query(User).filter(User.session_token == token).first()
+        if user:
+            user.session_token = None
+            db.commit()
+    response.delete_cookie("session")
+    return {"ok": True}
+
+
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots_txt():
     return (

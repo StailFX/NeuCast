@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "@/lib/AuthContext";
 
 interface Props {
   /** Optional right-side accessory — e.g. live "обновлено N сек назад"
@@ -12,6 +13,8 @@ interface Props {
 
 export function Navbar({ rightSlot }: Props) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { user, loading, logout } = useAuth();
 
   /** Match check honours basePath/trailingSlash quirks. */
   const isActive = (route: string) =>
@@ -50,6 +53,40 @@ export function Navbar({ rightSlot }: Props) {
           >
             Grafana
           </a>
+
+          {/* Auth-aware right side. */}
+          {loading ? (
+            <span className="ml-2 h-8 w-16 rounded-md bg-zinc-900/40" aria-hidden />
+          ) : user ? (
+            <div className="ml-2 flex items-center gap-1 border-l border-zinc-800 pl-2">
+              <NavLink
+                href="/dashboard"
+                active={isActive("/dashboard")}
+              >
+                {user.username}
+              </NavLink>
+              <button
+                type="button"
+                onClick={async () => {
+                  await logout();
+                  router.replace("/");
+                }}
+                className="rounded-md px-3 py-1.5 text-sm text-zinc-500 transition hover:bg-zinc-900 hover:text-zinc-300"
+              >
+                Выйти
+              </button>
+            </div>
+          ) : (
+            <div className="ml-2 flex items-center gap-1 border-l border-zinc-800 pl-2">
+              <NavLink href="/login" active={isActive("/login")}>
+                Войти
+              </NavLink>
+              <NavLink href="/register" active={isActive("/register")}>
+                Регистрация
+              </NavLink>
+            </div>
+          )}
+
           {rightSlot && (
             <span className="ml-2 hidden border-l border-zinc-800 pl-3 sm:block">
               {rightSlot}
