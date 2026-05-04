@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 interface Props {
   /** Optional right-side accessory — e.g. live "обновлено N сек назад"
@@ -10,11 +11,19 @@ interface Props {
 
 
 export function Navbar({ rightSlot }: Props) {
+  const pathname = usePathname();
+
+  /** Match check honours basePath/trailingSlash quirks. */
+  const isActive = (route: string) =>
+    pathname === route ||
+    pathname === `${route}/` ||
+    pathname?.startsWith(`${route}/`);
+
   return (
     <nav className="sticky top-0 z-30 border-b border-zinc-900/60 bg-zinc-950/80 backdrop-blur supports-[backdrop-filter]:bg-zinc-950/60">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
         <Link
-          href="/forecast"
+          href="/"
           className="group flex items-baseline gap-2 text-sm tracking-tight"
         >
           <span className="text-base font-semibold text-zinc-100">
@@ -28,20 +37,13 @@ export function Navbar({ rightSlot }: Props) {
           </span>
         </Link>
 
-        <div className="flex items-center gap-2">
-          <Link
-            href="/forecast"
-            className="rounded-md px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-900 hover:text-zinc-100"
-          >
+        <div className="flex items-center gap-1">
+          <NavLink href="/forecast" active={isActive("/forecast")}>
             Forecast
-          </Link>
-          <a
-            href="/highfreq"
-            className="rounded-md px-3 py-1.5 text-sm text-zinc-500 transition hover:bg-zinc-900 hover:text-zinc-300"
-            title="legacy operator dashboard (Jinja)"
-          >
+          </NavLink>
+          <NavLink href="/highfreq" active={isActive("/highfreq")}>
             Operator
-          </a>
+          </NavLink>
           <a
             href="/grafana"
             className="rounded-md px-3 py-1.5 text-sm text-zinc-500 transition hover:bg-zinc-900 hover:text-zinc-300"
@@ -56,5 +58,29 @@ export function Navbar({ rightSlot }: Props) {
         </div>
       </div>
     </nav>
+  );
+}
+
+
+function NavLink({
+  href,
+  active,
+  children,
+}: {
+  href: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      className={`rounded-md px-3 py-1.5 text-sm transition ${
+        active
+          ? "bg-zinc-900 text-zinc-100"
+          : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+      }`}
+    >
+      {children}
+    </Link>
   );
 }
