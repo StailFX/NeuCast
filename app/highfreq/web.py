@@ -27,13 +27,14 @@ import json
 import logging
 import math
 import os
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
@@ -60,6 +61,34 @@ logger = logging.getLogger(__name__)
 MIN_MINUTES_FOR_TRAINING: int = 65
 
 DEFAULT_SYMBOL: str = os.getenv("HIGHFREQ_DEFAULT_SYMBOL", "BTCUSDT")
+
+
+# Code-review H-3sec (2026-05-04): symbol parameter from public query string
+# is interpolated into filenames (weights/<sym>_drift.json,
+# weights/<sym>_1m.cbm) and into log lines. Without a regex whitelist a
+# crafted ?symbol=../../etc/passwd or unicode-injected value can break out
+# of the intended namespace OR poison structured logs (\n injection).
+# Pin a Binance-style USDT-pair shape: 2-12 uppercase letters + 'USDT'.
+# All currently-traded pairs (BTCUSDT / ETHUSDT / BNBUSDT) match.
+_SYMBOL_RE = re.compile(r"^[A-Z]{2,12}USDT$")
+
+
+def _validate_symbol(symbol: str | None) -> str:
+    """Validate-and-normalise ``symbol`` from the request.
+
+    Returns the uppercase form on success. Raises ``HTTPException(400)``
+    on a malformed value (caught by FastAPI and rendered as an error
+    response, never bleeds into a filesystem / log injection).
+    """
+    if symbol is None:
+        return DEFAULT_SYMBOL
+    s = symbol.strip().upper()
+    if not _SYMBOL_RE.match(s):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid symbol; expected uppercase ALPHA{{2,12}}USDT",
+        )
+    return s
 
 
 def _available_symbols() -> list[str]:
@@ -450,7 +479,7 @@ def get_status(
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
     """Return the current ingest snapshot + training-readiness countdown."""
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     last_row = _fetch_last_row(db, symbol)
     minutes_accumulated = _fetch_minutes_accumulated(db, symbol)
     rows_last_60s = _fetch_rows_last_60s(db, symbol)
@@ -475,7 +504,7 @@ def get_health(
     Used by uptime monitors and the systemd watchdog. Cheap (one indexed
     query) so it can be polled at high frequency without DB pressure.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     rows_last_60s = _fetch_rows_last_60s(db, symbol)
 
     if rows_last_60s is None:
@@ -554,7 +583,7 @@ def get_forecast(
     The response always includes the predictor ``model`` block so
     clients can show "model age" / "calibrated?" badges even on 503.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     if horizon <= 0:
         horizon = 1
     status = predictor.status()
@@ -910,7 +939,7 @@ def get_forecast_ensemble(
         ensemble_probability,
     )
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     if not (0.0 < weight_1m and 0.0 < weight_15m):
         return JSONResponse(
             status_code=400,
@@ -1177,7 +1206,7 @@ def get_paper_trades(
     ``db_status`` flag — the UI can show "DB hiccup" without losing the
     page entirely.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     limit = max(1, min(int(limit), MAX_PAPER_TRADES_LIMIT))
 
     config = PaperTraderConfig()
@@ -1259,7 +1288,7 @@ def get_realized_accuracy(
         fetch_rolling_accuracy_sync,
     )
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     # Allow only sane window sizes — accept the documented defaults
     # (50 / 100) plus anything between 10 and the same hard cap we use
     # for the trades endpoint. Prevents ?window=99999 from scanning
@@ -1463,7 +1492,7 @@ def get_microprice_history(
     cold-start / DB hiccup is a valid 200 — the chart just shows its
     empty-state placeholder.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     seconds = max(10, min(int(seconds), MAX_HISTORY_SECONDS))
     rows = _fetch_microprice_history(db, symbol, seconds)
     if rows is None:
@@ -1519,14 +1548,23 @@ def _fetch_orderbook_window(
     except (ProgrammingError, OperationalError) as exc:
         logger.warning("orderbook fetch failed (%s): %s", symbol, exc)
         return None
+    # Code-review H-5perf (2026-05-04): clamp per-row depth to 10
+    # levels each side. The L2 ingest writes up to 20 levels; for the
+    # heatmap UI 10 is more than sufficient and halves payload size.
+    # 1800 rows × 10 levels × 8 bytes × 4 arrays ≈ 580 KB → 290 KB.
+    _OB_LEVELS_PER_SIDE = 10
     out = []
     for r in rows:
+        bp = list(r["bids_price"] or [])[:_OB_LEVELS_PER_SIDE]
+        bq = list(r["bids_qty"] or [])[:_OB_LEVELS_PER_SIDE]
+        ap = list(r["asks_price"] or [])[:_OB_LEVELS_PER_SIDE]
+        aq = list(r["asks_qty"] or [])[:_OB_LEVELS_PER_SIDE]
         out.append({
             "ts": r["ts"].isoformat() if isinstance(r["ts"], datetime) else r["ts"],
-            "bids_price": list(r["bids_price"] or []),
-            "bids_qty": list(r["bids_qty"] or []),
-            "asks_price": list(r["asks_price"] or []),
-            "asks_qty": list(r["asks_qty"] or []),
+            "bids_price": bp,
+            "bids_qty": bq,
+            "asks_price": ap,
+            "asks_qty": aq,
         })
     return out
 
@@ -1543,7 +1581,7 @@ def get_orderbook(
     is a valid state surfaced via empty ``rows`` array. The UI shows
     its own "ждём данные…" placeholder.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     seconds = max(10, min(int(seconds), MAX_OB_HEATMAP_SECONDS))
 
     rows = _fetch_orderbook_window(db, symbol, seconds)
@@ -1631,7 +1669,7 @@ def get_regimes(
     """
     from app.highfreq.regimes import label_history
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     hours = max(1.0, min(168.0, float(hours)))   # 1h .. 7d
     keep_last_n = max(10, min(500, int(keep_last_n)))
 
@@ -1673,7 +1711,7 @@ def get_feature_importance(
     Returns 200 always: empty/None ``importance`` is a valid no-model
     state surfaced via ``ok=False``.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     pairs = predictor.feature_importance()
     status = predictor.status()
     if pairs is None:
@@ -1736,7 +1774,7 @@ def get_training_report(
     trainer hasn't written its first ``metrics.json`` yet (cold-start).
     Never 503 — the page must keep rendering through trainer outages.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     skip_live = bool(lite)
     if horizon <= 0:
         horizon = 1
@@ -1874,11 +1912,16 @@ def get_realized_accuracy_full(
     except ImportError:
         _binomtest = None
 
+    # Code-review H-2/H-4perf (2026-05-04): bound the scan to the last
+    # 90 days. predictions_log grows ~3 rows/min × symbols → ~12.5M rows
+    # per year. Without a time filter this endpoint becomes O(t) and
+    # eventually freezes the worker for multiple seconds.
     sql = text(
         "SELECT symbol, "
         "       COUNT(*) FILTER (WHERE realized_correct IS NOT NULL) AS directional, "
         "       COUNT(*) FILTER (WHERE realized_correct IS TRUE)     AS hits "
         "  FROM predictions_log "
+        " WHERE ts > now() - interval '90 days' "
         " GROUP BY symbol "
         " ORDER BY symbol"
     )
@@ -1979,13 +2022,27 @@ def get_conditional_accuracy(
     THRESHOLDS = [0.05, 0.10, 0.15]   # = prob ≥ 0.55 / 0.60 / 0.65
     LABELS = ["conf_55", "conf_60", "conf_65"]
 
+    # Code-review H-4perf (2026-05-04): single SQL pass with three
+    # parallel COUNT(...) FILTER aggregates instead of three separate
+    # full-table scans (was: for label, t in zip(LABELS, THRESHOLDS):
+    # for r in db.execute(sql, {"t": t})...). Plus 90-day time bound
+    # prevents O(t) latency creep on predictions_log.
     sql = text(
         "SELECT symbol, "
         "       COUNT(*) FILTER (WHERE realized_correct IS NOT NULL "
-        "                        AND ABS(prob_up - 0.5) >= :t) AS n, "
+        "                        AND ABS(prob_up - 0.5) >= 0.05) AS n_55, "
         "       COUNT(*) FILTER (WHERE realized_correct IS TRUE "
-        "                        AND ABS(prob_up - 0.5) >= :t) AS hits "
+        "                        AND ABS(prob_up - 0.5) >= 0.05) AS hits_55, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS NOT NULL "
+        "                        AND ABS(prob_up - 0.5) >= 0.10) AS n_60, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS TRUE "
+        "                        AND ABS(prob_up - 0.5) >= 0.10) AS hits_60, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS NOT NULL "
+        "                        AND ABS(prob_up - 0.5) >= 0.15) AS n_65, "
+        "       COUNT(*) FILTER (WHERE realized_correct IS TRUE "
+        "                        AND ABS(prob_up - 0.5) >= 0.15) AS hits_65 "
         "  FROM predictions_log "
+        " WHERE ts > now() - interval '90 days' "
         " GROUP BY symbol "
         " ORDER BY symbol"
     )
@@ -2001,36 +2058,9 @@ def get_conditional_accuracy(
 
     by_symbol: dict[str, dict[str, Any]] = {}
     try:
-        for label, t in zip(LABELS, THRESHOLDS):
-            for r in db.execute(sql, {"t": t}).all():
-                sym = r[0]
-                n = int(r[1] or 0)
-                hits = int(r[2] or 0)
-                if sym not in by_symbol:
-                    by_symbol[sym] = {"symbol": sym, "buckets": {}}
-                if n == 0:
-                    by_symbol[sym]["buckets"][label] = {
-                        "threshold": t, "n": 0, "hits": 0,
-                        "dir_acc": None, "ci_low": None, "ci_high": None,
-                        "p_value": None,
-                    }
-                    continue
-                acc = hits / n
-                lo, hi = _wilson(hits, n)
-                p_val: float | None = None
-                if _binomtest is not None:
-                    p_val = float(
-                        _binomtest(k=hits, n=n, p=0.5, alternative="greater").pvalue
-                    )
-                by_symbol[sym]["buckets"][label] = {
-                    "threshold": t,
-                    "n": n,
-                    "hits": hits,
-                    "dir_acc": acc,
-                    "ci_low": lo,
-                    "ci_high": hi,
-                    "p_value": p_val,
-                }
+        # Single SQL pass — fetch all 6 aggregates per symbol, unpack
+        # into the 3 bucket labels client-side (cheap).
+        rows = db.execute(sql).all()
     except (ProgrammingError, OperationalError) as exc:
         logger.warning("conditional_accuracy failed: %s", exc)
         return JSONResponse(content={
@@ -2038,6 +2068,39 @@ def get_conditional_accuracy(
             "db_status": "unavailable",
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         })
+    for r in rows:
+        sym = r[0]
+        # r[1..6] = (n_55, hits_55, n_60, hits_60, n_65, hits_65)
+        bucket_data = {
+            "conf_55": (0.05, int(r[1] or 0), int(r[2] or 0)),
+            "conf_60": (0.10, int(r[3] or 0), int(r[4] or 0)),
+            "conf_65": (0.15, int(r[5] or 0), int(r[6] or 0)),
+        }
+        by_symbol[sym] = {"symbol": sym, "buckets": {}}
+        for label, (t, n, hits) in bucket_data.items():
+            if n == 0:
+                by_symbol[sym]["buckets"][label] = {
+                    "threshold": t, "n": 0, "hits": 0,
+                    "dir_acc": None, "ci_low": None, "ci_high": None,
+                    "p_value": None,
+                }
+                continue
+            acc = hits / n
+            lo, hi = _wilson(hits, n)
+            p_val: float | None = None
+            if _binomtest is not None:
+                p_val = float(
+                    _binomtest(k=hits, n=n, p=0.5, alternative="greater").pvalue
+                )
+            by_symbol[sym]["buckets"][label] = {
+                "threshold": t,
+                "n": n,
+                "hits": hits,
+                "dir_acc": acc,
+                "ci_low": lo,
+                "ci_high": hi,
+                "p_value": p_val,
+            }
 
     return JSONResponse(content=_scrub({
         "ok": True,
@@ -2068,7 +2131,7 @@ def get_drift_status(
     alarming red — drift detection is best-effort cron-driven, not a
     runtime guarantee.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     weights_dir = Path("weights/highfreq")
     drift_path = weights_dir / f"{symbol.lower()}_drift.json"
     if not drift_path.exists():
@@ -2131,7 +2194,7 @@ def get_cumulative_pnl(
 
     Returns 200 always; DB error → ``ok=False``.
     """
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     if not (10 <= limit_points <= 1000):
         limit_points = 200
 
@@ -2150,15 +2213,23 @@ def get_cumulative_pnl(
     # ``app.highfreq.paper_trader.compute_pnl``), so subtracting fees
     # again here would double-count. The UI's ``meanGrossBps`` does
     # the same reconstruction.
+    # Code-review H-3perf (2026-05-04): bound to last 90 days +
+    # LIMIT 5000. paper_trades grows monotonically — without these
+    # the per-call cost is O(n) and eventually adds noticeable
+    # latency to every dashboard tick. The downsampling at line ~2244
+    # already trims to limit_points (default 200), so we never need
+    # more than ~5000 raw rows even at the densest cadence.
     sql = text(
         "SELECT exit_ts, entry_price, exit_price, side "
         "  FROM paper_trades "
         " WHERE symbol = :symbol "
         "   AND exit_ts IS NOT NULL "
+        "   AND exit_ts > now() - interval '90 days' "
         "   AND entry_price IS NOT NULL AND entry_price > 0 "
         "   AND exit_price IS NOT NULL "
         "   AND side IN ('long', 'short') "
-        " ORDER BY exit_ts ASC"
+        " ORDER BY exit_ts ASC "
+        " LIMIT 5000"
     )
     try:
         raw_rows = db.execute(sql, {"symbol": symbol}).all()
@@ -2278,13 +2349,16 @@ def get_reliability_diagram(
     if not (3 <= n_bins <= 30):
         n_bins = 10
 
-    # Pull ALL predictions+realizations per symbol. We stream at the
-    # python level rather than try to bucket in SQL — the bucket
-    # boundaries are clean numerical operations on the prob_up float.
+    # Code-review H-2perf (2026-05-04): bound to last 90 days. Without
+    # this, predictions_log scan grows O(t) and reaches multi-second
+    # latency within a year. The reliability diagram is most informative
+    # for the recent regime anyway — calibration drift older than 90
+    # days is irrelevant to "is the production model honest right now".
     sql = text(
         "SELECT symbol, prob_up, realized_correct, signal "
         "  FROM predictions_log "
-        " WHERE realized_correct IS NOT NULL"
+        " WHERE realized_correct IS NOT NULL "
+        "   AND ts > now() - interval '90 days'"
     )
     try:
         raw_rows = db.execute(sql).all()
@@ -2475,7 +2549,7 @@ def get_anti_skill(
     """
     from app.highfreq.anti_skill_detector import fetch_anti_skill_sync
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     try:
         report = fetch_anti_skill_sync(db, symbol=symbol)
     except (ProgrammingError, OperationalError) as exc:
@@ -2514,14 +2588,19 @@ def get_pnl_by_fee_tier(
     """
     from app.highfreq.fee_tiers import summarise_all_tiers
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
+    # Code-review H-3perf (2026-05-04): 90-day bound + LIMIT 5000.
+    # Same shape as cumulative_pnl — paper_trades is append-only and
+    # would otherwise grow O(t) into multi-second SELECTs.
     try:
         rows = db.execute(
             text(
                 "SELECT side, qty, entry_price, exit_price "
                 "  FROM paper_trades "
                 " WHERE symbol = :symbol "
-                " ORDER BY exit_ts ASC"
+                "   AND exit_ts > now() - interval '90 days' "
+                " ORDER BY exit_ts ASC "
+                " LIMIT 5000"
             ),
             {"symbol": symbol},
         ).mappings().all()
@@ -2574,7 +2653,7 @@ def get_actionable_signal(
     )
     from app.highfreq.paper_trader import PaperTraderConfig
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
 
     try:
         latest = fetch_latest_prediction_sync(db, symbol=symbol)
@@ -2653,7 +2732,7 @@ def get_predictions_history(
     """
     from app.highfreq.predictions_log import fetch_history_sync
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     # Sane bounds: 1 min .. 24 h. Past 24h is not realistically useful
     # for a "recent tape" widget; the query would also return 1500+
     # rows and slow the page.
@@ -2704,7 +2783,7 @@ def get_training_history(
     """
     from app.highfreq.training_history import fetch_history_sync
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
     # Sane bounds: since_days in [1, 90]. Past 90 days is way more
     # than the trainer's training history is meaningful for at
     # current cadences.

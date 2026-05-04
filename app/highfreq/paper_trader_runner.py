@@ -116,11 +116,15 @@ LOOKBACK_SECONDS: int = 180
 # journal readable but still gives operational visibility.
 STATUS_LOG_EVERY_N_TICKS: int = 5
 
-# asyncpg pool sizing — 2 connections is plenty (one for fetch, one for
-# write), with min_size=1 so we don't hold a connection idle when there's
-# nothing to do.
+# asyncpg pool sizing.
+# Code-review H-7perf (2026-05-04): bumped max_size 2 → 4. Per-tick the
+# runner does: 1 spot-seconds fetch + 1 futures-seconds fetch (v3) + 1
+# predictions_log INSERT + 1 paper_trades INSERT (on close) + 2
+# anti-skill rolling-stat SELECTs. With max=2 a slow query on any one
+# starves the runner; max=4 leaves headroom and is still trivial on
+# Postgres' default 100-conn server.
 POOL_MIN_SIZE: int = 1
-POOL_MAX_SIZE: int = 2
+POOL_MAX_SIZE: int = 4
 
 # Default symbol — overridable via HIGHFREQ_PAPER_SYMBOL env var.
 # Multi-symbol deployment uses templated systemd units passing symbol

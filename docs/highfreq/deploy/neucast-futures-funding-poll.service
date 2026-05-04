@@ -29,5 +29,25 @@ MemoryMax=100M
 Nice=10
 TimeoutStartSec=60
 
+# Code-review H-1sec (2026-05-04): systemd hardening — defence-in-depth.
+# A compromise of any of these processes (malicious .cbm planted via a
+# future write-path bug, etc.) gets a sandbox by default: no /tmp leak,
+# no /home access, no setuid escalation, no kernel tunables, no
+# unrelated address families. ReadWritePaths whitelists weights +
+# textfile_collector + journal-side /var/log so the actual job still
+# works. Loosen per-unit ONLY if a service genuinely needs it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/neucast /var/lib/node_exporter /var/log
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
 [Install]
 # Activated by neucast-futures-funding-poll.timer.

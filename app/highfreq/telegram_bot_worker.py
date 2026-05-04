@@ -635,9 +635,18 @@ def _process_update(
                 bot_token, chat_id,
                 f"<i>unknown command {cmd!r}</i>\n\n{HELP_TEXT}",
             )
-    except Exception as exc:
+    except Exception:
+        # Code-review H-4sec (2026-05-04): full exception (including
+        # SQLAlchemy DSN fragments + DB schema details) goes to the
+        # journal, NOT to the Telegram chat. The chat reply is generic
+        # so a hijacked operator session can't be used as a SQL-schema
+        # exploration interface.
         logger.exception("command %s failed", cmd)
-        _send_html(bot_token, chat_id, f"<i>error executing {cmd}: {exc}</i>")
+        _send_html(
+            bot_token, chat_id,
+            f"<i>command {cmd!r} failed; see journalctl -u "
+            "neucast-highfreq-telegram-bot for details</i>",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

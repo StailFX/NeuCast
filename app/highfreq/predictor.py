@@ -100,8 +100,20 @@ def weights_path_for_symbol(
     single-horizon contract — existing call sites continue to read
     ``btcusdt_1m.cbm`` without changes (release R, 2026-04-29).
     """
+    # Code-review H-3sec (2026-05-04): defence-in-depth — symbol coming
+    # from the predictor singleton key has already been validated at the
+    # FastAPI boundary, but if a future caller invokes this function with
+    # an unvetted string we still need to refuse path-traversal attempts
+    # before constructing a Path object.
+    import re as _re
+    sym_clean = (symbol or "").strip().upper()
+    if not _re.match(r"^[A-Z]{2,12}USDT$", sym_clean):
+        raise ValueError(
+            f"weights_path_for_symbol: invalid symbol {symbol!r}; "
+            f"expected uppercase ALPHA{{2,12}}USDT"
+        )
     base = Path(os.getenv("HIGHFREQ_WEIGHTS_DIR", "weights/highfreq"))
-    return base / f"{symbol.lower()}_{int(horizon_minutes)}m.cbm"
+    return base / f"{sym_clean.lower()}_{int(horizon_minutes)}m.cbm"
 
 
 def _metrics_path_for(weights_path: Path) -> Path:
@@ -239,10 +251,14 @@ class LivePredictor:
 
         Uses CatBoost's default ``PredictionValuesChange`` method —
         average change in prediction when the feature is shuffled,
-        normalised to sum to 100. Constant for a given .cbm file, so
-        the result can be cached in the caller (we don't cache here
-        because it's cheap on 14 features and the predictor doesn't
-        own UI-cache lifetime).
+        normalised to sum to 100.
+
+        Code-review H-6perf (2026-05-04): the result is constant for a
+        given ``.cbm`` mtime, but the dashboard polls this endpoint every
+        5 min × 3 cards = 36 calls/h, each one re-iterating the CatBoost
+        tree ensemble (5-15 ms). Now memoised on (weights_path, mtime);
+        invalidated automatically when ``_maybe_reload_model`` swaps in a
+        fresh model.
 
         Stub-friendly: if the model object exposes ``get_feature_importance``
         (CatBoost convention), we use it. Otherwise return ``None`` —
@@ -251,6 +267,16 @@ class LivePredictor:
         self._maybe_reload_model()
         if self._model is None:
             return None
+
+        # Cache-key: ``(weights_path, mtime)``. Mtime is captured during
+        # the most recent model load (``_maybe_reload_model`` writes
+        # ``self._weights_mtime``). Different .cbm or new mtime → cache
+        # miss → recompute.
+        cache_key = (str(self.weights_path), self._weights_mtime)
+        cached = getattr(self, "_fi_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
         if not hasattr(self._model, "get_feature_importance"):
             return None
         try:
@@ -258,18 +284,30 @@ class LivePredictor:
         except Exception as exc:
             logger.warning("get_feature_importance() failed: %s", exc)
             return None
-        from app.highfreq.feature_pipeline import FEATURE_COLUMNS as _FC
-        if len(raw) != len(_FC):
+
+        # Use the model's actual feature_set to label importances —
+        # H-6perf: previously hard-coded to the base 18 microstructure
+        # cols, which mislabeled v3 (23 cols) and cross_asset (22/27).
+        try:
+            cols = self._expected_feature_columns()
+        except Exception:
+            from app.highfreq.feature_pipeline import FEATURE_COLUMNS as _FC
+            cols = _FC
+
+        if len(raw) != len(cols):
             logger.warning(
-                "feature_importance length mismatch: model=%d expected=%d",
-                len(raw), len(_FC),
+                "feature_importance length mismatch: model=%d expected=%d "
+                "(feature_set=%s)",
+                len(raw), len(cols), self.feature_set(),
             )
             return None
         pairs = [
             {"feature": name, "importance": float(value)}
-            for name, value in zip(_FC, raw)
+            for name, value in zip(cols, raw)
         ]
         pairs.sort(key=lambda p: p["importance"], reverse=True)
+        # Memoise.
+        self._fi_cache = (cache_key, pairs)
         return pairs
 
     def is_calibrated(self) -> bool:

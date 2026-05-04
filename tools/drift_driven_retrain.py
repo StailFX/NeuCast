@@ -41,6 +41,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -51,15 +52,31 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+_SYMBOL_RE = re.compile(r"^[A-Z]{2,12}USDT$")
+
+
+def _validate_symbol(symbol: str) -> str:
+    """Code-review H-3sec (2026-05-04): refuse path-traversal-shaped
+    symbols before formatting them into filenames or systemctl unit names.
+    """
+    s = (symbol or "").strip().upper()
+    if not _SYMBOL_RE.match(s):
+        raise ValueError(
+            f"invalid symbol {symbol!r}; expected uppercase ALPHA{{2,12}}USDT"
+        )
+    return s
+
+
 def _read_drift_json(weights_dir: Path, symbol: str) -> dict[str, Any] | None:
     """Returns the parsed drift JSON or ``None`` if missing/malformed."""
-    p = weights_dir / f"{symbol.lower()}_drift.json"
+    sym = _validate_symbol(symbol)
+    p = weights_dir / f"{sym.lower()}_drift.json"
     if not p.exists():
         return None
     try:
         return json.loads(p.read_text())
     except Exception as exc:  # noqa: BLE001
-        logger.warning("malformed drift JSON for %s: %s", symbol, exc)
+        logger.warning("malformed drift JSON for %s: %s", sym, exc)
         return None
 
 

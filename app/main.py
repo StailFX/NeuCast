@@ -40,6 +40,116 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 app = FastAPI()
 
+# ──────────────────────────────────────────────────────────────────────
+# Code-review H-2sec (2026-05-04): Trusted-host + security-header
+# middleware. Closes Host-header injection (poisons cookies + reset
+# links if/when password reset lands), adds CSP / X-Frame-Options /
+# Referrer-Policy / Permissions-Policy, and stamps HSTS for HTTPS.
+#
+# Prod hostnames come from NEUCAST_TRUSTED_HOSTS (comma-separated,
+# default "neucast.ru,www.neucast.ru,localhost,127.0.0.1"). The
+# localhost entries keep dev / docker-compose flow working without
+# config; in real prod nginx terminates TLS and rewrites Host so
+# the FastAPI sees only the canonical names.
+# ──────────────────────────────────────────────────────────────────────
+from starlette.middleware.trustedhost import TrustedHostMiddleware as _TrustedHostMW
+
+_NEUCAST_TRUSTED_HOSTS = [
+    h.strip() for h in os.getenv(
+        "NEUCAST_TRUSTED_HOSTS",
+        "neucast.ru,www.neucast.ru,localhost,127.0.0.1,testserver",
+    ).split(",")
+    if h.strip()
+]
+app.add_middleware(_TrustedHostMW, allowed_hosts=_NEUCAST_TRUSTED_HOSTS)
+
+
+class _SecurityHeadersMiddleware:
+    """Adds OWASP-recommended security headers on every HTML response.
+
+    Only modifies HTTP responses — websocket, etc. left alone. The
+    headers are conservative and shouldn't break any existing UI flow:
+
+    * ``Strict-Transport-Security``: tells browsers to refuse HTTP for
+      31_536_000 s (1 year). Stamped only when the request arrives via
+      HTTPS (X-Forwarded-Proto from nginx) so dev/docker over HTTP
+      doesn't lock the dev box into HTTPS-only.
+    * ``X-Content-Type-Options: nosniff``: stops MIME sniffing.
+    * ``X-Frame-Options: DENY``: clickjacking protection — site never
+      embeddable in an iframe.
+    * ``Referrer-Policy: strict-origin-when-cross-origin``: leaks only
+      origin (not full URL with query) when navigating to other sites.
+    * ``Permissions-Policy``: disables features we don't use
+      (camera/mic/geo/payment).
+    * ``Content-Security-Policy``: same-origin-by-default with explicit
+      allowance for cdnjs (Plotly, Chart.js are loaded from there in
+      templates). 'unsafe-inline' kept for inline event handlers in
+      our existing templates — would need a rewrite to drop.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Detect HTTPS for HSTS gating.
+        forwarded_proto = ""
+        for k, v in scope.get("headers", []):
+            if k.lower() == b"x-forwarded-proto":
+                forwarded_proto = v.decode("latin-1", "replace")
+                break
+        is_https = (scope.get("scheme") == "https") or forwarded_proto == "https"
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append(
+                    (b"x-content-type-options", b"nosniff"),
+                )
+                headers.append(
+                    (b"x-frame-options", b"DENY"),
+                )
+                headers.append((
+                    b"referrer-policy",
+                    b"strict-origin-when-cross-origin",
+                ))
+                headers.append((
+                    b"permissions-policy",
+                    b"geolocation=(), camera=(), microphone=(), payment=()",
+                ))
+                # CSP: same-origin + cdnjs (Plotly / Chart.js used by templates).
+                # 'unsafe-inline' retained for legacy inline event handlers.
+                headers.append((
+                    b"content-security-policy",
+                    b"default-src 'self'; "
+                    b"script-src 'self' 'unsafe-inline' "
+                    b"https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+                    b"style-src 'self' 'unsafe-inline' "
+                    b"https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+                    b"https://fonts.googleapis.com; "
+                    b"img-src 'self' data: blob:; "
+                    b"font-src 'self' https://fonts.gstatic.com data:; "
+                    b"connect-src 'self'; "
+                    b"frame-ancestors 'none'; "
+                    b"base-uri 'self'; "
+                    b"form-action 'self'",
+                ))
+                if is_https:
+                    headers.append((
+                        b"strict-transport-security",
+                        b"max-age=31536000; includeSubDomains",
+                    ))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(_SecurityHeadersMiddleware)
+
 # ── gzip compression на весь трафик (HTML/JSON/JS/CSS). ──
 # minimum_size=500: мелкие ответы не сжимаем, оверхед больше выгоды.
 # compresslevel=6: хороший баланс CPU/ratio.

@@ -31,18 +31,35 @@ def _make_app() -> FastAPI:
 def _override_db_with_per_call_rows(
     app: FastAPI, rows_by_threshold: dict[float, list[tuple]],
 ) -> None:
-    """Mock DB so each call to ``execute(sql, {'t': t}).all()``
-    returns the rows mapped to that ``t`` value.
+    """Mock DB so the single ``execute(sql).all()`` call (code-review
+    H-4perf, 2026-05-04: was 3 separate calls) returns the merged
+    fixture rows in the new 7-column shape:
+    ``(symbol, n_55, hits_55, n_60, hits_60, n_65, hits_65)``.
 
-    rows: list of (symbol, n, hits) tuples.
+    The original fixture format ``rows_by_threshold[t] = [(sym, n, hits)]``
+    is preserved for test readability — we transpose it here.
     """
+    # Build a per-symbol dict indexed by symbol → 6 numbers (3 buckets × 2).
+    by_symbol: dict[str, list[int]] = {}
+    for t in (0.05, 0.10, 0.15):
+        for tup in rows_by_threshold.get(t, []):
+            sym = tup[0]
+            n = int(tup[1])
+            hits = int(tup[2])
+            if sym not in by_symbol:
+                by_symbol[sym] = [0, 0, 0, 0, 0, 0]
+            idx = {0.05: 0, 0.10: 2, 0.15: 4}[t]
+            by_symbol[sym][idx] = n
+            by_symbol[sym][idx + 1] = hits
+    merged_rows = [
+        (sym, *vals) for sym, vals in sorted(by_symbol.items())
+    ]
+
     fake_db = MagicMock()
 
     def execute_side_effect(stmt, params=None):
         result = MagicMock()
-        t = (params or {}).get("t")
-        rows = rows_by_threshold.get(t, [])
-        result.all.return_value = rows
+        result.all.return_value = merged_rows
         return result
 
     fake_db.execute.side_effect = execute_side_effect

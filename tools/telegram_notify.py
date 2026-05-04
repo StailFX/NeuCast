@@ -91,9 +91,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--silent", action="store_true",
                    help="send with disable_notification=True (no "
                         "phone vibration / sound, just log it).")
-    p.add_argument("--bot-token", default=os.environ.get(
-        "HF_TELEGRAM_SIGNAL_BOT_TOKEN", "",
-    ).strip())
+    # Code-review H-5sec (2026-05-04): the bot token used to be
+    # accepted via ``--bot-token`` CLI flag, which leaks into ``ps aux``
+    # output for any process listing. Multi-tenant boxes (or any future
+    # operator with shell access who isn't admin) could harvest it.
+    # Token now comes EXCLUSIVELY from the environment variable. If
+    # operators previously passed it on argv, they'll see the helpful
+    # error below and switch to the env-var-driven invocation.
     p.add_argument("--chat-id", default=os.environ.get(
         "HF_TELEGRAM_SIGNAL_CHAT_ID", "",
     ).strip())
@@ -110,10 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stdout,
     )
 
-    if not args.bot_token or not args.chat_id:
+    # Token is env-var-only (H-5sec): never on argv.
+    bot_token = os.environ.get("HF_TELEGRAM_SIGNAL_BOT_TOKEN", "").strip()
+    if not bot_token or not args.chat_id:
         logger.error(
-            "missing HF_TELEGRAM_SIGNAL_BOT_TOKEN or "
-            "HF_TELEGRAM_SIGNAL_CHAT_ID env"
+            "missing HF_TELEGRAM_SIGNAL_BOT_TOKEN env or --chat-id"
         )
         return 2
 
@@ -138,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         body = _html_escape(body)
 
     code, resp = send_telegram(
-        bot_token=args.bot_token,
+        bot_token=bot_token,
         chat_id=args.chat_id,
         body_html=body,
         disable_notification=args.silent,
