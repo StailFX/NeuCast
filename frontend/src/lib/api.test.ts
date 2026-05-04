@@ -122,3 +122,70 @@ describe("fetchRealizedAccuracy", () => {
     expect(seenUrl).toContain("symbol=ETHUSDT");
   });
 });
+
+
+describe("submitPrediction + fetchTaskStatus", () => {
+  it("submitPrediction posts JSON body and parses task_id/slug", async () => {
+    let seenBody: unknown = null;
+    let seenContentType = "";
+    server.use(
+      http.post("/api/predict", async ({ request }) => {
+        seenContentType = request.headers.get("content-type") ?? "";
+        seenBody = await request.json();
+        return HttpResponse.json({
+          ok: true,
+          task_id: "task-xyz",
+          slug: "ab12CD",
+          redirect_url: "/p/ab12CD",
+        });
+      }),
+    );
+
+    const { submitPrediction } = await import("./api");
+    const res = await submitPrediction({
+      ticker: "GC=F",
+      start_date: "2023-01-01",
+      end_date: "2026-01-01",
+      days_ahead: 30,
+      use_foundation: true,
+    });
+
+    expect(seenContentType).toContain("application/json");
+    expect(seenBody).toMatchObject({
+      ticker: "GC=F",
+      days_ahead: 30,
+      use_foundation: true,
+    });
+    expect(res.task_id).toBe("task-xyz");
+    expect(res.slug).toBe("ab12CD");
+    expect(res.redirect_url).toBe("/p/ab12CD");
+  });
+
+  it("fetchTaskStatus returns the celery state envelope", async () => {
+    server.use(
+      http.get("/api/task/task-xyz", () =>
+        HttpResponse.json({
+          state: "PREDICTING",
+          status: "Расчёт прогноза...",
+        }),
+      ),
+    );
+    const { fetchTaskStatus } = await import("./api");
+    const res = await fetchTaskStatus("task-xyz");
+    expect(res.state).toBe("PREDICTING");
+    expect(res.status).toContain("Расчёт");
+  });
+
+  it("fetchTaskStatus surfaces 403 (other-user task) as ApiError", async () => {
+    server.use(
+      http.get("/api/task/foreign-id", () =>
+        HttpResponse.json({ detail: "not your task" }, { status: 403 }),
+      ),
+    );
+    const { fetchTaskStatus } = await import("./api");
+    await expect(fetchTaskStatus("foreign-id")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 403,
+    });
+  });
+});

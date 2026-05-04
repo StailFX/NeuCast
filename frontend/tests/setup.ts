@@ -10,6 +10,10 @@ import { server } from "./mocks/server";
 // Auto-clean DOM between tests so each test starts from blank.
 afterEach(() => {
   cleanup();
+  // Reset the router-mock spy state so .toHaveBeenCalledWith() in
+  // one test doesn't leak into the next. The mock object is created
+  // once in vi.mock() below and reused, so we have to clear by hand.
+  vi.clearAllMocks();
 });
 
 // MSW lifecycle — listen, reset between tests, close at the end.
@@ -27,9 +31,17 @@ vi.mock("next/navigation", () => {
     prefetch: vi.fn(),
     refresh: vi.fn(),
   };
+  // ``__searchParams`` lets per-test setup seed query string for
+  // pages that read ``useSearchParams()`` (e.g. /predict/waiting).
+  // Default is an empty params bag.
+  const sp = { current: new URLSearchParams() };
   return {
     useRouter: () => router,
     usePathname: () => "/",
-    useSearchParams: () => new URLSearchParams(),
+    useSearchParams: () => sp.current,
+    useParams: () => ({}),
+    __setSearchParams(next: URLSearchParams) {
+      sp.current = next;
+    },
   };
 });

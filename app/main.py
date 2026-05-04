@@ -762,6 +762,22 @@ class _RegisterPayload(BaseModel):
     password2: str = _PydField(min_length=1, max_length=512)
 
 
+class _PredictPayload(BaseModel):
+    """JSON twin of the legacy ``/predict`` form-post.
+
+    Field bounds match the legacy HTML form (``min=0`` / ``max=365``
+    on ``days_ahead``, free-form ``ticker`` capped to keep it sane).
+    The v2 SPA POSTs here; result rendering still uses the legacy
+    ``/p/{slug}`` HTML page until the predict.html chart suite is
+    ported to TSX.
+    """
+    ticker: str = _PydField(min_length=1, max_length=32)
+    start_date: str = _PydField(min_length=8, max_length=20)
+    end_date: str = _PydField(min_length=8, max_length=20)
+    days_ahead: int = _PydField(default=0, ge=0, le=365)
+    use_foundation: bool = False
+
+
 @app.post("/api/auth/login")
 async def api_auth_login(
     payload: _LoginPayload,
@@ -869,6 +885,86 @@ async def api_auth_me(
             "username": user.username,
             "role": user.role.name if user.role else "user",
         },
+    }
+
+
+@app.post("/api/predict")
+async def api_predict(
+    payload: _PredictPayload,
+    user: User = Depends(get_current_user),
+):
+    """JSON twin of the legacy form-based ``POST /predict``.
+
+    Behaviour parity with the form path:
+    * Requires an authenticated session (cookie). Anon → 401.
+    * Dispatches the ``neucast.predict`` Celery task.
+    * Saves the task→owner mapping in Redis (TTL 2h) so the polling
+      endpoint ``/api/task/{task_id}`` can refuse other users.
+    * Mints a short ``/p/{slug}`` URL for legacy result rendering.
+
+    Returns ``{ok, task_id, slug, redirect_url}``. The caller (v2
+    SPA) navigates to ``/v2/predict/{task_id}`` for a TSX waiting
+    page that polls ``/api/task/{task_id}``; once SUCCESS, the SPA
+    can either render its own result UI (future) or hand off to the
+    legacy short-URL ``redirect_url`` for the existing predict.html.
+    """
+    if user is None:
+        raise HTTPException(status_code=401, detail="login required")
+
+    if not USE_CELERY or not celery_app:
+        # Synchronous fallback would block an async handler with the
+        # full TCN run (~30s), so in JSON-land we surface this as a
+        # config error rather than try to mimic the form path.
+        raise HTTPException(
+            status_code=503,
+            detail="prediction worker not configured",
+        )
+
+    task = celery_app.send_task(
+        "neucast.predict",
+        args=[
+            payload.ticker,
+            payload.start_date,
+            payload.end_date,
+            payload.days_ahead,
+        ],
+        kwargs={
+            "user_id": int(user.id),
+            "use_foundation": bool(payload.use_foundation),
+        },
+        serializer="json",
+    )
+
+    # Best-effort owner stamp — same TTL as form-path.
+    try:
+        _save_task_owner(task.id, int(user.id), ttl=7200)
+    except Exception:
+        pass
+
+    # Short-URL slug. If Redis is down we still return ``slug=None``
+    # and let the caller fall back to the long form; the v2 waiting
+    # page works off ``task_id`` either way.
+    slug = _make_slug()
+    saved = _save_pred_slug(slug, {
+        "task_id": task.id,
+        "ticker": payload.ticker,
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
+        "days_ahead": payload.days_ahead,
+        "use_foundation": bool(payload.use_foundation),
+    })
+    redirect_url = f"/p/{slug}" if saved else (
+        f"/predict/status/{task.id}"
+        f"?ticker={payload.ticker}"
+        f"&start_date={payload.start_date}"
+        f"&end_date={payload.end_date}"
+        f"&days_ahead={payload.days_ahead}"
+    )
+    return {
+        "ok": True,
+        "task_id": task.id,
+        "slug": slug if saved else None,
+        "redirect_url": redirect_url,
     }
 
 

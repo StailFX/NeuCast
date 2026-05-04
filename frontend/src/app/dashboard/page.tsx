@@ -77,10 +77,9 @@ export default function DashboardPage() {
                 href="/highfreq"
               />
               <QuickLink
-                title="Daily TCN forecast (legacy)"
-                desc="Прогноз цены Yahoo Finance тикера через TCN + ансамбль. Пока на старом UI."
+                title="Запустить прогноз"
+                desc="Daily TCN forecast — Yahoo Finance тикеры (золото, нефть, акции). Расчёт ~30–90 сек."
                 href="/predict"
-                external
               />
               <QuickLink
                 title="Grafana operator"
@@ -95,11 +94,19 @@ export default function DashboardPage() {
                 История прогнозов
               </h2>
               <p>
-                Полная история TCN-прогнозов будет доступна после миграции
+                Каждый запуск
                 <code className="mx-1 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-xs text-zinc-300">
                   /predict
                 </code>
-                на v2. Пока что доступна на legacy Daily-странице.
+                сохраняется в истории. Просмотр истории + рендер
+                чартов пока на legacy-странице
+                <a
+                  href="/dashboard"
+                  className="mx-1 text-emerald-300 underline hover:text-emerald-200"
+                >
+                  /dashboard
+                </a>
+                — порт UI на v2 в бэклоге.
               </p>
             </div>
           </div>

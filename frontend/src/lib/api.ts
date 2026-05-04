@@ -205,3 +205,73 @@ export function fetchTrainingHistory(
     `/api/highfreq/training_history?limit=${limit}${sym}`,
   );
 }
+
+
+// ── Daily TCN predict workflow ────────────────────────────────────
+
+/** Request payload for ``POST /api/predict``. Mirrors the legacy
+ * form fields one-for-one. */
+export interface PredictRequest {
+  ticker: string;
+  start_date: string; // YYYY-MM-DD
+  end_date: string;   // YYYY-MM-DD
+  days_ahead: number;
+  use_foundation: boolean;
+}
+
+
+/** Response of ``POST /api/predict``. Caller navigates to
+ * ``/v2/predict/{task_id}`` (waiting page) and falls back to
+ * ``redirect_url`` for the legacy result render once SUCCESS. */
+export interface PredictResponse {
+  ok: true;
+  task_id: string;
+  slug: string | null;
+  /** Either ``/p/{slug}`` (preferred) or the long
+   * ``/predict/status/{task_id}?...`` form when Redis is down. */
+  redirect_url: string;
+}
+
+
+/** Submit a TCN prediction task. Requires an authenticated session
+ * (httponly cookie); the API returns 401 otherwise. */
+export function submitPrediction(
+  body: PredictRequest,
+): Promise<PredictResponse> {
+  return fetchJson<PredictResponse>(`/api/predict`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "include",
+  });
+}
+
+
+/** State machine surfaced by ``GET /api/task/{task_id}``. */
+export type TaskState =
+  | "PENDING"
+  | "FETCHING"
+  | "PREDICTING"
+  | "SUCCESS"
+  | "FAILURE"
+  | string; // celery sometimes emits other states; treat as in-flight.
+
+
+export interface TaskStatusResponse {
+  state: TaskState;
+  status?: string;
+  task_id?: string;
+  error?: string;
+}
+
+
+/** Poll the celery task. The /api/task/* endpoint enforces ownership
+ * (the caller must be the same user that submitted), so this requires
+ * the session cookie. */
+export function fetchTaskStatus(
+  taskId: string,
+): Promise<TaskStatusResponse> {
+  return fetchJson<TaskStatusResponse>(`/api/task/${taskId}`, {
+    credentials: "include",
+  });
+}
