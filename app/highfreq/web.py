@@ -1133,6 +1133,191 @@ def get_forecast_ensemble(
     }))
 
 
+# ── Dashboard batch endpoint (code-review H-1perf, 2026-05-04) ────────────
+
+
+def _build_per_symbol_dashboard_payload(
+    symbol: str,
+    db: Session,
+) -> dict[str, Any]:
+    """Per-symbol slice of the dashboard payload — forecast (1m) +
+    drift_status + last microprice. Stays lightweight enough to fan
+    out across N symbols in a single request without blocking the
+    event loop (the handler is plain ``def``, runs in threadpool).
+
+    Each sub-block is fail-safe: if the DB / file is unavailable, we
+    return ``ok=False`` for that block but don't 503 the whole batch.
+    """
+    out: dict[str, Any] = {"symbol": symbol}
+
+    # Forecast (1m, base path — same payload as /api/highfreq/forecast).
+    # Includes split-conformal CI when the predictor has it calibrated
+    # so the dashboard can render the same prob_up=X% · CI [lo, hi]
+    # tooltip the per-card endpoint surfaces.
+    try:
+        prob, status_dict = _predict_for_horizon(symbol, 1, db)
+        if prob is None:
+            out["forecast"] = {
+                "ok": False,
+                "reason": "model_or_data_unavailable",
+                "model": status_dict,
+            }
+        else:
+            if prob >= 0.55:
+                signal = "up"
+            elif prob <= 0.45:
+                signal = "down"
+            else:
+                signal = "neutral"
+            forecast_block: dict[str, Any] = {
+                "ok": True,
+                "prob_up": float(prob),
+                "signal": signal,
+                "model": status_dict,
+            }
+            # Pull conformal q from the predictor singleton (mirrors
+            # the /forecast endpoint's conformal_90/95 logic — best-
+            # effort, never blocks the response).
+            try:
+                from app.highfreq.predictor import get_predictor as _get_predictor
+                predictor = _get_predictor(symbol, horizon_minutes=1)
+                if hasattr(predictor, "conformal_interval"):
+                    ci90 = predictor.conformal_interval(float(prob), alpha=0.10)
+                    if ci90 is not None:
+                        forecast_block["conformal_90"] = ci90
+                    ci95 = predictor.conformal_interval(float(prob), alpha=0.05)
+                    if ci95 is not None:
+                        forecast_block["conformal_95"] = ci95
+            except Exception:
+                # Conformal is opt-in — silent fallback if not calibrated.
+                pass
+            out["forecast"] = forecast_block
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dashboard: forecast failed for %s: %s", symbol, exc)
+        out["forecast"] = {"ok": False, "reason": "internal_error"}
+
+    # Drift status (file-cached).
+    weights_dir = Path("weights/highfreq")
+    drift_path = weights_dir / f"{symbol.lower()}_drift.json"
+    if not drift_path.exists():
+        out["drift"] = {"ok": False, "reason": "no_check_yet"}
+    else:
+        payload = _read_json_cached(drift_path)
+        if payload is None:
+            out["drift"] = {"ok": False, "reason": "malformed"}
+        else:
+            out["drift"] = {
+                "ok": True,
+                "severity": payload.get("severity", "ok"),
+                "max_ks": payload.get("max_ks"),
+                "max_ks_feature": payload.get("max_ks_feature"),
+                "evaluated_at": payload.get("evaluated_at"),
+            }
+
+    # Latest microprice (last row of recent seconds).
+    try:
+        df = _fetch_recent_seconds(db, symbol, lookback_seconds=15)
+        if df is not None and not df.empty:
+            last = df.iloc[-1]
+            out["microprice"] = {
+                "ok": True,
+                "price": float(last.get("microprice", 0.0) or 0.0),
+                "ts": last["ts"].isoformat()
+                      if hasattr(last["ts"], "isoformat") else str(last["ts"]),
+            }
+        else:
+            out["microprice"] = {"ok": False, "reason": "no_recent_data"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "dashboard: microprice failed for %s: %s", symbol, exc,
+        )
+        out["microprice"] = {"ok": False, "reason": "internal_error"}
+
+    return out
+
+
+@router.get("/api/highfreq/dashboard")
+def get_dashboard(
+    symbols: str = ",".join(_available_symbols()),
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Batch endpoint serving the full /forecast page payload for
+    multiple symbols in ONE round-trip (code-review H-1perf,
+    2026-05-04).
+
+    Replaces the previous fan-out of N×3 separate requests
+    (forecast + drift_status + microprice per symbol) with a single
+    call. For the default 3-symbol dashboard this drops 9 HTTP
+    requests per refresh tick down to 1 — a 9× reduction in nginx /
+    WireGuard / FastAPI overhead.
+
+    Query parameter ``symbols`` is comma-separated, validated by
+    ``_validate_symbol`` per entry. Unknown / malformed symbols are
+    rejected with 400 — no silent skipping (the operator should
+    notice typos in the URL).
+
+    Response shape::
+
+        {
+          "ok": true,
+          "ts": "2026-05-04T...Z",
+          "n_symbols": 3,
+          "symbols": {
+            "BTCUSDT": {
+              "forecast":   {ok, prob_up, signal, model},
+              "drift":      {ok, severity, max_ks, max_ks_feature, ...},
+              "microprice": {ok, price, ts}
+            },
+            "ETHUSDT": {...},
+            "BNBUSDT": {...}
+          }
+        }
+
+    Each per-symbol sub-block is independently fail-safe — if the
+    forecast model is cold-starting OR the drift cron hasn't run
+    yet, the affected sub-block is ``ok=False`` with a reason but
+    the rest of the payload still surfaces.
+    """
+    requested = [s.strip() for s in (symbols or "").split(",") if s.strip()]
+    if not requested:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "reason": "no_symbols",
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+    # Cap at 8 symbols so a ``?symbols=...`` with 1000 entries can't
+    # be used to amplify load on the slow predictor cold-start path.
+    if len(requested) > 8:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "reason": "too_many_symbols",
+                "max": 8,
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            },
+        )
+
+    # Validate up-front — a single bad symbol fails the whole batch
+    # so the operator notices rather than silently dropping.
+    validated: list[str] = []
+    for s in requested:
+        validated.append(_validate_symbol(s))  # raises HTTPException(400) on miss
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "n_symbols": len(validated),
+        "symbols": {},
+    }
+    for sym in validated:
+        payload["symbols"][sym] = _build_per_symbol_dashboard_payload(sym, db)
+    return JSONResponse(content=_scrub(payload))
+
+
 # ── Paper trades endpoint (Phase C UI block) ──────────────────────────────
 
 

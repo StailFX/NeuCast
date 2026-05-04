@@ -2010,11 +2010,152 @@
       }
     }
     async function refreshAllPredictions() {
+      // Code-review H-1perf (2026-05-04): try the batch endpoint first
+      // when on the default 1m horizon. ``/api/highfreq/dashboard``
+      // returns forecast + drift + microprice for ALL 3 symbols in
+      // a SINGLE request (was 9 separate fetches). Other horizons
+      // (5m / 15m / 60m) still use the per-card path because the
+      // dashboard endpoint only serves the 1m forecast.
       const cards = document.querySelectorAll('.card[data-symbol]');
+      if (activeHorizon === 1) {
+        const batchOk = await tryRefreshDashboardBatch(cards);
+        if (batchOk) {
+          // Batch handled forecast + drift + microprice. Skip the
+          // per-card fan-out; nothing else to do.
+          return;
+        }
+        // Fall through to legacy per-card fetch on any batch failure
+        // (network blip, server 5xx, JSON parse). Belt-and-braces.
+      }
       await Promise.all([...cards].map(refreshCard));
       // After predictions update, fetch live microprice for each card
       // (separate endpoint — forecast response doesn't include price).
       refreshLivePrices();
+    }
+
+    // Code-review H-1perf (2026-05-04): batch endpoint client.
+    // Returns true on full success (caller skips per-card fan-out),
+    // false on any failure (caller falls back to per-card). Side-
+    // effect: writes to the same DOM bindings the per-card path uses.
+    async function tryRefreshDashboardBatch(cards) {
+      const symbols = [...cards].map(c => c.dataset.symbol).join(',');
+      if (!symbols) return false;
+      let data;
+      try {
+        const res = await fetch(
+          `/api/highfreq/dashboard?symbols=${symbols}`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) return false;
+        data = await res.json();
+      } catch (err) {
+        console.warn('dashboard batch fetch failed', err);
+        return false;
+      }
+      if (!data || data.ok !== true || !data.symbols) return false;
+
+      // Per-symbol DOM update — mirrors the relevant subset of
+      // refreshCard + refreshLivePrices + refreshDriftStatus.
+      cards.forEach(card => {
+        const symbol = card.dataset.symbol;
+        const slice = data.symbols[symbol];
+        if (!slice) return;
+        const get = (n) => card.querySelector(`[data-bind="${n}"]`);
+
+        // Horizon pill — same as refreshCard.
+        const horizonPill = get('horizon-pill');
+        if (horizonPill) horizonPill.textContent = '+1 мин';
+
+        // ── Forecast block ──
+        const fc = slice.forecast || {};
+        if (fc.ok) {
+          const v = verdictFor(fc.signal, fc.prob_up);
+          card.classList.remove('loading','up','down','neutral');
+          card.classList.add(v.cls);
+          if (get('arrow')) {
+            get('arrow').className = `arrow ${v.cls}`;
+            get('arrow').textContent = v.arrow;
+          }
+          if (get('verdict')) {
+            get('verdict').className = `verdict-text ${v.cls}`;
+            get('verdict').textContent = v.label;
+          }
+          if (get('conf-fill')) {
+            get('conf-fill').className = `confidence-fill ${v.cls}`;
+            get('conf-fill').style.width = `${v.confidence}%`;
+          }
+          if (get('conf-text')) {
+            get('conf-text').textContent = `уверенность ${v.confidence}%`;
+          }
+          // Conformal CI (T.17.b).
+          const conformalEl = get('conformal-text');
+          if (conformalEl) {
+            if (fc.conformal_90 && isFinite(fc.conformal_90.low) && isFinite(fc.conformal_90.high)) {
+              const lo = (fc.conformal_90.low * 100).toFixed(0);
+              const hi = (fc.conformal_90.high * 100).toFixed(0);
+              const p  = (fc.prob_up * 100).toFixed(0);
+              conformalEl.style.display = '';
+              conformalEl.textContent = `prob_up=${p}% · CI [${lo}%, ${hi}%]`;
+            } else {
+              conformalEl.style.display = 'none';
+            }
+          }
+          // Updated-age + model-age + auto-update detection.
+          const tsServer = data.ts ? new Date(data.ts).getTime() : Date.now();
+          const updatedAge = (Date.now() - tsServer) / 1000;
+          if (get('updated')) {
+            get('updated').textContent = `обновлено ${fmtAge(updatedAge)} назад`;
+          }
+          if (fc.model && isFinite(fc.model.model_age_seconds)) {
+            if (get('model-age')) {
+              get('model-age').textContent = `модель: ${fmtAge(fc.model.model_age_seconds)}`;
+            }
+            try { detectFreshModel(symbol, 1, fc.model.model_age_seconds); } catch (_) {}
+          }
+        } else {
+          // Forecast unavailable — same loading shape as refreshCard.
+          card.classList.add('loading');
+          card.classList.remove('up','down','neutral');
+          if (get('arrow')) {
+            get('arrow').className = 'arrow loading';
+            get('arrow').textContent = '…';
+          }
+          if (get('verdict')) {
+            get('verdict').className = 'verdict-text loading';
+            get('verdict').textContent = 'модель готовит прогноз';
+          }
+          if (get('conf-fill')) get('conf-fill').style.width = '0%';
+          if (get('conf-text')) get('conf-text').textContent = 'ждём первый прогноз…';
+        }
+
+        // ── Drift badge ── (matches refreshDriftStatus DOM logic)
+        const drift = slice.drift || {};
+        const badge = card.querySelector('.drift-badge');
+        if (badge) {
+          if (drift.ok) {
+            const sev = String(drift.severity || 'ok').toLowerCase();
+            badge.className = `drift-badge ${sev}`;
+            badge.textContent = `drift ${sev}`;
+            const ks = isFinite(drift.max_ks) ? Number(drift.max_ks).toFixed(3) : '—';
+            const feat = drift.max_ks_feature || '—';
+            badge.title = `KS-test drift vs training distribution.\nseverity: ${sev}\nmax_ks: ${ks} on "${feat}"\nevaluated_at: ${drift.evaluated_at || '—'}`;
+          } else {
+            badge.className = 'drift-badge muted';
+            badge.textContent = 'drift —';
+            badge.title = drift.reason === 'no_check_yet'
+              ? 'Drift cron has not yet run for this symbol.'
+              : 'Drift snapshot unavailable.';
+          }
+        }
+
+        // ── Microprice ── (matches refreshLivePrices)
+        const mp = slice.microprice || {};
+        if (mp.ok && isFinite(mp.price) && mp.price > 0) {
+          const priceEl = card.querySelector('[data-bind="price"]');
+          if (priceEl) priceEl.textContent = `$${fmtMoney(mp.price)}`;
+        }
+      });
+      return true;
     }
     async function refreshLivePrices() {
       // /api/highfreq/microprice_history returns recent OHLC microprice
@@ -3427,10 +3568,15 @@
     setInterval(refreshFeatureImportance, METRICS_REFRESH_MS);
     // Cumulative P&L grows ~1 row/min; refresh on the trades cadence.
     setInterval(refreshCumulativePnl, TRADES_REFRESH_MS);
-    // Drift JSON only changes when the hourly cron re-runs
-    // (`tools/drift_check.py`). Slow refresh — same cadence as
-    // robustness / reliability — is plenty.
-    setInterval(refreshDriftStatus, METRICS_REFRESH_MS);
+    // Code-review H-1perf (2026-05-04): drift badge is now refreshed
+    // by the batch ``/api/highfreq/dashboard`` endpoint inside
+    // ``refreshAllPredictions`` (PREDICT_REFRESH_MS cadence). The
+    // legacy per-symbol fan-out via ``refreshDriftStatus`` is kept
+    // around for the 5/15/60m horizon paths AND as a safety-net if
+    // the batch endpoint is unreachable, but it no longer needs its
+    // own setInterval. Manual one-shot refresh kicks the badge once
+    // on initial load to seed the DOM before the first batch tick.
+    refreshDriftStatus();
     // Ensemble blend follows the predictions cadence — same minute
     // bar fires both 1m and 15m re-evaluation under the hood.
     setInterval(refreshEnsemble, PREDICT_REFRESH_MS);

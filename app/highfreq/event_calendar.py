@@ -119,15 +119,36 @@ class EventHaltDecision:
 # ─────────────────────────────────────────────────────────────────────
 
 
+_EVENTS_CACHE: dict[str, tuple[float, list["CalendarEvent"]]] = {}
+
+
 def load_events_from_json(path: Path | str) -> list[CalendarEvent]:
     """Load + validate the calendar JSON. Returns events sorted by ts.
 
     Malformed entries are skipped with a WARNING — one bad row should
-    NOT take the whole calendar offline."""
+    NOT take the whole calendar offline.
+
+    Code-review Perf-low (2026-05-04): mtime-cached. The paper-trader
+    runner used to re-read + re-parse this file every minute tick;
+    the file is updated maybe once a week. Cache key: (path, mtime).
+    """
     p = Path(path)
     if not p.exists():
         logger.info("event_calendar: file not found at %s — running without", p)
+        # Invalidate any prior cache entry so a future writeback is
+        # picked up cleanly rather than masked by a stale "empty" cache.
+        _EVENTS_CACHE.pop(str(p), None)
         return []
+
+    try:
+        st = p.stat()
+    except OSError:
+        return []
+    cache_key = str(p)
+    cached = _EVENTS_CACHE.get(cache_key)
+    if cached is not None and cached[0] == st.st_mtime:
+        return cached[1]
+
     try:
         raw = json.loads(p.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -159,7 +180,16 @@ def load_events_from_json(path: Path | str) -> list[CalendarEvent]:
                 i, p, exc,
             )
     events.sort(key=lambda x: x.ts)
+    # Cache the parsed-and-sorted list keyed by (path, mtime).
+    _EVENTS_CACHE[cache_key] = (st.st_mtime, events)
     return events
+
+
+def _clear_events_cache_for_tests() -> None:
+    """Test helper — drops the mtime cache so each test sees a
+    deterministic fresh-cache state. Production callers never need
+    this; the cache is correctness-invariant under normal flow."""
+    _EVENTS_CACHE.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────

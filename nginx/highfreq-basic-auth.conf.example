@@ -1,0 +1,66 @@
+# Code-review M-4 (2026-05-04): operator-only Basic Auth blocks for
+# the HF surface. Drop-in for production deployments where /highfreq
+# and /api/highfreq/* should be gated behind a username/password
+# stored in /etc/nginx/.htpasswd-highfreq.
+#
+# Usage:
+#
+#   1) Generate the htpasswd file (if not already present):
+#
+#        sudo apt-get install apache2-utils
+#        sudo htpasswd -c /etc/nginx/.htpasswd-highfreq stailfx
+#        # → enter password twice
+#        sudo chown root:www-data /etc/nginx/.htpasswd-highfreq
+#        sudo chmod 640 /etc/nginx/.htpasswd-highfreq
+#
+#   2) Include this file from your main server { } block by adding
+#      `include /etc/nginx/conf.d/highfreq-basic-auth.conf;` BEFORE
+#      the catch-all `location /` that proxies everything else.
+#      Or paste the location {} blocks directly into your existing
+#      neucast.conf — same outcome.
+#
+#   3) Reload: `sudo nginx -t && sudo systemctl reload nginx`.
+#
+# What this protects:
+#   * /highfreq* — operator-facing dashboard pages
+#   * /api/highfreq/* — read endpoints (forecast, paper_trades, etc.)
+#
+# What this does NOT protect:
+#   * /forecast — the public-facing prediction page is intentionally
+#     open. If you want to gate that too, copy the auth_basic /
+#     auth_basic_user_file lines into a `location = /forecast` block.
+#
+# Why we ship this as .example rather than as part of the canonical
+# neucast.conf: the htpasswd file lives outside the repo (deliberately
+# — credentials should never be committed). A fresh deploy without
+# the htpasswd file would hard-fail nginx if these blocks were active.
+
+# Operator-facing UI pages.
+location ^~ /highfreq {
+    auth_basic "NeuCast HF — operator-only";
+    auth_basic_user_file /etc/nginx/.htpasswd-highfreq;
+    proxy_pass http://neucast_app;
+    include /etc/nginx/conf.d/_neucast_proxy.inc;
+}
+
+# HF read API. ``limit_req zone=api_zone`` is declared in neucast.conf
+# (code-review C-3); we add it here too in case this file is included
+# in a different server-block.
+location ^~ /api/highfreq/ {
+    auth_basic "NeuCast HF — operator-only";
+    auth_basic_user_file /etc/nginx/.htpasswd-highfreq;
+    limit_req zone=api_zone burst=20 nodelay;
+    proxy_pass http://neucast_app;
+    include /etc/nginx/conf.d/_neucast_proxy.inc;
+}
+
+# Grafana operator dashboard (if proxied through this nginx).
+location ^~ /grafana {
+    auth_basic "NeuCast Grafana — operator-only";
+    auth_basic_user_file /etc/nginx/.htpasswd-highfreq;
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}

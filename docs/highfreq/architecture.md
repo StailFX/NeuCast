@@ -602,6 +602,68 @@ Both tables coexist with the existing daily-prediction tables — no conflicts.
 
 ---
 
+### ADR-020 · ``weights/highfreq/`` shared trust boundary (code-review L-5)
+
+**Status:** explicit boundary — documented, not a bug
+**Date:** 2026-05-04
+
+**Context.** Several services touch ``/opt/neucast/weights/highfreq/``:
+the trainer (writes ``.cbm`` + ``metrics.json`` + ``calibrator.pkl``
+as user ``stailfx``); ``tools/drift_check.py`` (writes per-symbol
+``<sym>_drift.json`` as ``stailfx``); ``tools/drift_driven_retrain.py``
+(reads the drift JSON as ``root`` to decide whether to fire
+``systemctl start neucast-highfreq-trainer@<sym>.service``).
+
+The lateral-movement worry: a compromise of the ``stailfx`` account
+would let an attacker write a *malicious* drift JSON, which the
+root-running drift-retrain timer then reads and acts on.
+
+**Decision.** Accept this as a documented trust boundary, not a bug to
+fix. Three reasons it doesn't escalate:
+
+1. **No code execution leakage.** ``drift_driven_retrain`` reads the
+   JSON for two integers (severity bucket + max KS) plus a string
+   feature name. It NEVER ``eval``/``exec``/``pickle.load``-ses
+   the contents. The only side-effect is "fire systemd unit X with
+   pre-validated argv".
+
+2. **Symbol whitelist on the systemctl side.** The CLI's
+   ``--symbol`` flag is regex-validated (``^[A-Z]{2,12}USDT$``,
+   code-review H-3sec). The unit name template is hard-coded as
+   ``neucast-highfreq-trainer@<sym>.service`` — a malicious symbol
+   wouldn't escape into a different unit name even if it slipped past
+   the regex.
+
+3. **Cooldown rail.** The retrain policy refuses any retrigger inside
+   6 hours of the previous training run. Even a malicious "all-day-
+   high severity" payload triggers at most 4 retrains in 24 hours —
+   each one running the trainer with normal ``stailfx`` privs, no
+   privilege escalation.
+
+**Mitigations already in place via other ADRs / code-review fixes.**
+
+* systemd hardening (code-review H-1sec): ``NoNewPrivileges``,
+  ``PrivateTmp``, ``ProtectSystem=strict``, restricted address
+  families. A compromised trainer can't reach the rest of the box.
+* Drift JSON write is atomic (code-review Perf-low,
+  ``tempfile + os.replace``) — prevents torn-file reads but doesn't
+  itself solve the trust boundary.
+
+**Operator action required.** None. If ``stailfx`` is compromised,
+the worst outcome is "the trainer retrains a few extra times on the
+attacker's schedule, possibly with a poisoned reference window".
+That's a service-degradation risk, not RCE escalation. Operator
+restoring ``stailfx`` (rotate SSH key, kill the user's processes,
+re-deploy weights from archive snapshot) closes the loop.
+
+If the threat model changes (e.g. multi-tenant box, untrusted
+operators), an isolated ``neucast`` user with ``700`` perms on
+``weights/highfreq/`` would tighten this — but for the current
+single-operator deployment, the boundary is documented and
+accepted.
+
+---
+
 ## 7 · Roadmap
 
 | Phase | Effort | Outcome |
