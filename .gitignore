@@ -14,6 +14,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+# But the Next.js v2 frontend has a legitimate src/lib/ directory
+# (typed API client, React Query hooks, AuthContext, formatters) —
+# the Python ``lib/`` rule above was silently swallowing it.
+!frontend/src/lib/
+!frontend/src/lib/**
 parts/
 sdist/
 share/python-wheels/
