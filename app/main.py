@@ -260,10 +260,21 @@ if USE_CELERY:
     try:
         from celery import Celery
         celery_app = Celery("neucast", broker=REDIS_URL, backend=REDIS_URL)
+        # Code-review C-1 (2026-05-04): switched away from pickle to JSON
+        # serializer for both task args and results. Pickle-as-broker-format
+        # is an RCE seed: any compromise of Redis (network, sibling-tenant,
+        # accidental exposure) means an attacker who can write to the
+        # broker queue gets arbitrary Python execution on every worker that
+        # consumes the poisoned task.
+        #
+        # All current task signatures (run_prediction_task etc.) use plain
+        # str/int/bool/float args and JSON-serialisable result dicts (see
+        # celery_worker.py:308-323 where numpy arrays are .tolist()'d before
+        # caching). The transition is safe end-to-end.
         celery_app.conf.update(
-            task_serializer="pickle",
-            result_serializer="pickle",
-            accept_content=["pickle", "json"],
+            task_serializer="json",
+            result_serializer="json",
+            accept_content=["json"],
         )
     except ImportError:
         USE_CELERY = False
@@ -320,8 +331,97 @@ def _load_pred_slug(slug: str) -> dict | None:
         return None
 
 
+# ============================================================
+# Password hashing — Argon2id KDF (code-review C-2, 2026-05-04)
+# ============================================================
+# Migrated from unsalted SHA-256 (one-shot, GPU-fast, identical-passwords-
+# share-hashes) to Argon2id (memory-hard, salted per-row, configurable work
+# factor). Legacy SHA-256 hashes remain readable: ``verify_password`` accepts
+# either format, and on a successful login we transparently re-hash to Argon2
+# (so the migration completes user-by-user during normal traffic, no DB-wide
+# bulk update).
+#
+# Security knobs follow OWASP 2024 minimum (memory_cost=64MiB, time_cost=3,
+# parallelism=4). At login latency this is ≈40 ms — imperceptible for
+# humans, but ≥10⁵× more expensive for offline attackers than SHA-256.
+try:
+    from argon2 import PasswordHasher
+    from argon2.exceptions import VerifyMismatchError, InvalidHashError
+    _PASSWORD_HASHER = PasswordHasher(
+        memory_cost=64 * 1024,  # 64 MiB
+        time_cost=3,
+        parallelism=4,
+    )
+    _ARGON2_AVAILABLE = True
+except ImportError:
+    # Graceful fallback for environments without argon2-cffi (e.g. CI bare
+    # bones). Logs a loud warning so operators notice. New passwords still
+    # land as SHA-256 in this branch — same security posture as before the
+    # migration, never worse.
+    _PASSWORD_HASHER = None
+    _ARGON2_AVAILABLE = False
+    import logging as _logging
+    _logging.getLogger("neucast.security").warning(
+        "argon2-cffi not installed — falling back to legacy SHA-256 password "
+        "hashing. Install argon2-cffi to enable the upgraded KDF."
+    )
+
+
 def hash_password(password: str) -> str:
+    """Hash a plaintext password for storage.
+
+    NEW callers (registration, password change) get Argon2id when available,
+    SHA-256 only as a graceful-fallback when argon2-cffi is missing. Existing
+    rows in the DB may still be SHA-256 — ``verify_password`` handles both.
+    """
+    if _ARGON2_AVAILABLE:
+        return _PASSWORD_HASHER.hash(password)
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def verify_password(plaintext: str, stored: str) -> bool:
+    """Constant-time password verification.
+
+    Recognises both Argon2id hashes (``$argon2id$…``) and the legacy 64-char
+    SHA-256 hex digests. Constant-time comparison via ``secrets.compare_digest``
+    closes the timing-oracle gap (code-review C-3, 2026-05-04).
+    """
+    if not stored:
+        return False
+    # Argon2id format → starts with $argon2id$.  Argon2 lib does its own
+    # constant-time comparison internally.
+    if _ARGON2_AVAILABLE and stored.startswith("$argon2"):
+        try:
+            _PASSWORD_HASHER.verify(stored, plaintext)
+            return True
+        except (VerifyMismatchError, InvalidHashError):
+            return False
+        except Exception:
+            # Any other argon2 internal error → fail closed.
+            return False
+    # Legacy SHA-256 path. Use compare_digest so attackers can't mount a
+    # timing oracle on the equality check (was ``==`` previously).
+    legacy_hash = hashlib.sha256(plaintext.encode()).hexdigest()
+    return secrets.compare_digest(stored, legacy_hash)
+
+
+def needs_rehash(stored: str) -> bool:
+    """Should we re-hash this user's password on next successful login?
+
+    True for any non-Argon2 stored hash (i.e. legacy SHA-256). Argon2 hashes
+    that need re-hashing because of parameter upgrades are also flagged via
+    the library's check_needs_rehash helper.
+    """
+    if not stored:
+        return False
+    if not stored.startswith("$argon2"):
+        return True
+    if _ARGON2_AVAILABLE:
+        try:
+            return _PASSWORD_HASHER.check_needs_rehash(stored)
+        except Exception:
+            return False
+    return False
 
 
 # ============================================================
@@ -388,13 +488,41 @@ async def login_post(
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter(User.username == username).first()
-    if user and user.password == hash_password(password):
+    # ``verify_password`` does constant-time comparison + accepts both
+    # Argon2id and legacy SHA-256 stored hashes (code-review C-2 + C-3,
+    # 2026-05-04). Even when ``user`` is None we still hit ``verify_password``
+    # against a dummy hash so the response time leaks no info about whether
+    # the username exists (rudimentary timing-oracle defence).
+    if user and verify_password(password, user.password):
+        # Transparent re-hash: if the stored hash is legacy SHA-256 (or
+        # Argon2 with outdated parameters), upgrade it on this successful
+        # login. Migration completes user-by-user during normal traffic;
+        # no DB-wide bulk update needed.
+        try:
+            if needs_rehash(user.password):
+                user.password = hash_password(password)
+        except Exception:
+            # Re-hash failure must not block login.
+            pass
         token = secrets.token_hex(32)
         user.session_token = token
         db.commit()
         resp = RedirectResponse("/dashboard", status_code=302)
-        resp.set_cookie("session", token, httponly=True, samesite="lax")
+        # ``secure=True`` once the site is HTTPS-everywhere (production
+        # neucast.ru is behind nginx + TLS). ``samesite=lax`` already set.
+        resp.set_cookie(
+            "session", token,
+            httponly=True, samesite="lax",
+            secure=os.getenv("NEUCAST_COOKIES_SECURE", "1") == "1",
+        )
         return resp
+    # Constant-time dummy verify when username doesn't exist — same wall-
+    # clock cost as a real failed match, defeats username-enumeration
+    # via timing.
+    if user is None:
+        verify_password(password, "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAA"
+                                  "AAAAAAAAAAAAAA$"
+                                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин или пароль"})
 
 
@@ -416,9 +544,13 @@ async def register_post(
         return templates.TemplateResponse("register.html", {
             "request": request, "error": "Пароли не совпадают",
         })
-    if len(password) < 4:
+    # Code-review C-2 (2026-05-04): bumped from 4 → 12 chars. 4 chars
+    # was trivially brute-forceable (94⁴ ≈ 78M, < 1 s on a GPU). 12 chars
+    # crosses the threshold of "not feasible to crack offline" even with
+    # the legacy SHA-256 hashes in the DB.
+    if len(password) < 12:
         return templates.TemplateResponse("register.html", {
-            "request": request, "error": "Пароль должен быть не менее 4 символов",
+            "request": request, "error": "Пароль должен быть не менее 12 символов",
         })
     if db.query(User).filter_by(username=username).first():
         return templates.TemplateResponse("register.html", {
@@ -436,7 +568,11 @@ async def register_post(
     db.add(new_user)
     db.commit()
     resp = RedirectResponse("/dashboard", status_code=302)
-    resp.set_cookie("session", token, httponly=True, samesite="lax")
+    resp.set_cookie(
+        "session", token,
+        httponly=True, samesite="lax",
+        secure=os.getenv("NEUCAST_COOKIES_SECURE", "1") == "1",
+    )
     return resp
 
 
@@ -590,7 +726,9 @@ async def predict(
                 "user_id": user.id if user else None,
                 "use_foundation": use_foundation_bool,
             },
-            serializer="pickle",
+            # Code-review C-1 (2026-05-04): explicit ``serializer="json"``
+            # to match the broker-wide config. Args are str/int/bool only.
+            serializer="json",
         )
         # ── Пробуем короткий URL /p/{slug}. Если Redis недоступен, падаем в ──
         # длинный /predict/status/{UUID}?... (легаси-совместимость).

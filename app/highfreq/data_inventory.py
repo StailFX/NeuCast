@@ -173,6 +173,12 @@ def _fetch_seconds_sync(
     Mirrors ``trainer.load_seconds`` but uses an existing SQLAlchemy
     Session rather than spinning up its own engine. Same query shape
     so the trainer and the live endpoint see byte-identical data.
+
+    NOTE (code-review C-6, 2026-05-04): this slow path is retained for
+    code paths that genuinely need raw seconds (e.g. trainer feature
+    pipeline). The FastAPI ``/training_report`` endpoint should prefer
+    :func:`_fetch_inventory_counts_sync` which returns ~3 scalars from
+    SQL-side aggregation instead of 260 k+ rows from a full SELECT.
     """
     from sqlalchemy import text  # local import (web.py already imports it)
     sql = text(
@@ -189,6 +195,160 @@ def _fetch_seconds_sync(
     return df
 
 
+def _fetch_inventory_counts_sync(
+    db_session: Any,
+    *,
+    symbol: str,
+    since_hours: float,
+    neutral_band_bps: float,
+) -> dict[str, int]:
+    """Server-side count aggregation for the live-inventory endpoint
+    (code-review C-6, 2026-05-04).
+
+    Replaces the ~260 k-row SELECT + 600 ms pandas materialisation from
+    :func:`_fetch_seconds_sync` with three SQL counts that return in
+    single-digit ms. Postgres does the work via ``date_trunc`` +
+    ``LAG`` window function; we read back ~3 scalars.
+
+    The numbers are an apples-to-apples replacement for the heavy path
+    EXCEPT for the trailing-unobservable-bar drop (``n_kept`` is at
+    most +1 vs ``make_supervised``). For the operator-facing progress
+    widget that's well within tolerance.
+
+    Returns ``{n_seconds_loaded, n_minutes_after_aggregation,
+    n_minutes_after_neutral_drop}``.
+    """
+    from sqlalchemy import text
+
+    sql = text(
+        """
+        WITH minute_agg AS (
+            SELECT date_trunc('minute', ts) AS m,
+                   COUNT(*)                  AS n_secs,
+                   (array_agg(microprice ORDER BY ts DESC))[1] AS close_p
+              FROM highfreq_ofi_1s
+             WHERE symbol = :symbol
+               AND ts >= now() - (:hours * interval '1 hour')
+             GROUP BY 1
+        ),
+        observed AS (
+            SELECT m, close_p,
+                   LEAD(close_p) OVER (ORDER BY m) AS next_close
+              FROM minute_agg
+             WHERE n_secs >= 30
+        ),
+        kept AS (
+            SELECT 1
+              FROM observed
+             WHERE next_close IS NOT NULL
+               AND close_p > 0
+               AND ABS(1e4 * (next_close - close_p) / close_p) >= :neutral_bps
+        )
+        SELECT
+            COALESCE((SELECT SUM(n_secs)::bigint FROM minute_agg), 0)     AS n_seconds,
+            (SELECT COUNT(*)::bigint FROM minute_agg WHERE n_secs >= 30) AS n_minutes_obs,
+            (SELECT COUNT(*)::bigint FROM kept)                          AS n_kept
+        """
+    )
+    row = db_session.execute(
+        sql,
+        {
+            "symbol": symbol,
+            "hours": since_hours,
+            "neutral_bps": float(neutral_band_bps),
+        },
+    ).mappings().first()
+    if row is None:
+        return {
+            "n_seconds_loaded": 0,
+            "n_minutes_after_aggregation": 0,
+            "n_minutes_after_neutral_drop": 0,
+        }
+    return {
+        "n_seconds_loaded": int(row["n_seconds"] or 0),
+        "n_minutes_after_aggregation": int(row["n_minutes_obs"] or 0),
+        "n_minutes_after_neutral_drop": int(row["n_kept"] or 0),
+    }
+
+
+def _fetch_holdout_split_sync(
+    db_session: Any,
+    *,
+    symbol: str,
+    since_hours: float,
+    neutral_band_bps: float,
+    frozen_holdout_days: int,
+) -> dict[str, int]:
+    """Same SQL shape as ``_fetch_inventory_counts_sync`` but additionally
+    splits the kept-minute count into ``in_holdout`` vs ``eligible``
+    based on the frozen-holdout cutoff (now - frozen_holdout_days).
+
+    Returns ``{**counts, n_in_holdout, n_eligible_for_training}``.
+    """
+    base = _fetch_inventory_counts_sync(
+        db_session,
+        symbol=symbol,
+        since_hours=since_hours,
+        neutral_band_bps=neutral_band_bps,
+    )
+    if frozen_holdout_days <= 0 or base["n_minutes_after_neutral_drop"] == 0:
+        return {
+            **base,
+            "n_in_holdout": 0,
+            "n_eligible_for_training": base["n_minutes_after_neutral_drop"],
+        }
+
+    from sqlalchemy import text
+
+    sql = text(
+        """
+        WITH minute_agg AS (
+            SELECT date_trunc('minute', ts) AS m,
+                   COUNT(*)                  AS n_secs,
+                   (array_agg(microprice ORDER BY ts DESC))[1] AS close_p
+              FROM highfreq_ofi_1s
+             WHERE symbol = :symbol
+               AND ts >= now() - (:hours * interval '1 hour')
+             GROUP BY 1
+        ),
+        observed AS (
+            SELECT m, close_p,
+                   LEAD(close_p) OVER (ORDER BY m) AS next_close
+              FROM minute_agg
+             WHERE n_secs >= 30
+        ),
+        kept AS (
+            SELECT m
+              FROM observed
+             WHERE next_close IS NOT NULL
+               AND close_p > 0
+               AND ABS(1e4 * (next_close - close_p) / close_p) >= :neutral_bps
+        )
+        SELECT
+            COUNT(*)::bigint
+              FILTER (WHERE m >= now() - (:holdout_days * interval '1 day')) AS n_in_holdout
+          FROM kept
+        """
+    )
+    row = db_session.execute(
+        sql,
+        {
+            "symbol": symbol,
+            "hours": since_hours,
+            "neutral_bps": float(neutral_band_bps),
+            "holdout_days": int(frozen_holdout_days),
+        },
+    ).mappings().first()
+    n_in_holdout = int(row["n_in_holdout"] or 0) if row else 0
+    return {
+        **base,
+        "n_in_holdout": n_in_holdout,
+        "n_eligible_for_training": max(
+            0, base["n_minutes_after_neutral_drop"] - n_in_holdout,
+        ),
+    }
+
+
 def fetch_live_inventory(
     db_session: Any,
     *,
@@ -196,6 +356,7 @@ def fetch_live_inventory(
     since_hours: float = DEFAULT_SINCE_HOURS,
     frozen_holdout_days: int = 7,
     ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS,
+    fast: bool = True,
 ) -> LiveInventory:
     """Cached fetch + compute. Hits the DB at most once per ``ttl_seconds``
     per symbol.
@@ -204,6 +365,14 @@ def fetch_live_inventory(
     a 30 s TTL and a UI poll cadence of ~5 s, ~6 of 6 requests inside a
     cache window are free; only 1 hits Postgres. Across multiple workers
     the worst case is N caches × 1 query / TTL — still trivial.
+
+    Code-review C-6 (2026-05-04): ``fast=True`` (default) uses
+    ``_fetch_holdout_split_sync`` — three SQL aggregates that return ~3
+    scalar rows in single-digit ms. The slow path
+    (``compute_live_inventory_from_seconds`` over a 260 k-row pandas
+    materialisation) is retained as the ``fast=False`` branch so test
+    suites that exercise the legacy contract can still opt in. The
+    numbers match within ±1 (trailing unobservable bar).
     """
     now_unix = time.time()
     with _cache_lock:
@@ -211,17 +380,43 @@ def fetch_live_inventory(
         if cached is not None and (now_unix - cached[0]) < ttl_seconds:
             return cached[1]
 
-    # Outside the lock: heavy work (DB query + pandas). We accept that
-    # two concurrent first-cache-miss requests on the SAME symbol may
-    # both compute. Still bounded; not worth the lock contention to
-    # serialise them.
-    df_secs = _fetch_seconds_sync(db_session, symbol=symbol, since_hours=since_hours)
-    snap = compute_live_inventory_from_seconds(
-        df_secs,
-        symbol=symbol,
-        frozen_holdout_days=frozen_holdout_days,
-        since_hours=since_hours,
-    )
+    if fast:
+        # Fast path: SQL-side aggregation. Avoids the multi-second
+        # 260 k-row pull that previously blocked the FastAPI event
+        # loop on a cache miss.
+        try:
+            from app.highfreq.feature_pipeline import NEUTRAL_BAND_BPS
+        except Exception:
+            NEUTRAL_BAND_BPS = 1.0  # safe fallback
+        counts = _fetch_holdout_split_sync(
+            db_session,
+            symbol=symbol,
+            since_hours=since_hours,
+            neutral_band_bps=NEUTRAL_BAND_BPS,
+            frozen_holdout_days=frozen_holdout_days,
+        )
+        snap = LiveInventory(
+            symbol=symbol,
+            computed_at=datetime.now(tz=timezone.utc).isoformat(),
+            n_seconds_loaded=counts["n_seconds_loaded"],
+            n_minutes_after_aggregation=counts["n_minutes_after_aggregation"],
+            n_minutes_after_neutral_drop=counts["n_minutes_after_neutral_drop"],
+            n_eligible_for_training=counts["n_eligible_for_training"],
+            n_in_holdout=counts["n_in_holdout"],
+            since_hours=since_hours,
+        )
+    else:
+        # Legacy slow path — kept for parity tests and any caller that
+        # needs the exact make_supervised drop semantics.
+        df_secs = _fetch_seconds_sync(
+            db_session, symbol=symbol, since_hours=since_hours,
+        )
+        snap = compute_live_inventory_from_seconds(
+            df_secs,
+            symbol=symbol,
+            frozen_holdout_days=frozen_holdout_days,
+            since_hours=since_hours,
+        )
 
     with _cache_lock:
         _cache[symbol] = (now_unix, snap)

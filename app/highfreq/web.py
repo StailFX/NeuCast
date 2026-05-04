@@ -429,8 +429,23 @@ def _get_db():
 # than an unauthenticated render of the operator UI.
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Code-review C-4 (2026-05-04): every handler below is declared ``def``,
+# NOT ``async def``. They all do **synchronous** DB I/O via SQLAlchemy
+# (``db.execute(...).all()``) — declaring them ``async def`` would freeze
+# the entire uvicorn event loop on each call (the most expensive case is
+# ``get_training_report`` without ``?lite=1``, which can block 10-20 s
+# loading 600k seconds-rows from the DB). FastAPI auto-runs ``def``
+# handlers in its threadpool, so the event loop stays free for the
+# /forecast hot path that fires every 30 s × 3 cards × N operators.
+#
+# Add ``async def`` ONLY when the handler genuinely awaits (e.g. an
+# asyncpg call). Plain SQLAlchemy stays in the threadpool path.
+# ──────────────────────────────────────────────────────────────────────────
+
+
 @router.get("/api/highfreq/status")
-async def get_status(
+def get_status(
     symbol: str = DEFAULT_SYMBOL,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
@@ -451,7 +466,7 @@ async def get_status(
 
 
 @router.get("/api/highfreq/health")
-async def get_health(
+def get_health(
     symbol: str = DEFAULT_SYMBOL,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
@@ -510,7 +525,7 @@ def _get_forecast_predictor(
 
 
 @router.get("/api/highfreq/forecast")
-async def get_forecast(
+def get_forecast(
     symbol: str = DEFAULT_SYMBOL,
     horizon: int = 1,
     db: Session = Depends(_get_db),
@@ -748,16 +763,27 @@ async def get_forecast(
 
 def _predict_for_horizon(
     symbol: str, horizon: int, db: Session,
+    *,
+    df_seconds: pd.DataFrame | None = None,
+    ref_seconds: pd.DataFrame | None = None,
+    futures_seconds: pd.DataFrame | None = None,
 ) -> tuple[float | None, dict]:
     """Helper for the ensemble endpoint — runs the same inference
     chain ``/api/highfreq/forecast`` does for one (symbol, horizon)
     pair. Returns ``(prob_up, status_dict)``: prob_up is None when
     the model isn't ready or features can't be built.
 
-    Factored out as a thin local helper rather than refactoring
-    ``get_forecast`` to avoid a sweeping rewrite of the existing
-    branching logic; the ensemble endpoint calls this twice (1m + 15m)
-    and combines via ``ensemble_probability``.
+    Code-review C-5 (2026-05-04): the optional ``df_seconds`` /
+    ``ref_seconds`` / ``futures_seconds`` kwargs let the ensemble
+    caller fetch ONCE with the widest required lookback and pass
+    the same frame to both 1m and 15m calls. Without this, we'd hit
+    Postgres 4× per ensemble request (1m fetch + 15m fetch + BTC
+    reference × 2 for ETH/BNB) where a single superset SELECT plus
+    in-memory slice does the same work.
+
+    Backward-compatible: when called without the kwargs, this helper
+    falls through to its prior fetch-on-demand behaviour. Plain
+    ``/api/highfreq/forecast`` callers don't need to change.
     """
     from app.highfreq.predictor import get_predictor as _get_predictor
 
@@ -775,7 +801,8 @@ def _predict_for_horizon(
         lookback = max(_FORECAST_LOOKBACK_SECONDS, 6 * bm * 60 + 60)
     else:
         lookback = _FORECAST_LOOKBACK_SECONDS
-    df_seconds = _fetch_recent_seconds(db, symbol, lookback_seconds=lookback)
+    if df_seconds is None:
+        df_seconds = _fetch_recent_seconds(db, symbol, lookback_seconds=lookback)
     if df_seconds is None:
         return None, status_dict
 
@@ -793,10 +820,10 @@ def _predict_for_horizon(
         )
         sym_upper = symbol.upper()
         ref_symbol = None if sym_upper == "BTCUSDT" else "BTCUSDT"
-        ref_seconds = (
-            _fetch_recent_seconds(db, ref_symbol, lookback_seconds=lookback)
-            if ref_symbol is not None else None
-        )
+        if ref_seconds is None and ref_symbol is not None:
+            ref_seconds = _fetch_recent_seconds(
+                db, ref_symbol, lookback_seconds=lookback,
+            )
         inference = build_latest_inference_bar_cross_asset(
             df_seconds, bar_minutes=bm,
             reference_df_seconds=ref_seconds,
@@ -815,11 +842,12 @@ def _predict_for_horizon(
         from app.highfreq.feature_pipeline_microstructure_v3 import (
             build_latest_inference_bar_microstructure_v3,
         )
-        fut_seconds = _fetch_recent_futures_seconds(
-            db, symbol, lookback_seconds=lookback,
-        )
+        if futures_seconds is None:
+            futures_seconds = _fetch_recent_futures_seconds(
+                db, symbol, lookback_seconds=lookback,
+            )
         inference = build_latest_inference_bar_microstructure_v3(
-            df_seconds, fut_seconds,
+            df_seconds, futures_seconds,
         )
         feature_row = inference[0] if inference is not None else None
     else:
@@ -835,7 +863,7 @@ def _predict_for_horizon(
 
 
 @router.get("/api/highfreq/forecast_ensemble")
-async def get_forecast_ensemble(
+def get_forecast_ensemble(
     symbol: str = DEFAULT_SYMBOL,
     weight_1m: float = 0.70,
     weight_15m: float = 0.30,
@@ -893,8 +921,42 @@ async def get_forecast_ensemble(
             },
         )
 
-    prob_1m, status_1m = _predict_for_horizon(symbol, 1, db)
-    prob_15m, status_15m = _predict_for_horizon(symbol, 15, db)
+    # Code-review C-5 (2026-05-04): fetch the SECONDS slices ONCE with the
+    # widest lookback either horizon needs, then pass the cached frames
+    # into both _predict_for_horizon calls. Without this we'd issue 4
+    # SELECTs per ensemble request (1m + 15m for the symbol + BTC ref
+    # twice for ETH/BNB cross_asset). The 15m horizon is the widest
+    # consumer (~22 560 s); slicing that down for the 1m's needs is
+    # free in pandas.
+    _ENSEMBLE_WIDE_LOOKBACK = max(
+        _FORECAST_LOOKBACK_SECONDS,
+        25 * 15 * 60 + 60,  # 25 bars × 15-min bm × 60 s + headroom
+    )
+    df_seconds_shared = _fetch_recent_seconds(
+        db, symbol, lookback_seconds=_ENSEMBLE_WIDE_LOOKBACK,
+    )
+    ref_seconds_shared: pd.DataFrame | None = None
+    if symbol != "BTCUSDT":
+        # ETH / BNB cross_asset path needs BTC seconds at the same window.
+        ref_seconds_shared = _fetch_recent_seconds(
+            db, "BTCUSDT", lookback_seconds=_ENSEMBLE_WIDE_LOOKBACK,
+        )
+    futures_seconds_shared = _fetch_recent_futures_seconds(
+        db, symbol, lookback_seconds=_ENSEMBLE_WIDE_LOOKBACK,
+    )
+
+    prob_1m, status_1m = _predict_for_horizon(
+        symbol, 1, db,
+        df_seconds=df_seconds_shared,
+        ref_seconds=ref_seconds_shared,
+        futures_seconds=futures_seconds_shared,
+    )
+    prob_15m, status_15m = _predict_for_horizon(
+        symbol, 15, db,
+        df_seconds=df_seconds_shared,
+        ref_seconds=ref_seconds_shared,
+        futures_seconds=futures_seconds_shared,
+    )
 
     components = [
         EnsembleComponent(
@@ -1102,7 +1164,7 @@ def _serialise_trade(t: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/api/highfreq/paper_trades")
-async def get_paper_trades(
+def get_paper_trades(
     symbol: str = DEFAULT_SYMBOL,
     limit: int = DEFAULT_PAPER_TRADES_LIMIT,
     db: Session = Depends(_get_db),
@@ -1174,7 +1236,7 @@ def _config_to_dict(
 
 
 @router.get("/api/highfreq/realized_accuracy")
-async def get_realized_accuracy(
+def get_realized_accuracy(
     symbol: str = DEFAULT_SYMBOL,
     window: int = 100,
     db: Session = Depends(_get_db),
@@ -1390,7 +1452,7 @@ def _fetch_microprice_history(
 
 
 @router.get("/api/highfreq/microprice_history")
-async def get_microprice_history(
+def get_microprice_history(
     symbol: str = DEFAULT_SYMBOL,
     seconds: int = DEFAULT_HISTORY_SECONDS,
     db: Session = Depends(_get_db),
@@ -1470,7 +1532,7 @@ def _fetch_orderbook_window(
 
 
 @router.get("/api/highfreq/orderbook")
-async def get_orderbook(
+def get_orderbook(
     symbol: str = DEFAULT_SYMBOL,
     seconds: int = DEFAULT_OB_HEATMAP_SECONDS,
     db: Session = Depends(_get_db),
@@ -1552,7 +1614,7 @@ def _fetch_minute_vol_history(
 
 
 @router.get("/api/highfreq/regimes")
-async def get_regimes(
+def get_regimes(
     symbol: str = DEFAULT_SYMBOL,
     hours: float = 24.0,
     keep_last_n: int = 60,
@@ -1597,7 +1659,7 @@ async def get_regimes(
 
 
 @router.get("/api/highfreq/feature_importance")
-async def get_feature_importance(
+def get_feature_importance(
     symbol: str = DEFAULT_SYMBOL,
     predictor: LivePredictor = Depends(_get_forecast_predictor),
 ) -> JSONResponse:
@@ -1633,7 +1695,7 @@ async def get_feature_importance(
 
 
 @router.get("/api/highfreq/training_report")
-async def get_training_report(
+def get_training_report(
     symbol: str = DEFAULT_SYMBOL,
     horizon: int = 1,
     lite: int = 0,
@@ -1787,7 +1849,7 @@ async def get_training_report(
 
 
 @router.get("/api/highfreq/realized_accuracy_full")
-async def get_realized_accuracy_full(
+def get_realized_accuracy_full(
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
     """Full realized directional accuracy with Wilson CI + p-value
@@ -1887,7 +1949,7 @@ async def get_realized_accuracy_full(
 
 
 @router.get("/api/highfreq/conditional_accuracy")
-async def get_conditional_accuracy(
+def get_conditional_accuracy(
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
     """Realized directional accuracy bucketed by confidence threshold.
@@ -1985,7 +2047,7 @@ async def get_conditional_accuracy(
 
 
 @router.get("/api/highfreq/drift_status")
-async def get_drift_status(
+def get_drift_status(
     symbol: str = DEFAULT_SYMBOL,
 ) -> JSONResponse:
     """Latest feature-drift snapshot for ``symbol`` (T.18.b).
@@ -2044,7 +2106,7 @@ async def get_drift_status(
 
 
 @router.get("/api/highfreq/cumulative_pnl")
-async def get_cumulative_pnl(
+def get_cumulative_pnl(
     symbol: str = DEFAULT_SYMBOL,
     limit_points: int = 200,
     db: Session = Depends(_get_db),
@@ -2183,7 +2245,7 @@ async def get_cumulative_pnl(
 
 
 @router.get("/api/highfreq/reliability_diagram")
-async def get_reliability_diagram(
+def get_reliability_diagram(
     db: Session = Depends(_get_db),
     n_bins: int = 10,
 ) -> JSONResponse:
@@ -2341,7 +2403,7 @@ async def get_reliability_diagram(
 
 
 @router.get("/api/highfreq/robustness")
-async def get_robustness(
+def get_robustness(
     symbol: str = DEFAULT_SYMBOL,
 ) -> JSONResponse:
     """Robustness suite results: block bootstrap CI + permutation test
@@ -2397,7 +2459,7 @@ async def get_robustness(
 
 
 @router.get("/api/highfreq/anti_skill")
-async def get_anti_skill(
+def get_anti_skill(
     symbol: str = DEFAULT_SYMBOL,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
@@ -2432,7 +2494,7 @@ async def get_anti_skill(
 
 
 @router.get("/api/highfreq/pnl_by_fee_tier")
-async def get_pnl_by_fee_tier(
+def get_pnl_by_fee_tier(
     symbol: str = DEFAULT_SYMBOL,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
@@ -2484,7 +2546,7 @@ async def get_pnl_by_fee_tier(
 
 
 @router.get("/api/highfreq/actionable_signal")
-async def get_actionable_signal(
+def get_actionable_signal(
     symbol: str = DEFAULT_SYMBOL,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
@@ -2571,7 +2633,7 @@ async def get_actionable_signal(
 
 
 @router.get("/api/highfreq/predictions_history")
-async def get_predictions_history(
+def get_predictions_history(
     symbol: str = DEFAULT_SYMBOL,
     since_minutes: int = 60,
     db: Session = Depends(_get_db),
@@ -2623,7 +2685,7 @@ async def get_predictions_history(
 
 
 @router.get("/api/highfreq/training_history")
-async def get_training_history(
+def get_training_history(
     symbol: str = DEFAULT_SYMBOL,
     since_days: int = 7,
     db: Session = Depends(_get_db),
@@ -2687,7 +2749,7 @@ async def get_training_history(
 # manual run (or via a future systemd timer).  This endpoint just reads
 # that file — never recomputes (the eval takes 1-3 minutes per symbol).
 @router.get("/api/highfreq/regression_metrics")
-async def get_regression_metrics() -> JSONResponse:
+def get_regression_metrics() -> JSONResponse:
     """Latest CatBoostRegressor metrics from ``tools.regression_eval``.
 
     Returns 200 always:

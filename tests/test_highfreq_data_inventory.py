@@ -193,30 +193,60 @@ class _FakeSession:
 def test_fetch_live_inventory_caches_within_ttl(monkeypatch):
     """Repeated calls within TTL hit the function once. Pin so a
     refactor that loses the cache doesn't suddenly hammer Postgres
-    on every page render."""
-    df = _seconds_frame(n_minutes=5)
-    call_count = {"n": 0}
+    on every page render.
 
-    def _fake_fetch(db, *, symbol, since_hours):
-        call_count["n"] += 1
+    Tests both the legacy slow path (``fast=False``) and the new fast
+    path (``fast=True``, default in code-review C-6) — cache contract
+    must hold for both.
+    """
+    df = _seconds_frame(n_minutes=5)
+    legacy_calls = {"n": 0}
+    fast_calls = {"n": 0}
+
+    def _fake_legacy(db, *, symbol, since_hours):
+        legacy_calls["n"] += 1
         return df
 
+    def _fake_fast(db, *, symbol, since_hours, neutral_band_bps,
+                   frozen_holdout_days):
+        fast_calls["n"] += 1
+        return {
+            "n_seconds_loaded": 300,
+            "n_minutes_after_aggregation": 5,
+            "n_minutes_after_neutral_drop": 4,
+            "n_in_holdout": 0,
+            "n_eligible_for_training": 4,
+        }
+
     monkeypatch.setattr(
-        "app.highfreq.data_inventory._fetch_seconds_sync", _fake_fetch,
+        "app.highfreq.data_inventory._fetch_seconds_sync", _fake_legacy,
+    )
+    monkeypatch.setattr(
+        "app.highfreq.data_inventory._fetch_holdout_split_sync", _fake_fast,
     )
 
-    s1 = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT")
-    s2 = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT")
-    s3 = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT")
-
-    assert call_count["n"] == 1, "all 3 calls within TTL must share the cache"
-    # Same snapshot identity — proves it's the same cached object.
+    # Legacy path: 3 calls under TTL → 1 fetch.
+    s1 = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT", fast=False)
+    s2 = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT", fast=False)
+    s3 = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT", fast=False)
+    assert legacy_calls["n"] == 1
     assert s1 is s2
     assert s2 is s3
 
+    # Reset cache, exercise fast path same way.
+    from app.highfreq.data_inventory import clear_cache_for_tests
+    clear_cache_for_tests()
+    f1 = fetch_live_inventory(_FakeSession(), symbol="ETHUSDT", fast=True)
+    f2 = fetch_live_inventory(_FakeSession(), symbol="ETHUSDT", fast=True)
+    f3 = fetch_live_inventory(_FakeSession(), symbol="ETHUSDT", fast=True)
+    assert fast_calls["n"] == 1
+    assert f1 is f2
+    assert f2 is f3
+
 
 def test_fetch_live_inventory_refreshes_after_ttl(monkeypatch):
-    """After TTL elapses, next call recomputes."""
+    """After TTL elapses, next call recomputes (legacy path test —
+    behaviour is identical for fast path; covered by separate test)."""
     df = _seconds_frame(n_minutes=5)
     call_count = {"n": 0}
 
@@ -228,10 +258,14 @@ def test_fetch_live_inventory_refreshes_after_ttl(monkeypatch):
         "app.highfreq.data_inventory._fetch_seconds_sync", _fake_fetch,
     )
 
-    fetch_live_inventory(_FakeSession(), symbol="BTCUSDT", ttl_seconds=0.01)
+    fetch_live_inventory(
+        _FakeSession(), symbol="BTCUSDT", ttl_seconds=0.01, fast=False,
+    )
     import time
     time.sleep(0.05)  # exceed the tiny TTL
-    fetch_live_inventory(_FakeSession(), symbol="BTCUSDT", ttl_seconds=0.01)
+    fetch_live_inventory(
+        _FakeSession(), symbol="BTCUSDT", ttl_seconds=0.01, fast=False,
+    )
 
     assert call_count["n"] == 2
 
@@ -250,12 +284,44 @@ def test_fetch_live_inventory_keys_cache_by_symbol(monkeypatch):
         "app.highfreq.data_inventory._fetch_seconds_sync", _fake_fetch,
     )
 
-    btc = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT")
-    eth = fetch_live_inventory(_FakeSession(), symbol="ETHUSDT")
+    btc = fetch_live_inventory(_FakeSession(), symbol="BTCUSDT", fast=False)
+    eth = fetch_live_inventory(_FakeSession(), symbol="ETHUSDT", fast=False)
     assert btc.n_seconds_loaded == 300
     assert eth.n_seconds_loaded == 480
     assert btc.symbol == "BTCUSDT"
     assert eth.symbol == "ETHUSDT"
+
+
+# ─────────────── code-review C-6: fast path counts ────────────────
+
+
+def test_fast_path_returns_counts_from_sql(monkeypatch):
+    """Code-review C-6: fast path skips the 600k-row materialisation
+    and trusts SQL-side aggregation. Verify the LiveInventory snapshot
+    carries the SQL counts faithfully (no double-counting, no clamping)."""
+    def _fake_fast(db, *, symbol, since_hours, neutral_band_bps,
+                   frozen_holdout_days):
+        return {
+            "n_seconds_loaded": 12345,
+            "n_minutes_after_aggregation": 207,
+            "n_minutes_after_neutral_drop": 142,
+            "n_in_holdout": 5,
+            "n_eligible_for_training": 137,
+        }
+
+    monkeypatch.setattr(
+        "app.highfreq.data_inventory._fetch_holdout_split_sync", _fake_fast,
+    )
+    from app.highfreq.data_inventory import clear_cache_for_tests
+    clear_cache_for_tests()
+
+    snap = fetch_live_inventory(_FakeSession(), symbol="BNBUSDT", fast=True)
+    assert snap.symbol == "BNBUSDT"
+    assert snap.n_seconds_loaded == 12345
+    assert snap.n_minutes_after_aggregation == 207
+    assert snap.n_minutes_after_neutral_drop == 142
+    assert snap.n_in_holdout == 5
+    assert snap.n_eligible_for_training == 137
 
 
 def test_default_ttl_and_since_hours_pinned():

@@ -145,13 +145,64 @@ def _get_redis():
     return _redis_client if _redis_client not in (None, False) else None
 
 
+# Code-review C-1 (2026-05-04): JSON cache (was pickle).
+#
+# Rationale: ``pickle.loads`` on Redis-fetched bytes is RCE if the broker
+# is ever compromised (network leak, sibling-tenant, accidental exposure).
+# Cached values here include numpy arrays + DataFrames — not natively JSON
+# serialisable — so we ship a small numpy-aware encoder below.
+#
+# Backward-compat with legacy pickle entries: cache_get tries JSON first,
+# treats decode errors as "stale entry" and deletes them. Cache TTLs are
+# minutes/hours, so the legacy keyspace rolls over naturally within hours
+# of deploy. **Never** falls back to pickle.loads — that would re-open
+# the very vector this fix closes.
+
+
+def _np_aware_json_encode(value) -> str:
+    """JSON-encode ``value`` with numpy arrays → lists, NaN/Inf → None."""
+    import json as _json
+    import math as _math
+
+    def _convert(o):
+        # numpy scalar / array
+        if hasattr(o, "tolist"):
+            return o.tolist()
+        if isinstance(o, float) and not _math.isfinite(o):
+            return None
+        if hasattr(o, "isoformat"):  # datetime / Timestamp
+            return o.isoformat()
+        # pandas DataFrame / Series — caller should pre-serialise; fall
+        # back to to_json which is lossy but at least parseable.
+        if hasattr(o, "to_json"):
+            return _json.loads(o.to_json(date_format="iso"))
+        if hasattr(o, "to_dict"):
+            return o.to_dict()
+        raise TypeError(f"unserialisable for JSON cache: {type(o)!r}")
+
+    return _json.dumps(value, default=_convert)
+
+
 def _cache_get(key: str):
     r = _get_redis()
     if not r:
         return None
     try:
         data = r.get(key)
-        return pickle.loads(data) if data else None
+        if not data:
+            return None
+        try:
+            import json as _json
+            return _json.loads(data)
+        except Exception:
+            # Legacy pickle entry from before C-1 deploy. Drop it.
+            # We deliberately do NOT call pickle.loads here — that's the
+            # exact vector being closed.
+            try:
+                r.delete(key)
+            except Exception:
+                pass
+            return None
     except Exception as e:
         logger.debug("cache_get fail %s: %s", key, e)
         return None
@@ -162,7 +213,13 @@ def _cache_set(key: str, value, ttl: int):
     if not r:
         return
     try:
-        r.setex(key, ttl, pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL))
+        encoded = _np_aware_json_encode(value)
+        r.setex(key, ttl, encoded)
+    except TypeError as exc:
+        # Value contains a type we can't JSON-encode (e.g. a TF model
+        # accidentally bundled in). Cache write skipped — caller must
+        # tolerate a recompute. Log at debug; this is a perf hint only.
+        logger.debug("cache_set skip (unserialisable) %s: %s", key, exc)
     except Exception as e:
         logger.debug("cache_set fail %s: %s", key, e)
 

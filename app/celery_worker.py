@@ -24,10 +24,14 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6380/0")
 PRED_RESULT_CACHE_TTL = int(os.getenv("PRED_RESULT_CACHE_TTL", "300"))  # 5 мин
 
 celery_app = Celery("neucast", broker=REDIS_URL, backend=REDIS_URL)
+# Code-review C-1 (2026-05-04): JSON serializer (was pickle). Pickle in the
+# broker is an RCE seed — any Redis compromise becomes Python execution on
+# every worker. All task signatures use scalar args; result dicts already
+# pre-serialise numpy arrays via .tolist() (line ~308-323 below).
 celery_app.conf.update(
-    task_serializer="pickle",
-    result_serializer="pickle",
-    accept_content=["pickle", "json"],
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
     task_track_started=True,
     result_expires=3600,
     worker_max_tasks_per_child=50,
@@ -190,11 +194,37 @@ def _pred_cache_key(ticker: str, start_date: str, end_date: str, days_ahead: int
 
 
 def _pred_cache_get(key: str):
+    """Read a cached prediction result.
+
+    Code-review C-1 (2026-05-04): switched from pickle to JSON. Cached values
+    are already plain dicts of str/int/float/list (see line ~308-323 where
+    numpy arrays and DatetimeIndex are .tolist()'d before caching), so the
+    JSON round-trip is lossless.
+
+    Backward compatibility: a fresh deploy will see legacy pickle bytes
+    on existing keys. We try JSON first; on failure we treat the entry as
+    invalid (returning None forces a recompute). The TTL is short
+    (PRED_RESULT_CACHE_TTL=5 min default), so legacy entries roll over
+    naturally within minutes of deploy — no manual Redis flush needed.
+    """
     try:
         import redis
         r = redis.from_url(REDIS_URL, socket_timeout=1, socket_connect_timeout=1)
         data = r.get(key)
-        return pickle.loads(data) if data else None
+        if not data:
+            return None
+        try:
+            import json as _json
+            return _json.loads(data)
+        except Exception:
+            # Legacy pickle entry from before the C-1 deploy. Drop it —
+            # the caller will recompute. Pickle.loads here would re-open
+            # the RCE vector we're closing.
+            try:
+                r.delete(key)
+            except Exception:
+                pass
+            return None
     except Exception as e:
         logger.debug(f"pred cache_get fail: {e}")
         return None
@@ -204,7 +234,12 @@ def _pred_cache_set(key: str, value, ttl: int):
     try:
         import redis
         r = redis.from_url(REDIS_URL, socket_timeout=1, socket_connect_timeout=1)
-        r.setex(key, ttl, pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL))
+        # Code-review C-1: JSON serialiser (was pickle.HIGHEST_PROTOCOL).
+        # Caller is responsible for ensuring ``value`` is JSON-serialisable
+        # — current call site at line ~325 passes ``serializable`` which has
+        # numpy → list conversions baked in.
+        import json as _json
+        r.setex(key, ttl, _json.dumps(value, default=str))
     except Exception as e:
         logger.debug(f"pred cache_set fail: {e}")
 
