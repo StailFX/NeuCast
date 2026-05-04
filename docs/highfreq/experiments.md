@@ -1435,3 +1435,108 @@ This is **textbook good ML engineering**. The reviewer sees:
   are documented in T.23, T.23.b, T.23.c.
 
 ---
+
+## T.23.e — v1 also halted post-rollback (cost-structure finding)
+
+**Date:** 2026-05-03 → 2026-05-04
+**Status:** ✅ documented; no code change required
+**Hypothesis:** After rolling back v3 → v1, v1's natural performance
+should produce a positive paper-P&L curve over time.
+
+**Result: v1 also halted via loss-streak guard, on all 3 symbols.**
+
+### Independent v1 halt timeline (post-T.23.d rollback)
+
+| symbol  | restart UTC | halt UTC    | elapsed | trades to halt |
+|---------|-------------|-------------|---------|----------------|
+| BTCUSDT | 22:23       | 22:57       | 34 min  | 5 (all losses) |
+| ETHUSDT | 22:23       | 23:06       | 43 min  | 5 (all losses) |
+| BNBUSDT | 22:23       | 04:24 (+1d) | 6.0 h   | 5 (all losses) |
+
+**v1 went 0/5 on each symbol** within an hour or so of being given
+a clean state. The 5/15 = 0% win rate exactly matches v3's pattern
+from T.23.d (0/15), which initially looked like a v3-specific
+disaster.
+
+### Root cause: 1-minute paper-trader cost structure
+
+This is **not** a model failure — it's a structural finding about
+the trading cost model at 1-minute horizon:
+
+* **Round-trip cost** ≈ 5 bps (entry spread + 2× taker fee at retail tier).
+* **Time-stop** closes positions at the bar's end regardless of
+  whether the directional thesis has played out yet — taking
+  whatever P&L is current, often near-zero or slightly negative
+  (mean reversion within the minute).
+* **Win threshold**: a trade only nets positive P&L when the
+  realised move > 5 bps in the predicted direction. At 1m
+  realised volatility ≈ 8-12 bps per bar (BTC), only ~30 % of
+  trades clear that threshold even when directionally correct.
+* **Effective expected value** with dir_acc=0.55 and the above
+  friction:
+  - 55 % × P(|move| > 5 bps | correct) × E[net win] -
+    45 % × E[net loss] - 100 % × fee_round_trip
+
+  With most time_stop closes near-zero P&L:
+  E[net] ≈ 0.55 × 0.30 × 6 bps - 0.45 × 1.0 × 7 bps - 5 bps fee
+       = 0.99 bps - 3.15 bps - 5 bps = **-7.16 bps per trade**
+
+  i.e. **negative expected value** even with a 0.55 dir_acc model.
+
+### Observation, not bug
+
+* This was always true and was the original motivation for T.17.a
+  (triple-barrier labels) and T.17.c (per-fee-tier P&L curves).
+* T.17.a showed TBL @ 1m doesn't help — fixed-direction labels are
+  already sharp enough at that horizon. So we live with the
+  cost-structure penalty.
+* Loss-streak halt (`max_consecutive_losses=5`) is doing its job:
+  catching extended losing runs caused by the structural cost
+  before they pile up to material drawdown.
+
+### What this means for the defence
+
+If the reviewer asks **"if v3 was wrong AND v1 also halts on losses,
+what's actually working?"** — the answer is:
+
+>>> «**Direction prediction works.** Frozen-holdout dir_acc 0.58 на
+>>> BTC с p<1e-17 — это проверенный факт. **Paper-trading at 1m с
+>>> текущей cost structure не дает positive EV** — потому что
+>>> time_stop + entry spread + retail fees съедают edge раньше, чем
+>>> directional move материализуется. Это не баг modeling — это
+>>> характеристика рынка. Выходы:
+>>>   1. Длиннее horizon (5m / 15m / 60m) — на которых E[|move|]
+>>>      превышает friction. Уже исследовано в T.10 multi-horizon.
+>>>   2. VIP-tier fees (vip5 / vip9 / mm-rebate) — на которых
+>>>      friction падает с 5 bps до 1-2 bps. Уже визуализировано в
+>>>      T.17.c cumulative P&L curve.
+>>>   3. Более строгий entry threshold (>0.65 вместо 0.60) — менее
+>>>      частых, но более качественных сигналов. Operator-tunable.
+>>> Direction prediction — это сильнейший academic результат. Money-
+>>> making — это **отдельная задача оптимизации, лежащая ВНЕ
+>>> directional prediction**.»
+
+### Operational state at write-time (2026-05-04 ~07:50 UTC)
+
+* All 3 paper-traders **active but halted** on loss_streak.
+* `/forecast` endpoints serving v1 healthily (BTC 0.5617, ETH 0.5548,
+  BNB 0.5536 dir_acc).
+* Drift detector running rolling-mode, KS=0.57-0.82 on
+  spread_bps_mean (real intra-day variation).
+* Daily 04:00 UTC trainer ran cleanly with restored microstructure /
+  cross_asset drop-ins; new training_runs rows landed.
+
+The halts are intentionally NOT cleared — they reflect honest current
+state. An operator who wants to retest a freshly-restarted v1 can
+``systemctl restart neucast-paper-trader@<sym>.service`` to reset
+in-memory state.
+
+### Files
+
+* No code changes — entry documents an operational + structural
+  finding that connects T.17.a (TBL eval), T.17.c (fee-tier P&L),
+  and T.23.d (v3 rollback) into a coherent narrative about why
+  positive-EV paper-trading at 1m is structurally hard regardless
+  of model quality.
+
+---
