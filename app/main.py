@@ -441,6 +441,40 @@ def _load_pred_slug(slug: str) -> dict | None:
         return None
 
 
+def _save_task_owner(task_id: str, user_id: int, *, ttl: int = 7200) -> bool:
+    """Code-review L-4 (2026-05-04): record (task_id → user_id) so the
+    ``/api/task/{task_id}`` endpoint can refuse polling by users who
+    don't own the task. Returns True on success, False if Redis is
+    unreachable (caller treats as best-effort)."""
+    r = _get_redis()
+    if not r:
+        return False
+    try:
+        r.setex(f"task_owner:{task_id}", ttl, str(int(user_id)))
+        return True
+    except Exception:
+        return False
+
+
+def _get_task_owner(task_id: str) -> int | None:
+    """Read back the owner stamped by ``_save_task_owner``. Returns
+    ``None`` if Redis is down OR the record expired OR the task was
+    submitted before the L-4 fix landed (legacy task — no record).
+    Callers treat ``None`` as ``no_record_known`` and apply the
+    documented fallback policy below.
+    """
+    r = _get_redis()
+    if not r:
+        return None
+    try:
+        raw = r.get(f"task_owner:{task_id}")
+        if not raw:
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+
 # ============================================================
 # Password hashing — Argon2id KDF (code-review C-2, 2026-05-04)
 # ============================================================
@@ -840,6 +874,21 @@ async def predict(
             # to match the broker-wide config. Args are str/int/bool only.
             serializer="json",
         )
+        # Code-review L-4 (2026-05-04): record the (task_id → user_id)
+        # mapping in Redis so /api/task/{task_id} can verify the
+        # requesting user owns this task. Slug-keyed storage already
+        # captures the owner indirectly (slug is unguessable), but
+        # the long-form /predict/status/{task_id} URL exposes the
+        # task UUID — a logged-in attacker who somehow learns another
+        # user's task_id (shoulder-surf, log leak) could otherwise
+        # poll their progress. TTL=2h matches the celery task's max
+        # lifetime + slack.
+        try:
+            if user is not None:
+                _save_task_owner(task.id, user.id, ttl=7200)
+        except Exception:
+            # Mapping write failure must not block the redirect.
+            pass
         # ── Пробуем короткий URL /p/{slug}. Если Redis недоступен, падаем в ──
         # длинный /predict/status/{UUID}?... (легаси-совместимость).
         slug = _make_slug()
@@ -1116,9 +1165,39 @@ async def predict_status_page(
 
 
 @app.get("/api/task/{task_id}")
-async def task_status(task_id: str):
+async def task_status(
+    task_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Poll Celery task state.
+
+    Code-review L-4 (2026-05-04): refuse polling by users who don't
+    own the task. Three policy outcomes:
+
+    * Logged-out caller → 403 (must be authenticated).
+    * Stamped owner is known and ≠ caller → 403.
+    * No stamp on record (legacy task or Redis miss) → ALLOW. Backwards-
+      compat: there are in-flight tasks from before this fix that
+      have no owner record. Refusing them outright would break the
+      waiting page mid-flight. The owner-stamp is best-effort and
+      grace-degrades safely; a caller who somehow knows another
+      user's task UUID still can't extract sensitive content (the
+      response is just state strings + the user_id-stamped result
+      dict, which they'd be polling for their OWN task in normal
+      flow).
+    """
     if not USE_CELERY or not celery_app:
         return {"state": "FAILURE", "error": "Celery not configured"}
+
+    if user is None:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=403, detail="login required")
+    owner_id = _get_task_owner(task_id)
+    if owner_id is not None and owner_id != int(user.id):
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=403, detail="not your task",
+        )
 
     from celery.result import AsyncResult
     result = AsyncResult(task_id, app=celery_app)

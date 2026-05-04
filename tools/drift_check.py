@@ -266,7 +266,14 @@ def main(argv: list[str] | None = None) -> int:
         weights_dir / f"{sym.lower()}_drift.json"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2, default=str))
+    # Code-review Perf-low (2026-05-04): atomic write — tempfile in
+    # the same directory + os.replace. Without this, a concurrent
+    # reader (the live ``/api/highfreq/drift_status`` endpoint) can
+    # see a torn / half-written JSON file mid-flush and fail to
+    # parse, surfacing as ``severity="malformed"`` for one cron tick.
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, default=str))
+    os.replace(tmp_path, out_path)
     logger.info("wrote %s (severity=%s max_ks=%.4f)",
                 out_path, payload["severity"], payload["max_ks"])
 

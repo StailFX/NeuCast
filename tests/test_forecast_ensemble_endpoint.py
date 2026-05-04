@@ -17,10 +17,31 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.highfreq.web import _get_db, router
+
+
+# Code-review C-5 (2026-05-04): get_forecast_ensemble pre-fetches
+# seconds frames once and passes them to both _predict_for_horizon
+# calls. Tests below mock _predict_for_horizon directly, so the pre-
+# fetch only needs to NOT crash. Returning empty DataFrames here is
+# sufficient — the patched ``_predict_for_horizon`` ignores its
+# df_seconds kwargs entirely.
+@pytest.fixture(autouse=True)
+def _patch_prefetch_seconds():
+    with patch(
+        "app.highfreq.web._fetch_recent_seconds",
+        return_value=pd.DataFrame(),
+    ), patch(
+        "app.highfreq.web._fetch_recent_futures_seconds",
+        return_value=pd.DataFrame(),
+    ):
+        yield
 
 
 def _make_app() -> FastAPI:

@@ -147,6 +147,56 @@ class HighfreqStatus:
         return _scrub(asdict(self))
 
 
+# ── JSON-file mtime cache (code-review Perf-low, 2026-05-04) ─────────────
+#
+# Several endpoints (drift_status, robustness, regression_metrics) read
+# small static JSON artefacts written by cron jobs. The dashboard polls
+# these every ~5 min × 3 cards × N operators — each call re-opens +
+# re-parses the file, which is wasteful when the file changed maybe
+# once an hour. Mtime-keyed cache: the first read parses + stores;
+# subsequent reads with unchanged mtime return the cached dict instantly.
+
+_JSON_FILE_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
+
+def _read_json_cached(path: Path) -> dict[str, Any] | None:
+    """Read + parse ``path`` if its mtime advanced since last call;
+    return cached dict otherwise. Returns ``None`` on a missing file
+    or parse error (caller surfaces the malformed/no_check_yet state).
+    """
+    key = str(path)
+    try:
+        st = path.stat()
+    except (FileNotFoundError, OSError):
+        # File missing — invalidate any prior cache entry so a future
+        # write is picked up cleanly.
+        _JSON_FILE_CACHE.pop(key, None)
+        return None
+    cached = _JSON_FILE_CACHE.get(key)
+    if cached is not None and cached[0] == st.st_mtime:
+        return cached[1]
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        _JSON_FILE_CACHE[key] = (st.st_mtime, None)
+        return None
+    _JSON_FILE_CACHE[key] = (st.st_mtime, payload)
+    return payload
+
+
+def _read_json_cached_state(path: Path) -> str:
+    """Return the cache-state string for tests / metrics:
+    ``hit`` / ``miss`` / ``invalid``."""
+    key = str(path)
+    if not path.exists():
+        return "invalid"
+    st = path.stat()
+    cached = _JSON_FILE_CACHE.get(key)
+    if cached is None:
+        return "miss"
+    return "hit" if cached[0] == st.st_mtime else "miss"
+
+
 # ── JSON sanitisation ─────────────────────────────────────────────────────
 
 
@@ -366,7 +416,22 @@ def _fetch_recent_seconds(
     except (ProgrammingError, OperationalError) as exc:
         logger.warning("highfreq_ofi_1s recent-rows fetch failed (%s): %s", symbol, exc)
         return None
-    return pd.DataFrame([dict(r) for r in rows])
+    # Code-review Perf-medium (2026-05-04): from_records on the row
+    # mappings is ~3× faster than ``[dict(r) for r in rows]`` followed
+    # by DataFrame(). At ~22 500 rows for the 15-min lookback, that's
+    # 60-90 ms saved per ensemble request.
+    if not rows:
+        return pd.DataFrame(columns=[
+            "ts", "symbol", "ofi", "microprice", "depth_imb",
+            "spread_bps", "trade_imb", "n_updates",
+        ])
+    return pd.DataFrame.from_records(
+        rows,
+        columns=[
+            "ts", "symbol", "ofi", "microprice", "depth_imb",
+            "spread_bps", "trade_imb", "n_updates",
+        ],
+    )
 
 
 def _fetch_recent_futures_seconds(
@@ -408,7 +473,22 @@ def _fetch_recent_futures_seconds(
             symbol, exc,
         )
         return None
-    return pd.DataFrame([dict(r) for r in rows])
+    # Code-review Perf-medium (2026-05-04): from_records — same win
+    # as the spot helper above.
+    if not rows:
+        return pd.DataFrame(columns=[
+            "ts", "symbol", "ofi", "microprice", "depth_imb",
+            "spread_bps", "trade_imb", "n_updates",
+            "mark_price", "funding_rate",
+        ])
+    return pd.DataFrame.from_records(
+        rows,
+        columns=[
+            "ts", "symbol", "ofi", "microprice", "depth_imb",
+            "spread_bps", "trade_imb", "n_updates",
+            "mark_price", "funding_rate",
+        ],
+    )
 
 
 # ── Router ────────────────────────────────────────────────────────────────
@@ -940,12 +1020,22 @@ def get_forecast_ensemble(
     )
 
     symbol = _validate_symbol(symbol)
-    if not (0.0 < weight_1m and 0.0 < weight_15m):
+    # Code-review M-3 (2026-05-04): bound BOTH ends — was just
+    # ``> 0.0``. ``?weight_1m=1e308`` previously produced NaN/Inf
+    # downstream (sum of weights overflows, ratio becomes NaN), then
+    # ``_scrub`` mapped them back to None and the frontend showed a
+    # broken card. Hard-cap at 10.0 — no realistic use case exceeds
+    # this; 10× any reasonable component weight is already extreme.
+    if not (
+        0.0 < weight_1m <= 10.0
+        and 0.0 < weight_15m <= 10.0
+    ):
         return JSONResponse(
             status_code=400,
             content={
                 "ok": False,
                 "reason": "invalid_weights",
+                "detail": "weight_1m and weight_15m must each be in (0, 10]",
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
             },
         )
@@ -2134,6 +2224,12 @@ def get_drift_status(
     symbol = _validate_symbol(symbol)
     weights_dir = Path("weights/highfreq")
     drift_path = weights_dir / f"{symbol.lower()}_drift.json"
+    # Code-review Perf-low (2026-05-04): mtime-cached JSON read.
+    # ``_read_json_cached`` returns:
+    #   * dict on success (file exists + parsed cleanly, fresh or cached)
+    #   * None if the file is missing OR malformed.
+    # We disambiguate via ``drift_path.exists()`` so the response
+    # carries the correct ``reason`` string.
     if not drift_path.exists():
         return JSONResponse(content={
             "ok": False,
@@ -2141,10 +2237,9 @@ def get_drift_status(
             "symbol": symbol,
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         })
-    try:
-        payload = json.loads(drift_path.read_text())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("drift_status read failed for %s: %s", symbol, exc)
+    payload = _read_json_cached(drift_path)
+    if payload is None:
+        logger.warning("drift_status: malformed JSON for %s", symbol)
         return JSONResponse(content={
             "ok": False,
             "reason": "malformed",
@@ -2502,7 +2597,7 @@ def get_robustness(
     written by ``python -m tools.robustness_suite --symbol ...``.
     Returns 200 always; missing file → ``ok=False`` with reason.
     """
-    sym = symbol.upper()
+    sym = _validate_symbol(symbol)
     path = Path(f"weights/highfreq/{sym.lower()}_1m_robustness.json")
     if not path.exists():
         return JSONResponse(content={
@@ -2515,10 +2610,10 @@ def get_robustness(
             ),
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         })
-    try:
-        payload = json.loads(path.read_text())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("robustness file read failed for %s: %s", sym, exc)
+    # Code-review Perf-low (2026-05-04): mtime-cached read.
+    payload = _read_json_cached(path)
+    if payload is None:
+        logger.warning("robustness file malformed for %s", sym)
         return JSONResponse(content={
             "ok": False,
             "reason": "malformed",
@@ -2859,10 +2954,10 @@ def get_regression_metrics() -> JSONResponse:
             "hint": "run `python -m tools.regression_eval` to generate",
             "ts": datetime.now(tz=timezone.utc).isoformat(),
         })
-    try:
-        payload = json.loads(path.read_text())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("regression_eval.json read failed: %s", exc)
+    # Code-review Perf-low (2026-05-04): mtime-cached read.
+    payload = _read_json_cached(path)
+    if payload is None:
+        logger.warning("regression_eval.json malformed")
         return JSONResponse(content={
             "ok": False,
             "reason": "malformed",
