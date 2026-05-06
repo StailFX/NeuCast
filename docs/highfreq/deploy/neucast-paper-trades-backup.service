@@ -30,6 +30,14 @@ IOSchedulingPriority=6
 TimeoutStartSec=600
 
 # Code-review H-1sec (2026-05-04): systemd hardening — defence-in-depth.
+# Hot-fix 2026-05-06: ReadWritePaths must include BOTH textfile-collector
+# dirs. /var/lib/node_exporter is the upstream-docs path (some tools
+# still target it); /var/lib/prometheus/node-exporter is what the
+# Debian ``prometheus-node-exporter`` package actually scrapes — and
+# it's where ``app/highfreq/cron_metrics.py`` writes by default. The
+# original H-1sec landing only listed the first path, so EVERY cron
+# heartbeat write hit EROFS for two days until the L2-archive-stale
+# alert finally fired (which is itself a heartbeat-based rule).
 # A compromise of any of these processes (malicious .cbm planted via a
 # future write-path bug, etc.) gets a sandbox by default: no /tmp leak,
 # no /home access, no setuid escalation, no kernel tunables, no
@@ -39,7 +47,7 @@ TimeoutStartSec=600
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/neucast /var/lib/node_exporter /var/log
+ReadWritePaths=/opt/neucast /var/lib/node_exporter /var/lib/prometheus/node-exporter /var/log
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
