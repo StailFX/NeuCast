@@ -31,12 +31,35 @@ ExecStart=/opt/neucast/venv/bin/python -m tools.archive_l2_to_s3 \
 #       into a failed state on a transient S3 hiccup.
 SuccessExitStatus=0 1
 
-MemoryMax=400M
-MemoryHigh=300M
+# Memory caps (bumped 2026-05-08 after a real outage).
+#
+# Original budget (400M max / 300M high) was set assuming each archive
+# run processes ≤1 day per symbol — the steady-state. In a 4-day backlog
+# scenario (timer skipped due to upstream issue, or VPS restart),
+# ``pd.read_sql_query`` of 86k L2 rows × 30 columns × multiple days
+# blows past 300M. cgroup memory.high then *throttles* (not kills) the
+# process, which combined with nearly-full system swap (78% used by
+# Postgres + uvicorn + redis + celery on this 4G VPS) puts the run into
+# an indefinite swap-thrash spin. Symptoms: 60-min wallclock with only
+# 54s CPU consumed, no log lines after the first ``read_sql_query``.
+#
+# 1.5G max / 1.2G high gives a single read_sql_query enough headroom
+# for ~5 days of L2 backlog without paging. Steady-state runs use far
+# less; this is just the worst-case ceiling. VPS has ~2.3G available
+# memory baseline so the cap is well under the system budget.
+#
+# Long-term TODO: move ``pd.read_sql_query`` to a chunked
+# ``COPY TO STDOUT`` pipe so memory is bounded by the chunk size, not
+# the day size — then we can return to the tighter 400M/300M cap.
+MemoryMax=1500M
+MemoryHigh=1200M
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
-TimeoutStartSec=1800
+# 1h matches the new memory budget — even with 5 days of catch-up
+# the run should finish well under this (the live drain on 2026-05-08
+# took 23 seconds for 4 days once memory wasn't throttling).
+TimeoutStartSec=3600
 
 # Code-review H-1sec (2026-05-04): systemd hardening — defence-in-depth.
 # Hot-fix 2026-05-06: ReadWritePaths must include BOTH textfile-collector
