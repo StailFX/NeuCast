@@ -1,0 +1,58 @@
+# Continuous integration: run frontend Vitest + backend pytest on
+# every push and pull request. Status badges in README.md reflect
+# the latest run.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend (Vitest + RTL + MSW)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+
+  backend:
+    name: Backend (pytest + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+      - name: Install dependencies
+        # Skip TensorFlow / Keras heavy ML deps for CI — those tests
+        # are integration-only and not in tests/. Keep CI fast.
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov sqlalchemy fastapi httpx \
+            pandas numpy pydantic argon2-cffi python-multipart \
+            'starlette<0.50' redis
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/ --cov=app --cov-report=term --cov-report=xml \
+            -k "not integration" -q
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml

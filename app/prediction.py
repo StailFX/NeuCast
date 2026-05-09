@@ -290,7 +290,18 @@ def _fetch_macro_features(start_date, end_date) -> pd.DataFrame:
                 return name, None
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
-            return name, data["Close"]
+            close = data["Close"]
+            # 2026-05-09 hot-fix: yfinance ≥ 0.2 may return a DataFrame
+            # for ``data["Close"]`` when the underlying response has
+            # duplicate columns after MultiIndex flattening (most often
+            # for tickers like ^VIX / ^DXY when bundled with regular
+            # equities downloads). Squeeze to a single Series so the
+            # caller can assign into ``macro[name]`` without raising
+            # «Cannot set a DataFrame with multiple columns to the
+            # single column ...».
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            return name, close
         except Exception as e:
             logger.warning(f"Failed to fetch macro {name} ({ticker}): {e}")
             return name, None

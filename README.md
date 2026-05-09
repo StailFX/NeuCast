@@ -1,6 +1,9 @@
 # NeuCast
 
-![tests](https://img.shields.io/badge/tests-961%20passing-brightgreen)
+![tests](https://github.com/StailFX/NeuCast/actions/workflows/tests.yml/badge.svg)
+![backend-tests](https://img.shields.io/badge/backend--tests-970%20passing-brightgreen)
+![frontend-tests](https://img.shields.io/badge/frontend--tests-115%20passing-brightgreen)
+![coverage](https://img.shields.io/badge/coverage-46%25-yellow)
 ![python](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 ![status](https://img.shields.io/badge/status-Phase%20D%20%C2%B7%20sim--only-orange)
@@ -25,7 +28,7 @@ AI-платформа для прогнозирования финансовых
 | Status | Production at [neucast.ru](https://neucast.ru) | **Phase D sim-only · 3 symbols live · [docs/highfreq/](docs/highfreq/README.md)** |
 | Symbols | 200+ tickers (yfinance) | BTCUSDT · ETHUSDT · BNBUSDT |
 | Update cadence | Daily / hourly | 1 row/sec into Postgres, prediction every minute |
-| Test suite | inherits root | **961 tests · 100% passing** |
+| Test suite | **970 backend + 115 frontend = 1 085 tests · 100% passing** | (inherits root) |
 | Observability | systemd + nginx logs | Prometheus + Grafana + Telegram alerts (5 rules) |
 | Cold storage | none | Yandex S3 (Parquet+snappy, hot-cold pattern, 7-day hot retention) |
 

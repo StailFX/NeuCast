@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-05-09T12:57:38.096522Z",
+  "window_start": "2022-03-31",
+  "window_end": "2026-05-09",
+  "since_days": 1500,
+  "days_ahead": 30,
+  "use_foundation": false,
+  "rows": [
+    {
+      "ticker": "GC=F",
+      "asset": "Золото",
+      "ok": true,
+      "n_rows_loaded": 983,
+      "mae": 55.82,
+      "rmse": 86.2,
+      "mape": 1.25,
+      "r2": 0.976,
+      "dir_acc_pct": 59.89847715736041,
+      "model_name": "Ensemble (XGBoost+LightGBM+CatBoost)",
+      "elapsed_seconds": 68.8
+    },
+    {
+      "ticker": "SLV",
+      "asset": "Серебро (ETF SLV)",
+      "ok": true,
+      "n_rows_loaded": 981,
+      "mae": 1.8,
+      "rmse": 3.23,
+      "mape": 2.78,
+      "r2": 0.9642,
+      "dir_acc_pct": 59.89847715736041,
+      "model_name": "Ensemble (XGBoost+LightGBM+TCN+CatBoost)",
+      "elapsed_seconds": 55.1
+    },
+    {
+      "ticker": "USO",
+      "asset": "Нефть (ETF USO)",
+      "ok": true,
+      "n_rows_loaded": 981,
+      "mae": 1.94,
+      "rmse": 3.15,
+      "mape": 2.0,
+      "r2": 0.9815,
+      "dir_acc_pct": 55.32994923857868,
+      "model_name": "Ensemble (CatBoost+LightGBM+XGBoost+TCN)",
+      "elapsed_seconds": 90.2
+    },
+    {
+      "ticker": "BTC-USD",
+      "asset": "Биткоин",
+      "ok": true,
+      "n_rows_loaded": 1452,
+      "mae": 1510.97,
+      "rmse": 2076.67,
+      "mape": 1.69,
+      "r2": 0.9872,
+      "dir_acc_pct": 48.45360824742268,
+      "model_name": "Ensemble (XGBoost+CatBoost+LightGBM)",
+      "elapsed_seconds": 91.6
+    },
+    {
+      "ticker": "AAPL",
+      "asset": "Apple",
+      "ok": true,
+      "n_rows_loaded": 981,
+      "mae": 2.72,
+      "rmse": 3.75,
+      "mape": 1.07,
+      "r2": 0.9569,
+      "dir_acc_pct": 51.776649746192895,
+      "model_name": "Ensemble (CatBoost+XGBoost+LightGBM)",
+      "elapsed_seconds": 57.4
+    }
+  ]
+}
