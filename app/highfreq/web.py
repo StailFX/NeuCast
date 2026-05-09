@@ -28,6 +28,9 @@ import logging
 import math
 import os
 import re
+import time
+
+import numpy as np
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1130,6 +1133,238 @@ def get_forecast_ensemble(
             for c in result.components
         ],
         "models": {"1m": status_1m, "15m": status_15m},
+    }))
+
+
+# ── Joint multi-symbol shadow endpoint (Phase 2.2, 2026-05-09) ────────────
+#
+# Exposes the joint 1m model alongside the per-symbol solo models so a
+# caller can compare predictions side-by-side without modifying the
+# paper trader's behaviour. The trainer
+# (``tools/train_joint_1m.py``) writes
+# ``weights/highfreq/joint_1m.cbm`` + calibrator daily at 04:50 UTC;
+# this endpoint loads it lazily on first request and caches the loaded
+# model + calibrator for the lifetime of the worker process.
+#
+# Why "shadow":
+# * Live ensemble (``/api/highfreq/forecast_ensemble``) keeps using
+#   the per-symbol solo models — no risk of regressing live trading.
+# * The joint endpoint serves observable predictions for the dashboard
+#   / a side-by-side panel. Once we accumulate enough comparison data
+#   (~1-2 weeks of paired predictions + realised outcomes), the
+#   ensemble can flip to a weighted blend with empirical evidence.
+
+_JOINT_MODEL_CACHE: dict[str, Any] = {}
+
+
+def _load_joint_model() -> tuple[Any | None, Any | None, dict]:
+    """Lazy-load joint_1m.cbm + calibrator. Returns (model, calibrator,
+    status_dict). On any failure returns ``(None, None, {...reason})``.
+    Cached for the worker process lifetime; re-load happens on the
+    next worker restart (after the daily 04:50 UTC trainer writes
+    fresh weights)."""
+    cached = _JOINT_MODEL_CACHE.get("joint_1m")
+    if cached is not None:
+        return cached["model"], cached["calibrator"], cached["status"]
+
+    weights_path = Path("/opt/neucast/weights/highfreq/joint_1m.cbm")
+    if not weights_path.exists():
+        # Cold-start: trainer hasn't run yet.
+        status = {
+            "has_model": False,
+            "model_path": str(weights_path),
+            "reason": "joint_model_not_trained_yet",
+        }
+        return None, None, status
+
+    try:
+        from catboost import CatBoostClassifier
+        clf = CatBoostClassifier()
+        clf.load_model(str(weights_path))
+
+        # Calibrator path mirrors solo predictor convention.
+        cal_path = weights_path.with_name(weights_path.stem + "_calibrator.pkl")
+        calibrator = None
+        if cal_path.exists():
+            try:
+                from app.highfreq.calibration import load_calibrator
+                calibrator = load_calibrator(cal_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("joint calibrator load failed: %s", exc)
+
+        # Surface metric snapshot so the API caller can sanity-check
+        # which training run is serving them. Same JSON the solo
+        # predictor reads.
+        report_path = weights_path.with_name("joint_1m_metrics.json")
+        report: dict[str, Any] = {}
+        if report_path.exists():
+            try:
+                report = json.loads(report_path.read_text())
+            except Exception:
+                report = {}
+
+        mtime = weights_path.stat().st_mtime
+        status = {
+            "has_model": True,
+            "model_path": str(weights_path),
+            "model_age_seconds": time.time() - mtime,
+            "is_calibrated": (
+                calibrator is not None
+                and bool(report.get("low_directional_skill") is False)
+                and float(report.get("dir_acc_ci_low", 0)) > 0.5
+            ),
+            "dir_acc_mean": report.get("dir_acc_mean"),
+            "dir_acc_ci_low": report.get("dir_acc_ci_low"),
+            "dir_acc_ci_high": report.get("dir_acc_ci_high"),
+            "dir_acc_p_value": report.get("dir_acc_p_value"),
+            "n_folds": report.get("n_folds"),
+            "feature_set": report.get("feature_set", "joint"),
+            "joint_symbols": report.get("joint_symbols"),
+        }
+
+        _JOINT_MODEL_CACHE["joint_1m"] = {
+            "model": clf, "calibrator": calibrator, "status": status,
+        }
+        return clf, calibrator, status
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("joint model load failed: %s", exc)
+        return None, None, {
+            "has_model": False,
+            "model_path": str(weights_path),
+            "reason": "load_error",
+            "error": str(exc),
+        }
+
+
+@router.get("/api/highfreq/forecast_joint")
+def get_forecast_joint(
+    symbol: str = DEFAULT_SYMBOL,
+    db: Session = Depends(_get_db),
+) -> JSONResponse:
+    """Joint multi-symbol model forecast for one symbol — Phase 2.2.
+
+    Loads ``joint_1m.cbm`` (one model trained on pooled BTC+ETH+BNB
+    data with symbol-id one-hot features), builds the latest minute
+    feature row for the requested symbol, appends the symbol identity
+    one-hots, and returns the calibrated prob_up.
+
+    Response shape mirrors ``/api/highfreq/forecast``::
+
+        {
+          "ok": true,
+          "symbol": "BTCUSDT",
+          "ts": "...",
+          "prob_up": 0.5421,
+          "signal": "up" | "down" | "neutral",
+          "model": {...status dict, including dir_acc / CI / p-value
+                    from the joint training run...}
+        }
+
+    The caller can compare this against
+    ``/api/highfreq/forecast?symbol=BTCUSDT`` (solo) to track
+    agreement / disagreement over time. Empirical disagreement rate
+    is the metric we'll watch before flipping the live ensemble
+    (Phase 2.3).
+    """
+    symbol = _validate_symbol(symbol)
+    sym_upper = symbol.upper()
+
+    clf, calibrator, status = _load_joint_model()
+    ts_iso = datetime.now(tz=timezone.utc).isoformat()
+
+    if clf is None:
+        return JSONResponse(content={
+            "ok": False,
+            "reason": status.get("reason", "model_unavailable"),
+            "symbol": sym_upper,
+            "model": status,
+            "ts": ts_iso,
+        })
+
+    # Fetch ~120s of seconds for this symbol; enough to aggregate one
+    # complete minute even after dropping the in-flight bar.
+    df_seconds = _fetch_recent_seconds(
+        db, sym_upper, lookback_seconds=_FORECAST_LOOKBACK_SECONDS,
+    )
+    if df_seconds is None or df_seconds.empty:
+        return JSONResponse(content={
+            "ok": False,
+            "reason": "no_recent_data",
+            "symbol": sym_upper,
+            "model": status,
+            "ts": ts_iso,
+        })
+
+    # Build the latest minute row using the joint feature pipeline.
+    # We deliberately use the SAME aggregation path the trainer used
+    # (aggregate_to_minute → build_joint_features) so column order
+    # and identity-onehot semantics match exactly.
+    try:
+        from app.highfreq.feature_pipeline import aggregate_to_minute
+        from app.highfreq.feature_pipeline_joint import (
+            JOINT_FEATURE_COLUMNS, build_joint_features,
+        )
+
+        df = df_seconds.copy()
+        df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        # Drop the in-flight current minute — same rule as the solo
+        # ``build_latest_feature_row``.
+        now_minute = df["ts"].max().floor("1min")
+        df = df.loc[df["ts"] < now_minute]
+        if df.empty:
+            return JSONResponse(content={
+                "ok": False, "reason": "no_complete_minute_yet",
+                "symbol": sym_upper, "model": status, "ts": ts_iso,
+            })
+
+        minute_df = aggregate_to_minute(df, bar_minutes=1)
+        if minute_df.empty:
+            return JSONResponse(content={
+                "ok": False, "reason": "no_complete_minute_yet",
+                "symbol": sym_upper, "model": status, "ts": ts_iso,
+            })
+
+        feats = build_joint_features(minute_df)
+        if feats.empty:
+            return JSONResponse(content={
+                "ok": False, "reason": "feature_build_failed",
+                "symbol": sym_upper, "model": status, "ts": ts_iso,
+            })
+
+        last_row = feats[JOINT_FEATURE_COLUMNS].iloc[[-1]].to_numpy()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("joint feature build failed for %s: %s",
+                         sym_upper, exc)
+        return JSONResponse(content={
+            "ok": False, "reason": "feature_build_error",
+            "symbol": sym_upper, "model": status,
+            "error": str(exc), "ts": ts_iso,
+        })
+
+    # Inference + optional calibration.
+    raw_proba = float(clf.predict_proba(last_row)[0, 1])
+    if calibrator is not None:
+        from app.highfreq.calibration import apply_calibrator
+        prob_up = float(apply_calibrator(calibrator, raw_proba)[0])
+    else:
+        prob_up = raw_proba
+
+    # Same neutral band convention the live trader uses (0.45-0.55).
+    if prob_up >= 0.55:
+        signal = "up"
+    elif prob_up <= 0.45:
+        signal = "down"
+    else:
+        signal = "neutral"
+
+    return JSONResponse(content=_scrub({
+        "ok": True,
+        "symbol": sym_upper,
+        "ts": ts_iso,
+        "prob_up": prob_up,
+        "raw_prob_up": raw_proba,
+        "signal": signal,
+        "model": status,
     }))
 
 
