@@ -1,0 +1,68 @@
+[Unit]
+Description=NeuCast HF Joint Multi-Symbol Trainer (oneshot, fired by .timer)
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+Environment=OMP_NUM_THREADS=2
+
+# Joint multi-symbol training (release Phase-2.1, 2026-05-09).
+#
+# ONE model trained on the pooled BTC + ETH + BNB OFI history with
+# symbol-id one-hot features. Empirically (2026-04-29 baseline,
+# reproduced 2026-05-09 on fresh data): dir_acc ≈ 0.555 vs ≈ 0.539
+# average solo-per-symbol — +1.6 pp gain with a 2.4× tighter CI
+# because n_folds ≈ 197 instead of ~33 per solo. Crucially, the
+# pooling makes the model **structurally drift-resistant**: when one
+# symbol's regime shifts (e.g. BTC microstructure drift KS=0.68 we
+# saw on 2026-05-08), the other 2 symbols' signal carries through.
+#
+# 240 h window (10 days) matches the spike that produced the 0.5547
+# / p=7e-33 result. The wrapper-style trainer for solo runs uses 93h
+# and would be too thin for joint (smaller n_folds defeats the point).
+ExecStart=/opt/neucast/venv/bin/python -m tools.train_joint_1m \
+    --symbols BTCUSDT ETHUSDT BNBUSDT \
+    --since-hours 240 \
+    --bar-minutes 1 \
+    --out /opt/neucast/weights/highfreq/joint_1m.cbm \
+    --report /opt/neucast/weights/highfreq/joint_1m_metrics.json
+
+# Trainer exit codes (see neucast-highfreq-trainer.service for full
+# discussion): 0 = at least one fold; 1 = "no folds yet" — both treated
+# as success so the timer doesn't accumulate failed-state during ramp-up.
+SuccessExitStatus=0 1
+
+# Joint training fits ONE model on ~17k pooled minute bars (3 symbols ×
+# 240 h × 60 min/h × keep ratio). Memory ceiling matches the solo
+# trainer's 2.5G — pandas + CatBoost peak around 1.5G in practice; the
+# extra headroom is for the calibrator fit + isotonic regressor.
+MemoryMax=2500M
+MemoryHigh=2000M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=1800
+
+# Code-review H-1sec (2026-05-04): systemd hardening — defence-in-depth.
+# Same writelist as the per-symbol trainer template.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/neucast /var/lib/node_exporter /var/lib/prometheus/node-exporter /var/log
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+# Activated by the .timer unit, not socket / multi-user.

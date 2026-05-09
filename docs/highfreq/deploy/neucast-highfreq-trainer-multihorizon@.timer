@@ -1,0 +1,26 @@
+[Unit]
+Description=NeuCast HF Multi-Horizon Trainer schedule for %I — daily 04:45 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 04:45 UTC daily — sequenced AFTER the 1m trainer (04:00 + 5min jitter)
+# and the Monday holdout-eval (04:30 + 3min jitter) so the three jobs
+# never compete for the trainer's 2.5G memory slot. Window picked
+# empirically: 1m trainer finishes well within 30 min, holdout eval
+# within 15 min — 04:45 is comfortable after both.
+#
+# Instance name convention is ``<symbol>-h<horizon>m``, e.g.
+# ``btcusdt-h5m``, ``ethusdt-h15m``. The wrapper script
+# ``tools/run_trainer_multihorizon.sh`` parses this into trainer
+# CLI args; ``--bar-minutes`` is set from the horizon and
+# ``--feature-set`` defaults to ``auto`` which the trainer resolves
+# to ``long_horizon`` for bar_minutes >= 5 (microstructure features
+# decay too fast at this scale).
+OnCalendar=*-*-* 04:45:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+# Implicit Unit=neucast-highfreq-trainer-multihorizon@%i.service.
+
+[Install]
+WantedBy=timers.target

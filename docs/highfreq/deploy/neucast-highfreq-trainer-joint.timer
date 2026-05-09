@@ -1,0 +1,24 @@
+[Unit]
+Description=NeuCast HF Joint Multi-Symbol Trainer schedule — daily 04:50 UTC
+Documentation=file:///opt/neucast/docs/highfreq/architecture.md
+
+[Timer]
+# 04:50 UTC daily — the 5th and last training-related slot of the
+# morning. Sequence:
+#   * 04:00 — solo per-symbol trainers (3 timers, 5min jitter)
+#   * 04:30 — Monday-only frozen-holdout eval
+#   * 04:45 — multi-horizon trainer (per-(symbol × horizon))
+#   * 04:50 — joint multi-symbol trainer (this)
+#
+# Each step runs strictly after the previous one finishes (1m solo
+# trainers complete in ~3-5min) so the 2.5G memory slot is never
+# contended. The joint trainer pools 3 symbols and does 200 CV fits;
+# typical wallclock 5-8 minutes.
+OnCalendar=*-*-* 04:50:00 UTC
+Persistent=true
+RandomizedDelaySec=180
+
+# Implicit: Unit=neucast-highfreq-trainer-joint.service.
+
+[Install]
+WantedBy=timers.target
