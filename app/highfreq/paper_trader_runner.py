@@ -607,6 +607,18 @@ async def process_one_tick(
                 event_decision.minutes_until_event or 0.0,
             )
             trader.state.halted_reason = "event"
+        elif trader.state.halted_reason == "event":
+            # 2026-05-09 hot-fix: the event window has passed but the
+            # halt flag was sticky. Without this branch the trader
+            # remained in halted_reason="event" indefinitely — we found
+            # all 3 paper traders frozen for 5+ days post-FOMC/NFP.
+            # Only clear flags WE set here (``"event"``); never touch
+            # ``"loss_streak"`` / ``"daily_loss"`` / ``"anti_skill"``
+            # — those have their own owners + clear semantics.
+            logger.info(
+                "event-halt cleared for %s (event window passed)", symbol,
+            )
+            trader.state.halted_reason = None
     except Exception:
         logger.warning("event-calendar check failed", exc_info=True)
 
@@ -650,6 +662,16 @@ async def process_one_tick(
                 effective_prob_up = 1.0 - float(prob_up)
             # 'alert' = pass through; the warning log + future
             # Telegram hook is the only response.
+        elif trader.state.halted_reason == "anti_skill":
+            # 2026-05-09 hot-fix: same sticky-halt bug as event-halt.
+            # If anti-skill recovers (winrate CI again >= 0.5) the flag
+            # must auto-clear. Mirrors the event branch above; same
+            # rule "only clear flags we set".
+            logger.info(
+                "anti-skill halt cleared for %s (detector reports healthy)",
+                symbol,
+            )
+            trader.state.halted_reason = None
     except Exception:
         logger.warning("anti_skill check failed — proceeding without", exc_info=True)
 

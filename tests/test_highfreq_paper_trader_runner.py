@@ -534,3 +534,66 @@ def test_run_loop_swallows_exceptions_and_continues():
     # The first iteration attempted DB acquire (and failed). The second
     # sleep set shutdown, so the loop exited before the second tick.
     assert pool.acquire.call_count == 1
+
+
+# ─────────────── event-halt auto-clear (regression for 2026-05-09) ─────
+
+
+def test_process_one_tick_clears_stale_event_halt_when_no_event_active():
+    """Regression for 2026-05-08 outage: all 3 paper traders sat halted
+    for 5+ days because the event-halt flag was sticky. The runner sets
+    ``halted_reason="event"`` while an event is in window but never
+    cleared it after the window passed.
+
+    Setup: trader pre-stamped with ``halted_reason="event"`` (left over
+    from a past event); ``now`` deliberately picked to be far from any
+    real event in ``docs/highfreq/event_calendar.json`` (2026-04-15 is
+    before the calendar's earliest entry of 2026-05-01 FOMC). After
+    one tick, ``halted_reason`` MUST clear back to ``None``.
+    """
+    rows = _seconds_frame(
+        n_minutes=3, start="2026-04-15 11:32:00",
+    ).to_dict(orient="records")
+    pool = _mock_pool_returning(rows)
+    predictor = _StubPredictor(has_model=True, prob_up=0.5)  # neutral, no entry
+    trader = PaperTrader("BTCUSDT")
+
+    # Simulate a stale event-halt left over from an earlier event window.
+    trader.state.halted_reason = "event"
+
+    asyncio.run(process_one_tick(
+        pool=pool, predictor=predictor, trader=trader,
+        symbol="BTCUSDT",
+        now=datetime(2026, 4, 15, 11, 35, 0, tzinfo=UTC),
+    ))
+
+    # The fix: stale event-halt cleared because no event is active now.
+    assert trader.state.halted_reason is None
+
+
+def test_process_one_tick_does_not_clear_loss_streak_halt():
+    """The auto-clear branch must ONLY clear flags it owns (``"event"``,
+    ``"anti_skill"``). A ``"loss_streak"`` halt was set by the trader's
+    own ``_maybe_engage_risk_caps`` and is meant to persist across days
+    until manual intervention — see ``paper_trader._maybe_rollover_day``.
+    Clearing it would defeat the kill-switch.
+    """
+    rows = _seconds_frame(
+        n_minutes=3, start="2026-04-15 11:32:00",
+    ).to_dict(orient="records")
+    pool = _mock_pool_returning(rows)
+    predictor = _StubPredictor(has_model=True, prob_up=0.5)
+    trader = PaperTrader("BTCUSDT")
+
+    # loss_streak halt — owned by the trader, not the runner.
+    trader.state.halted_reason = "loss_streak"
+
+    asyncio.run(process_one_tick(
+        pool=pool, predictor=predictor, trader=trader,
+        symbol="BTCUSDT",
+        now=datetime(2026, 4, 15, 11, 35, 0, tzinfo=UTC),
+    ))
+
+    # MUST still be halted — this is the safety property we never want
+    # to silently break by adding a careless ``= None`` somewhere.
+    assert trader.state.halted_reason == "loss_streak"
