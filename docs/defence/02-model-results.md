@@ -4,6 +4,11 @@
 > and `tools/train_joint_1m.py` against the live Tokyo Postgres on
 > the date-stamped runs cited.
 
+> **Figures referenced from this section:**
+> [`fig-01-dir-acc-comparison.svg`](figures/fig-01-dir-acc-comparison.svg)
+> · [`fig-04-fee-tier-pnl.svg`](figures/fig-04-fee-tier-pnl.svg)
+> · [`fig-05-cv-power.svg`](figures/fig-05-cv-power.svg)
+
 ## 2.1 Solo per-symbol (production, daily 04:00 UTC)
 
 Three CatBoost models (`btcusdt_1m.cbm`, `ethusdt_1m.cbm`,

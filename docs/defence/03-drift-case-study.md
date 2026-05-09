@@ -6,6 +6,10 @@
 > a coinflip. The dashboard's drift detector caught it **before**
 > the CV metric did.
 
+> **Figure referenced from this section:**
+> [`fig-03-drift-evidence.svg`](figures/fig-03-drift-evidence.svg) — KS values per
+> microstructure feature on the day the regime shift was detected.
+
 ## Setup
 
 * **Model:** CatBoost classifier, 200 iters, depth 5, lr 0.05

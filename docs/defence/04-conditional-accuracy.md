@@ -6,6 +6,10 @@
 > form of this question — *if I only act on high-confidence calls,
 > how good is my hit rate?*
 
+> **Figure referenced from this section:**
+> [`fig-02-conditional-accuracy.svg`](figures/fig-02-conditional-accuracy.svg) — dir_acc
+> as a function of confidence threshold, per symbol.
+
 ## Setup
 
 Live endpoint: `/api/highfreq/conditional_accuracy`. Reads the

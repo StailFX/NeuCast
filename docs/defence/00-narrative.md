@@ -10,6 +10,8 @@
 | [03](03-drift-case-study.md) | Drift case study — 5m long_horizon, 28.04 → 09.05 | "What happens when the market changes?" |
 | [04](04-conditional-accuracy.md) | Conditional accuracy — confidence calibration | "Does the model know what it doesn't know?" |
 | [05](05-engineering-depth.md) | Engineering depth — observability, tests, alerts | "Is this production-grade?" |
+| [06](06-slide-deck-outline.md) | Slide deck outline | "How do I turn this into a 22-min defence?" |
+| [figures/](figures/) | 5 SVG plots | Slide-grade visuals — see [figures/README.md](figures/README.md) |
 
 ## The arc
 
