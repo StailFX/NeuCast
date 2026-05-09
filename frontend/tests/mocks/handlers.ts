@@ -89,4 +89,32 @@ export const handlers = [
       ],
     }),
   ),
+  // Phase 2.2 shadow joint forecast — default returns a happy
+  // calibrated payload so ForecastCard / Dashboard tests can render
+  // the JointForecastBadge without MSW raising onUnhandledRequest.
+  // Per-test overrides for the cold-start / disagreement scenarios
+  // live in the badge's own test file.
+  http.get("/api/highfreq/forecast_joint", () =>
+    HttpResponse.json({
+      ok: true,
+      symbol: "BTCUSDT",
+      ts: "2026-05-09T10:42:52Z",
+      prob_up: 0.5421,
+      raw_prob_up: 0.5012,
+      signal: "up",
+      model: {
+        has_model: true,
+        model_path: "/opt/neucast/weights/highfreq/joint_1m.cbm",
+        model_age_seconds: 1466,
+        is_calibrated: true,
+        dir_acc_mean: 0.5409,
+        dir_acc_ci_low: 0.5342,
+        dir_acc_ci_high: 0.5476,
+        dir_acc_p_value: 4.97e-33,
+        n_folds: 353,
+        feature_set: "joint",
+        joint_symbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
+      },
+    }),
+  ),
 ];

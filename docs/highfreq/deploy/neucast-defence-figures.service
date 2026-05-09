@@ -1,0 +1,53 @@
+[Unit]
+Description=NeuCast defence-figures renderer (oneshot, fired by .timer)
+Documentation=file:///opt/neucast/docs/defence/figures/README.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# Runs as stailfx — same identity that owns /opt/neucast and the
+# trainer heartbeat dir under /var/lib/prometheus/node-exporter.
+# Avoids needing sudo inside the wrapper, which would clash with
+# NoNewPrivileges=true below.
+User=stailfx
+Group=stailfx
+WorkingDirectory=/opt/neucast
+EnvironmentFile=/etc/neucast/env
+
+# The wrapper handles: curl conditional_accuracy → python render →
+# rsync to Finland → heartbeat. See tools/run_defence_figures.sh
+# for the breakdown.
+ExecStart=/opt/neucast/tools/run_defence_figures.sh
+
+# Render step is the only required-success step. rsync may fail
+# (Finland network blip) and we still consider the run a success
+# because the figures + heartbeat landed.
+SuccessExitStatus=0
+
+# Memory budget: matplotlib + the metric JSONs + the BNB-size SVG
+# render peaks at ~150M. Headroom for the conditional-accuracy
+# parser + curl + ssh client overhead.
+MemoryMax=400M
+MemoryHigh=300M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=600
+
+# systemd hardening — defence-in-depth (mirrors the trainer template).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/neucast /var/lib/node_exporter /var/lib/prometheus/node-exporter /var/log /tmp
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+# Activated by the .timer unit, not socket / multi-user.

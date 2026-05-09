@@ -138,6 +138,55 @@ export function fetchForecastEnsemble(
 }
 
 
+/** Joint multi-symbol shadow forecast (Phase 2.2, 2026-05-09).
+ *
+ * Returns the joint model's prediction for one symbol. The joint
+ * model is trained once on pooled BTC + ETH + BNB data with symbol-id
+ * one-hots; this endpoint runs inference on the requested symbol's
+ * latest minute-bar features and returns the calibrated prob_up,
+ * the raw (pre-calibration) probability, and the joint training-run
+ * status block (dir_acc / CI / p / n_folds).
+ *
+ * Used by the dashboard's ``<JointForecastBadge />`` to display the
+ * joint prediction next to the per-symbol solo forecast — a
+ * read-only side-by-side observable while Phase 2.2 collects shadow
+ * data for the eventual ensemble flip.
+ */
+export interface JointForecastResponse {
+  ok: boolean;
+  reason?: string;
+  symbol?: string;
+  ts: string;
+  prob_up?: number;
+  raw_prob_up?: number;
+  signal?: "up" | "down" | "neutral";
+  model?: {
+    has_model: boolean;
+    model_path?: string;
+    model_age_seconds?: number;
+    is_calibrated?: boolean;
+    dir_acc_mean?: number;
+    dir_acc_ci_low?: number;
+    dir_acc_ci_high?: number;
+    dir_acc_p_value?: number;
+    n_folds?: number;
+    feature_set?: string;
+    joint_symbols?: string[];
+    reason?: string;
+    error?: string;
+  };
+}
+
+
+export function fetchForecastJoint(
+  symbol: string,
+): Promise<JointForecastResponse> {
+  return fetchJson<JointForecastResponse>(
+    `/api/highfreq/forecast_joint?symbol=${symbol.toUpperCase()}`,
+  );
+}
+
+
 /** Block-bootstrap robustness suite (CI + permutation + per-day). */
 export function fetchRobustness(
   symbol: string,

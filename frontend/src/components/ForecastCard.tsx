@@ -8,6 +8,7 @@ import type {
 } from "@/lib/api-types";
 import { DriftBadge } from "./DriftBadge";
 import { EnsembleStrip } from "./EnsembleStrip";
+import { JointForecastBadge } from "./JointForecastBadge";
 import { Skeleton } from "./Skeleton";
 import { HORIZON_LABELS, useHorizon } from "@/lib/HorizonContext";
 import { useFlashOnChange } from "@/lib/useFlashOnChange";
@@ -199,9 +200,15 @@ export function ForecastCard({ symbol, forecast, drift, microprice }: Props) {
         <EnsembleStrip symbol={symbol} />
       </div>
 
-      <div className="mt-6 flex items-center justify-between border-t border-zinc-800 pt-3">
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800 pt-3">
         {modelAgeNode}
-        <DriftBadge drift={drift} />
+        <div className="flex items-center gap-2">
+          <DriftBadge drift={drift} />
+          <JointForecastBadge
+            symbol={symbol}
+            soloProbUp={forecast.ok ? forecast.prob_up : null}
+          />
+        </div>
         <span className="text-xs text-zinc-500">live</span>
       </div>
     </div>

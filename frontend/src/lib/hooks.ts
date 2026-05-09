@@ -9,6 +9,7 @@ import {
   fetchConditionalAccuracy,
   fetchCumulativePnL,
   fetchForecastEnsemble,
+  fetchForecastJoint,
   fetchRobustness,
   fetchPnLByFeeTier,
   fetchHealth,
@@ -92,6 +93,22 @@ export function useForecastEnsemble(
   return useQuery({
     queryKey: ["forecast_ensemble", symbol, weight1m, weight15m],
     queryFn: () => fetchForecastEnsemble(symbol, weight1m, weight15m),
+    refetchInterval: PREDICT_REFRESH_MS,
+  });
+}
+
+
+/**
+ * Phase 2.2 shadow joint-model prediction for one symbol. Same
+ * cadence as the solo forecast (30 s) so the dashboard's
+ * side-by-side comparison stays in sync — every refresh tick gives
+ * a paired observation (solo prob_up vs joint prob_up at the same
+ * minute boundary) for the eventual flip-decision data.
+ */
+export function useForecastJoint(symbol: string) {
+  return useQuery({
+    queryKey: ["forecast_joint", symbol],
+    queryFn: () => fetchForecastJoint(symbol),
     refetchInterval: PREDICT_REFRESH_MS,
   });
 }
