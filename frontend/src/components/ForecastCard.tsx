@@ -150,9 +150,17 @@ export function ForecastCard({ symbol, forecast, drift, microprice }: Props) {
     }
 
     if (forecast.model?.model_age_seconds != null) {
+      // The trainer fires daily at 04:00 UTC; ``model_age_seconds`` is
+      // time since the last retrain (NOT how much history the model
+      // was trained on — that's ~6 months of L2 data). Label clarified
+      // 2026-05-15 because the old "модель: 5h" wording read as
+      // "model trained on 5h of data" which is wrong and alarming.
       modelAgeNode = (
-        <span className="text-xs text-zinc-500">
-          модель: {fmtAge(forecast.model.model_age_seconds)}
+        <span
+          className="text-xs text-zinc-500"
+          title="Время с последнего переобучения (trainer ежедневно в 04:00 UTC). Модель тренируется на ~6 месяцах L2-данных."
+        >
+          обновлено {fmtAge(forecast.model.model_age_seconds)} назад
         </span>
       );
     }

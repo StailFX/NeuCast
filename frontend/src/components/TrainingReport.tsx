@@ -31,7 +31,11 @@ export function TrainingReport({ symbols }: Props) {
 
 
 function PerSymbolReport({ symbol }: { symbol: string }) {
-  const { data, isLoading } = useTrainingReport(symbol, 0);
+  // ``lite=1`` skips the live-inventory query which can block 10-20 s
+  // on a cold Postgres cache (~600k rows per symbol). The fold-readiness
+  // progress widget renders "—" without it, but the page-render is
+  // unblocked — net UX win on /v2/highfreq mount.
+  const { data, isLoading } = useTrainingReport(symbol, 1);
   const display = symbol.replace("USDT", "");
 
   if (isLoading) {

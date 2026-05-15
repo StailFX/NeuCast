@@ -54,13 +54,16 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 
-/** Fetch the batch dashboard payload for the given symbols. */
+/** Fetch the batch dashboard payload for the given symbols at the
+ * given horizon. Supported: 1, 5, 15 (minutes). Anything else
+ * silently clamps to 1 on the server. */
 export function fetchDashboard(
   symbols: string[],
+  horizon: number = 1,
 ): Promise<DashboardResponse> {
   const qs = symbols.map((s) => s.toUpperCase()).join(",");
   return fetchJson<DashboardResponse>(
-    `/api/highfreq/dashboard?symbols=${qs}`,
+    `/api/highfreq/dashboard?symbols=${qs}&horizon=${horizon}`,
   );
 }
 

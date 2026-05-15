@@ -89,14 +89,14 @@ export default function PredictPage() {
   if (loading || !user) {
     // Skeleton-ish placeholder so the redirect doesn't flash the form.
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100">
+      <div className="min-h-screen">
         <Navbar />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen">
       <Navbar />
       <div className="mx-auto max-w-2xl px-6 py-12">
         <header className="mb-8">

@@ -7,13 +7,13 @@
   <meta name="description" content="Оптимизация инвестиционного портфеля по Марковицу. Efficient Frontier, Max Sharpe Ratio, Min Variance — визуализация и расчёт оптимального распределения активов.">
   <meta name="robots" content="noindex, nofollow">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png"><link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png"><link rel="apple-touch-icon" href="/static/favicon-192.png">
-  <link rel="preconnect" href="https://cdn.plot.ly" crossorigin>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <!-- Self-hosted Inter (latin). Preload 700 (LCP — page-title) + 400 (body). -->
   <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
   <!-- Full Plotly (нужен pie — cartesian bundle его не включает). НЕ ставим defer:
        inline-скрипт ниже вызывает Plotly.newPlot без DOMContentLoaded-обёртки. -->
-  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly.min.js"></script>
   <style>
     @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
       src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }

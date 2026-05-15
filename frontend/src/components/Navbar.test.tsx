@@ -32,14 +32,16 @@ describe("<Navbar /> — anonymous", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the static brand markings (NeuCast + HF pill)", () => {
+  it("renders the static brand markings (NeuCast wordmark + section links)", () => {
     render(
       <AuthProvider>
         <Navbar />
       </AuthProvider>,
     );
+    // V1-landing chrome: gradient checkmark logo + plain NeuCast wordmark
+    // (the legacy zinc "HF" pill was dropped 2026-05-14).
     expect(screen.getByText("NeuCast")).toBeInTheDocument();
-    expect(screen.getByText("HF")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /прогноз/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /forecast/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /operator/i })).toBeInTheDocument();
   });

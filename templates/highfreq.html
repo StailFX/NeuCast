@@ -160,7 +160,8 @@
       z-index: 1;
       max-width: 1080px;
       margin: 0 auto;
-      padding: 36px 32px 64px;
+      /* Top padding clears the fixed .nc-nav (~70px) + breathing room. */
+      padding: 110px 32px 64px;
     }
 
     .header-row {
@@ -863,7 +864,7 @@
     .disclaimer strong { color: #fbbf24; font-weight: 600; }
 
     @media (max-width: 768px) {
-      .container { padding: 24px 16px 48px; }
+      .container { padding: 92px 16px 48px; }
       h1 { font-size: 24px; }
     }
   </style>

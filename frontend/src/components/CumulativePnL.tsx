@@ -32,7 +32,18 @@ const TIER_LABEL: Record<string, string> = {
 
 export function CumulativePnL({
   symbols,
-  defaultTiers = ["gross", "retail", "vip9"],
+  // Show ALL six tiers by default — without this only retail (the
+  // largest in magnitude) is visible and the chart squashes all other
+  // tier lines into a thin band near zero. Operators can still toggle
+  // tiers off via the legend chips.
+  defaultTiers = [
+    "gross",
+    "retail",
+    "vip5",
+    "vip9",
+    "futures",
+    "mm_rebate",
+  ],
 }: Props) {
   const [activeSymbol, setActiveSymbol] = useState(symbols[0]);
   const [activeTiers, setActiveTiers] = useState<Set<string>>(
@@ -65,19 +76,46 @@ export function CumulativePnL({
       />
 
       {isLoading ? (
-        <Skeleton className="mt-3 h-[320px] w-full" rounded="rounded-xl" />
-      ) : !data?.ok || !data.curve?.length ? (
-        <div className="mt-3 text-sm text-zinc-500">
-          {data?.reason === "no_trades"
-            ? "пока не было закрытых сделок для этого символа"
-            : "данных нет"}
-        </div>
-      ) : (
-        <PnLCurve
-          payload={data}
-          activeTiers={activeTiers}
-        />
-      )}
+        <Skeleton className="mt-3 h-[480px] w-full" rounded="rounded-xl" />
+      ) : (() => {
+          // Server returns ``points`` (per-trade-close timestamps with
+          // a numeric value at each tier key directly on the object)
+          // — the legacy frontend type uses ``curve`` with a nested
+          // ``cum_bps_by_tier`` dict. Normalise here so the renderer
+          // doesn't have to care about which shape arrived.
+          const rawCurve = (data as unknown as { curve?: unknown[]; points?: Array<Record<string, unknown>> } | undefined)?.curve as PnLPoint[] | undefined;
+          const rawPoints = (data as unknown as { points?: Array<Record<string, unknown>> } | undefined)?.points;
+          const normCurve: PnLPoint[] =
+            rawCurve && rawCurve.length
+              ? rawCurve
+              : (rawPoints ?? []).map((p) => {
+                  const cum_bps_by_tier: Record<string, number> = {};
+                  for (const [k, v] of Object.entries(p)) {
+                    if (k === "ts" || k === "n") continue;
+                    if (typeof v === "number") cum_bps_by_tier[k] = v;
+                  }
+                  return {
+                    ts: String(p.ts ?? ""),
+                    cum_bps_by_tier,
+                    n: typeof p.n === "number" ? p.n : 0,
+                  };
+                });
+          if (!data?.ok || normCurve.length === 0) {
+            return (
+              <div className="mt-3 text-sm text-zinc-500">
+                {data?.reason === "no_trades"
+                  ? "пока не было закрытых сделок для этого символа"
+                  : "данных нет"}
+              </div>
+            );
+          }
+          return (
+            <PnLCurve
+              payload={{ ...data, curve: normCurve }}
+              activeTiers={activeTiers}
+            />
+          );
+        })()}
     </div>
   );
 }
@@ -139,7 +177,7 @@ function TierToggles({
                 ? "bg-zinc-800/80 text-zinc-100"
                 : "bg-transparent text-zinc-500 hover:text-zinc-300"
             }`}
-            title={`${label} · final ${t.final_cum_bps.toFixed(1)} bp`}
+            title={`${label} · final ${(((t as unknown as {final_bps?: number; final_cum_bps?: number}).final_bps ?? (t as unknown as {final_cum_bps?: number}).final_cum_bps ?? 0) ?? 0).toFixed(1)} bp`}
           >
             <span
               className="inline-block h-2 w-2 rounded-full"
@@ -148,15 +186,15 @@ function TierToggles({
             <span>{label}</span>
             <span
               className={`tabular-nums text-[0.62rem] ${
-                t.final_cum_bps > 0
+                (((t as unknown as {final_bps?: number; final_cum_bps?: number}).final_bps ?? (t as unknown as {final_cum_bps?: number}).final_cum_bps ?? 0) ?? 0) > 0
                   ? "text-emerald-400"
-                  : t.final_cum_bps < 0
+                  : (((t as unknown as {final_bps?: number; final_cum_bps?: number}).final_bps ?? (t as unknown as {final_cum_bps?: number}).final_cum_bps ?? 0) ?? 0) < 0
                   ? "text-rose-400"
                   : "text-zinc-400"
               }`}
             >
-              {t.final_cum_bps > 0 ? "+" : ""}
-              {t.final_cum_bps.toFixed(1)}bp
+              {(((t as unknown as {final_bps?: number; final_cum_bps?: number}).final_bps ?? (t as unknown as {final_cum_bps?: number}).final_cum_bps ?? 0) ?? 0) > 0 ? "+" : ""}
+              {(((t as unknown as {final_bps?: number; final_cum_bps?: number}).final_bps ?? (t as unknown as {final_cum_bps?: number}).final_cum_bps ?? 0) ?? 0).toFixed(1)}bp
             </span>
           </button>
         );
@@ -173,8 +211,11 @@ function PnLCurve({
   payload: CumulativePnLResponse;
   activeTiers: Set<string>;
 }) {
+  // Card is wide on desktop; bumping H from 320 → 480 makes the chart
+  // fill the card height instead of leaving the bottom half empty
+  // (matched against the adjacent 10-row TradesFeed via grid stretch).
   const W = 800;
-  const H = 320;
+  const H = 480;
   const padL = 50;
   const padR = 12;
   const padT = 12;
@@ -293,7 +334,53 @@ function PnLCurve({
           />
         );
       })}
-      {/* x-axis label */}
+      {/* x-axis time markers — first / mid / last trade timestamp from
+          the curve. Without these the chart x-axis has no scale and
+          reads as "some line over time" without anchoring. */}
+      {(() => {
+        const fmt = (iso: string) => {
+          try {
+            const d = new Date(iso);
+            return d.toLocaleDateString("ru-RU", {
+              day: "2-digit",
+              month: "2-digit",
+            });
+          } catch {
+            return "";
+          }
+        };
+        const firstTs = curve[0]?.ts;
+        const midTs = curve[Math.floor(curve.length / 2)]?.ts;
+        const lastTs = curve[curve.length - 1]?.ts;
+        return (
+          <g className="fill-zinc-600 text-[10px]">
+            {firstTs && (
+              <text x={padL} y={padT + innerH + 14} textAnchor="start">
+                {fmt(firstTs)}
+              </text>
+            )}
+            {midTs && (
+              <text
+                x={padL + innerW / 2}
+                y={padT + innerH + 14}
+                textAnchor="middle"
+              >
+                {fmt(midTs)}
+              </text>
+            )}
+            {lastTs && (
+              <text
+                x={padL + innerW}
+                y={padT + innerH + 14}
+                textAnchor="end"
+              >
+                {fmt(lastTs)}
+              </text>
+            )}
+          </g>
+        );
+      })()}
+      {/* Caption */}
       <text
         x={padL + innerW / 2}
         y={H - 6}

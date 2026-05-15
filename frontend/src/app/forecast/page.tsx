@@ -11,6 +11,7 @@ import { CumulativePnL } from "@/components/CumulativePnL";
 import { RobustnessSuite } from "@/components/RobustnessSuite";
 import { FeeTierPnLBars } from "@/components/FeeTierPnLBars";
 import { HorizonPill } from "@/components/HorizonPill";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useDashboard } from "@/lib/useDashboard";
 import { usePaperTrades } from "@/lib/hooks";
 import type { PerSymbolPayload, PaperTrade } from "@/lib/api-types";
@@ -74,7 +75,7 @@ export default function ForecastPage() {
   );
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen">
       <Navbar rightSlot={statusPill} />
       <div className="mx-auto max-w-6xl space-y-6 px-6 py-10">
         <header className="flex flex-wrap items-end justify-between gap-4">
@@ -107,31 +108,56 @@ export default function ForecastPage() {
           })}
         </div>
 
-        {/* Aggregated 24h stats — across all 3 symbols at a glance. */}
-        <StatsStrip symbols={SYMBOLS} />
+        {/* Every section wrapped in ErrorBoundary — if one component
+            throws on a production-only data shape, the rest of the
+            page still renders. The bad block shows a slim error chip
+            (this also surfaces *which* block was the culprit). */}
 
-        {/* Recent trades + cumulative P&L side-by-side */}
-        <div className="grid gap-6 lg:grid-cols-3">
+        {/* Aggregated 24h stats — across all 3 symbols at a glance. */}
+        <ErrorBoundary label="StatsStrip">
+          <StatsStrip symbols={SYMBOLS} />
+        </ErrorBoundary>
+
+        {/* Recent trades + cumulative P&L side-by-side. items-start
+            prevents grid from vertically-stretching the shorter card
+            to match the taller one (CumulativePnL chart ends ~500px
+            tall; TradesFeed ~720px tall — without items-start the
+            extra space inside CumulativePnL card looks empty). */}
+        <div className="grid items-start gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
-            <CumulativePnL symbols={SYMBOLS} />
+            <ErrorBoundary label="CumulativePnL">
+              <CumulativePnL symbols={SYMBOLS} />
+            </ErrorBoundary>
           </div>
-          <TradesFeed trades={allTrades} isLoading={tradesLoading} />
+          <ErrorBoundary label="TradesFeed">
+            <TradesFeed trades={allTrades} isLoading={tradesLoading} />
+          </ErrorBoundary>
         </div>
 
         {/* Fee-tier P&L breakdown — defence headline */}
-        <FeeTierPnLBars symbols={SYMBOLS} />
+        <ErrorBoundary label="FeeTierPnLBars">
+          <FeeTierPnLBars symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         {/* Conditional accuracy — by confidence threshold */}
-        <ConditionalAccuracy />
+        <ErrorBoundary label="ConditionalAccuracy">
+          <ConditionalAccuracy />
+        </ErrorBoundary>
 
         {/* Robustness suite — block-bootstrap, permutation, per-day */}
-        <RobustnessSuite symbols={SYMBOLS} />
+        <ErrorBoundary label="RobustnessSuite">
+          <RobustnessSuite symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         {/* Reliability diagram — calibration plot */}
-        <ReliabilityDiagram />
+        <ErrorBoundary label="ReliabilityDiagram">
+          <ReliabilityDiagram />
+        </ErrorBoundary>
 
         {/* Feature importance — interpretability */}
-        <FeatureImportance symbols={SYMBOLS} />
+        <ErrorBoundary label="FeatureImportance">
+          <FeatureImportance symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         <footer className="pt-4 text-xs text-zinc-600">
           <span>

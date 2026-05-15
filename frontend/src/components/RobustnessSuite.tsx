@@ -77,17 +77,58 @@ function PerSymbolPanel({ symbol }: { symbol: string }) {
     );
   }
 
-  const bb = data.block_bootstrap;
-  const pt = data.permutation;
-  const perDay = data.per_day ?? [];
-  const perHour = data.per_hour ?? [];
+  // Server wraps everything under ``report`` and FLATTENS bootstrap +
+  // permutation into ``{block_bootstrap_ci_low, _ci_high}`` and
+  // ``{permutation_p_value, _null_mean, ...}`` (release 2026-05-15).
+  // Read from report.* with flat-→nested adapter so the existing
+  // renderer keeps working.
+  const rep =
+    (data as unknown as { report?: Record<string, unknown> }).report ??
+    (data as unknown as Record<string, unknown>);
+  const dirAcc =
+    typeof rep.dir_acc === "number"
+      ? (rep.dir_acc as number)
+      : (data.block_bootstrap?.point ?? null);
+  const bb =
+    data.block_bootstrap ??
+    (typeof rep.block_bootstrap_ci_low === "number"
+      ? {
+          point: dirAcc ?? 0,
+          ci_low: rep.block_bootstrap_ci_low as number,
+          ci_high:
+            typeof rep.block_bootstrap_ci_high === "number"
+              ? (rep.block_bootstrap_ci_high as number)
+              : 0,
+        }
+      : null);
+  const pt =
+    data.permutation ??
+    (typeof rep.permutation_p_value === "number"
+      ? {
+          observed: dirAcc ?? 0,
+          p_value: rep.permutation_p_value as number,
+        }
+      : null);
+  const perDay =
+    (data.per_day as Array<{ day: string; n: number; dir_acc: number }> | undefined) ??
+    (rep.per_day as Array<{ day: string; n: number; dir_acc: number }> | undefined) ??
+    [];
+  const perHour =
+    (data.per_hour as Array<{ hour: number; n: number; dir_acc: number }> | undefined) ??
+    (rep.per_hour as Array<{ hour: number; n: number; dir_acc: number }> | undefined) ??
+    [];
+  const nPred =
+    data.n_predictions ??
+    (typeof rep.n_predictions === "number"
+      ? (rep.n_predictions as number)
+      : 0);
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-3">
       <div className="mb-2 flex items-baseline justify-between">
         <div className="text-sm font-semibold text-zinc-200">{display}</div>
         <div className="text-[0.62rem] tabular-nums text-zinc-500">
-          n={data.n_predictions ?? 0}
+          n={nPred}
         </div>
       </div>
 

@@ -7,13 +7,16 @@
   <meta name="description" content="AI-прогноз котировок {{ ticker }} — ансамбль TCN + CatBoost + XGBoost + LightGBM с Monte Carlo симуляциями.">
   <meta name="robots" content="noindex, nofollow">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="icon" type="image/png" sizes="192x192" href="/static/favicon-192.png"><link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png"><link rel="apple-touch-icon" href="/static/favicon-192.png">
-  <link rel="preconnect" href="https://cdn.plot.ly" crossorigin>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
   <!-- Self-hosted Inter (latin). Preload 700 (LCP — page-title) + 400 (body). -->
   <link rel="preload" as="font" type="font/woff2" crossorigin fetchpriority="high" href="/static/fonts/inter-latin-700.woff2">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400.woff2">
   <!-- Plotly: бандл cartesian (включает scatter/bar/pie/histogram/heatmap, ~25% меньше full).
        defer — не блокирует парсинг HTML, запустится после DOMContentLoaded. -->
-  <script defer src="https://cdn.plot.ly/plotly-cartesian-2.27.0.min.js"></script>
+  <!-- 2026-05-14: switched cdn.plot.ly → cdnjs.cloudflare.com because
+       the site CSP allows cdnjs (script-src includes cdnjs.cloudflare.com)
+       but blocks cdn.plot.ly. Same Plotly bundle, different mirror. -->
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly-cartesian.min.js"></script>
   <style>
     @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
       src: url('/static/fonts/inter-latin-400.woff2') format('woff2'); }

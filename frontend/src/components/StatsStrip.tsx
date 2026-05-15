@@ -36,17 +36,45 @@ function SymbolStat({ symbol }: { symbol: string }) {
   const { data: acc, isLoading: accLoading } = useRealizedAccuracy(symbol);
   const { data: trades, isLoading: tradesLoading } = usePaperTrades(symbol, 100);
 
-  // 24h dir_acc: prefer the server's `dir_acc_24h` if present,
-  // else compute client-side from the trades feed for robustness.
+  // Server's actual realized_accuracy shape (2026-05-15 drift from
+  // the legacy `dir_acc_24h` / `n_directional_24h` slots in
+  // api-types.ts): now returns ``accuracy`` over a rolling 100-trade
+  // window in fields ``{accuracy, n_trades_total, n_correct, ...}``.
+  // No CI bands are emitted — they used to come from a bootstrap that
+  // was removed. Compute a Wilson-style CI client-side as a fallback.
   let dirAcc: number | null = null;
   let nDir = 0;
   let ciLow: number | null = null;
   let ciHigh: number | null = null;
   if (acc?.ok) {
-    dirAcc = acc.dir_acc_24h ?? null;
-    nDir = acc.n_directional_24h ?? 0;
-    ciLow = acc.ci_low_24h ?? null;
-    ciHigh = acc.ci_high_24h ?? null;
+    const raw = acc as unknown as {
+      accuracy?: number;
+      n_trades_total?: number;
+      n_correct?: number;
+      dir_acc_24h?: number;
+      n_directional_24h?: number;
+      ci_low_24h?: number;
+      ci_high_24h?: number;
+    };
+    dirAcc = raw.accuracy ?? raw.dir_acc_24h ?? null;
+    nDir = raw.n_trades_total ?? raw.n_directional_24h ?? 0;
+    ciLow = raw.ci_low_24h ?? null;
+    ciHigh = raw.ci_high_24h ?? null;
+    if (ciLow == null && dirAcc != null && nDir > 0) {
+      // Cheap Wilson 95% CI as a fallback when API doesn't supply one.
+      const z = 1.96;
+      const denom = 1 + (z * z) / nDir;
+      const centre = (dirAcc + (z * z) / (2 * nDir)) / denom;
+      const halfwidth =
+        (z *
+          Math.sqrt(
+            (dirAcc * (1 - dirAcc)) / nDir +
+              (z * z) / (4 * nDir * nDir),
+          )) /
+        denom;
+      ciLow = Math.max(0, centre - halfwidth);
+      ciHigh = Math.min(1, centre + halfwidth);
+    }
   }
 
   // Mean gross P&L (bps) from the trades feed — non-fee-adjusted so

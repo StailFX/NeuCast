@@ -119,3 +119,614 @@ body {
 .signal-glow.signal-neutral {
   box-shadow: 0 0 0 1px rgba(82, 82, 91, 0.2);
 }
+
+
+/* ─── v1 landing theme (was app/live/landing-theme.css). Applies globally
+     to all v2 pages via body.nc-themed in layout.tsx. ─── */
+/*
+ * Landing-theme — port of templates/landing.html visual language
+ * for /v2/live. Scoped to the live page only (imported from its
+ * page.tsx) so we don't leak these styles into the Tailwind-zinc
+ * pages (forecast, highfreq, operator).
+ *
+ * Provides:
+ *   • CSS variables matching the v1 palette (green/blue/amber/purple)
+ *   • Floating orbs + animated grid background
+ *   • Navbar (logo + ghost / primary buttons)
+ *   • Hero typography (Inter, gradient highlight)
+ *   • Card surface (rounded, subtle gradient border on hover)
+ *   • Stat-grid with colored values
+ *   • Button helpers (.nc-btn-primary, .nc-btn-ghost, .nc-btn-pill)
+ *
+ * Class prefix ``.nc-`` to avoid collision with Tailwind utilities.
+ */
+
+body.nc-themed {
+  /* Palette identical to templates/landing.html */
+  --nc-green: #10b981;
+  --nc-green-dark: #059669;
+  --nc-blue: #3b82f6;
+  --nc-amber: #f59e0b;
+  --nc-purple: #a78bfa;
+  --nc-red: #ef4444;
+  --nc-teal: #14b8a6;
+  --nc-bg: #060a13;
+  --nc-bg-card: rgba(12, 20, 35, 0.95);
+  --nc-bg-card-soft: rgba(12, 20, 35, 0.7);
+  --nc-border: rgba(51, 65, 85, 0.35);
+  --nc-border-hover: rgba(16, 185, 129, 0.3);
+  --nc-text: #e2e8f0;
+  --nc-text-muted: #b0bdd0;
+  --nc-text-dim: #b8c4d6;
+
+  position: relative;
+  min-height: 100vh;
+  background: var(--nc-bg);
+  color: var(--nc-text);
+  font-family: 'Inter', 'Inter-fallback', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Animated grid background — subtle green grid behind content. */
+body.nc-themed::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(16, 185, 129, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16, 185, 129, 0.03) 1px, transparent 1px);
+  background-size: 80px 80px;
+  z-index: 0;
+  pointer-events: none;
+  animation: nc-bg-fade-in 0.8s ease-out;
+}
+
+@keyframes nc-bg-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Floating orbs — three blurred gradient circles drifting around. */
+.nc-orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(40px);
+  pointer-events: none;
+  z-index: 0;
+  animation: nc-orb-float 20s ease-in-out infinite;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: layout style paint;
+}
+.nc-orb-1 {
+  width: 420px; height: 420px;
+  background: rgba(16, 185, 129, 0.07);
+  top: -120px; left: -80px;
+}
+.nc-orb-2 {
+  width: 360px; height: 360px;
+  background: rgba(59, 130, 246, 0.06);
+  top: 40%; right: -100px;
+  animation-delay: -7s;
+  animation-duration: 25s;
+}
+.nc-orb-3 {
+  width: 320px; height: 320px;
+  background: rgba(167, 139, 250, 0.05);
+  bottom: -80px; left: 30%;
+  animation-delay: -14s;
+  animation-duration: 22s;
+}
+@media (max-width: 767px) {
+  .nc-orb-3 { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nc-orb { animation: none; }
+}
+@keyframes nc-orb-float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(40px, -30px) scale(1.05); }
+  50% { transform: translate(-20px, 40px) scale(0.95); }
+  75% { transform: translate(30px, 20px) scale(1.02); }
+}
+
+/* ─── Navbar ─── */
+.nc-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 3rem;
+  background: rgba(6, 10, 19, 0.85);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.3s, background 0.3s;
+  backdrop-filter: blur(24px);
+}
+.nc-nav.nc-scrolled {
+  border-bottom-color: var(--nc-border);
+  background: rgba(6, 10, 19, 0.95);
+}
+@media (max-width: 700px) {
+  .nc-nav { padding: 0.85rem 1.25rem; }
+}
+
+.nc-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  text-decoration: none;
+  color: var(--nc-text);
+}
+.nc-logo {
+  width: 38px; height: 38px;
+  background: linear-gradient(135deg, var(--nc-green), var(--nc-blue));
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.2);
+  transition: transform 0.3s;
+}
+.nc-brand:hover .nc-logo { transform: rotate(-5deg) scale(1.05); }
+.nc-logo svg { width: 18px; height: 18px; fill: white; }
+.nc-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #f1f5f9;
+}
+
+.nc-links {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.nc-btn {
+  padding: 0.55rem 1.15rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  font-family: inherit;
+  border-radius: 10px;
+  text-decoration: none;
+  transition: all 0.25s;
+  cursor: pointer;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  background: none;
+}
+.nc-btn-ghost {
+  color: var(--nc-text-dim);
+  border-color: var(--nc-border);
+}
+.nc-btn-ghost:hover {
+  color: #f1f5f9;
+  border-color: rgba(59, 130, 246, 0.4);
+  background: rgba(59, 130, 246, 0.05);
+}
+.nc-btn-ghost.nc-active {
+  color: var(--nc-green);
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
+}
+.nc-btn-primary {
+  color: #fff;
+  background: linear-gradient(135deg, var(--nc-green), var(--nc-green-dark));
+  border: none;
+  box-shadow: 0 2px 12px rgba(16, 185, 129, 0.2);
+}
+.nc-btn-primary:hover {
+  box-shadow: 0 4px 24px rgba(16, 185, 129, 0.35);
+  transform: translateY(-1px);
+}
+
+/* "Live" dot — pulsing green dot before button text. */
+.nc-btn-live::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  background: var(--nc-green);
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  vertical-align: middle;
+  animation: nc-pulse 2s ease-in-out infinite;
+}
+@keyframes nc-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+/* ─── Hero ─── */
+.nc-hero {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 6rem 2rem 3rem;
+  max-width: 860px;
+  margin: 0 auto;
+}
+@media (max-width: 700px) {
+  .nc-hero { padding: 4rem 1.25rem 2rem; }
+}
+
+.nc-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 1.15rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--nc-green);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  border-radius: 50px;
+  margin-bottom: 2rem;
+  letter-spacing: 0.02em;
+}
+.nc-hero-badge .nc-dot {
+  width: 7px; height: 7px;
+  background: var(--nc-green);
+  border-radius: 50%;
+  animation: nc-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+}
+
+.nc-h1 {
+  font-size: 3.4rem;
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  margin: 0 0 1.5rem;
+  color: #f8fafc;
+}
+@media (max-width: 700px) {
+  .nc-h1 { font-size: 2.2rem; }
+}
+.nc-gradient {
+  background: linear-gradient(135deg, #34d399, #60a5fa, #a78bfa);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.nc-hero-sub {
+  font-size: 1.1rem;
+  color: var(--nc-text-dim);
+  line-height: 1.7;
+  max-width: 620px;
+  margin: 0 auto;
+  font-weight: 400;
+}
+
+/* ─── Card surface — used by all blocks (hero card, stats, trades). ─── */
+.nc-card {
+  position: relative;
+  z-index: 1;
+  background: var(--nc-bg-card);
+  border: 1px solid var(--nc-border);
+  border-radius: 20px;
+  padding: 2rem;
+  transition: border-color 0.4s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.4s;
+  contain: layout style;
+}
+.nc-card-glow {
+  box-shadow: 0 4px 32px rgba(16, 185, 129, 0.06);
+}
+
+/* ─── Big LiveHero card (price + prediction) ─── */
+.nc-live-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--nc-text-muted);
+}
+.nc-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+.nc-live-pill .nc-dot {
+  width: 7px; height: 7px;
+  background: var(--nc-green);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  animation: nc-pulse 2s ease-in-out infinite;
+}
+.nc-eyebrow {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--nc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+.nc-ticker {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+  margin-top: 0.25rem;
+}
+.nc-price {
+  font-family: 'Inter', 'Inter-fallback', monospace;
+  font-size: 4rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 700px) {
+  .nc-price { font-size: 2.8rem; }
+}
+.nc-prediction-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+@media (max-width: 540px) {
+  .nc-prediction-grid { grid-template-columns: 1fr; }
+}
+.nc-verdict {
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.nc-verdict-arrow { font-size: 2.2rem; line-height: 1; }
+.nc-verdict.nc-up { color: var(--nc-green); }
+.nc-verdict.nc-down { color: var(--nc-red); }
+.nc-verdict.nc-neutral { color: var(--nc-text-muted); }
+.nc-confidence-num {
+  font-family: 'Inter', 'Inter-fallback', monospace;
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+}
+.nc-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(51, 65, 85, 0.35);
+  overflow: hidden;
+  margin-top: 0.75rem;
+}
+.nc-bar-fill {
+  height: 100%;
+  transition: width 0.5s ease-out;
+}
+.nc-bar-fill.nc-up { background: var(--nc-green); }
+.nc-bar-fill.nc-down { background: var(--nc-red); }
+.nc-bar-fill.nc-neutral { background: var(--nc-text-muted); }
+.nc-card-footer {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--nc-border);
+  font-size: 0.78rem;
+  color: var(--nc-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+
+/* ─── SymbolPills — round pills, gradient when active ─── */
+.nc-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+.nc-pill {
+  padding: 0.6rem 1.6rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: 999px;
+  border: 1px solid var(--nc-border);
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--nc-text-dim);
+  cursor: pointer;
+  transition: all 0.25s;
+  letter-spacing: 0.02em;
+}
+.nc-pill:hover {
+  color: #f1f5f9;
+  border-color: rgba(59, 130, 246, 0.4);
+  background: rgba(59, 130, 246, 0.06);
+}
+.nc-pill.nc-active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--nc-green), var(--nc-green-dark));
+  border-color: transparent;
+  box-shadow: 0 4px 18px rgba(16, 185, 129, 0.25);
+}
+
+/* ─── Stats triad ─── */
+.nc-section-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--nc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 1rem;
+}
+.nc-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+@media (max-width: 700px) {
+  .nc-stats { grid-template-columns: 1fr; }
+}
+.nc-stat {
+  text-align: left;
+  padding: 1.4rem 1.6rem;
+}
+.nc-stat-value {
+  font-family: 'Inter', 'Inter-fallback', monospace;
+  font-size: 2.2rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.nc-stat-value.nc-green { color: var(--nc-green); }
+.nc-stat-value.nc-blue { color: var(--nc-blue); }
+.nc-stat-value.nc-amber { color: var(--nc-amber); }
+.nc-stat-value.nc-purple { color: var(--nc-purple); }
+.nc-stat-value.nc-red { color: var(--nc-red); }
+.nc-stat-value.nc-neutral { color: #f1f5f9; }
+.nc-stat-label {
+  font-size: 0.74rem;
+  color: var(--nc-text-muted);
+  margin-top: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+/* ─── Trades feed ─── */
+.nc-trades {
+  padding: 0;
+  overflow: hidden;
+}
+.nc-trades-empty {
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  color: var(--nc-text-muted);
+  font-size: 0.9rem;
+}
+.nc-trades ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.nc-trade-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr 5.5rem 4rem;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.9rem 1.6rem;
+  font-family: 'Inter', 'Inter-fallback', monospace;
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+  border-top: 1px solid rgba(51, 65, 85, 0.18);
+}
+.nc-trade-row:first-child { border-top: none; }
+@media (max-width: 700px) {
+  .nc-trade-row {
+    grid-template-columns: 4.5rem 1fr 4.5rem 3.5rem;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    font-size: 0.82rem;
+  }
+}
+.nc-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+}
+.nc-side.nc-up { color: var(--nc-green); }
+.nc-side.nc-down { color: var(--nc-red); }
+.nc-prices {
+  color: var(--nc-text-dim);
+  font-weight: 500;
+}
+.nc-prices .nc-arrow {
+  padding: 0 0.5rem;
+  color: var(--nc-text-muted);
+}
+.nc-pnl {
+  text-align: right;
+  font-weight: 700;
+}
+.nc-pnl.nc-win { color: var(--nc-green); }
+.nc-pnl.nc-loss { color: var(--nc-red); }
+.nc-trade-time {
+  text-align: right;
+  font-size: 0.78rem;
+  color: var(--nc-text-muted);
+}
+
+/* ─── HowItWorks section ─── */
+.nc-how {
+  padding: 2rem;
+  background: rgba(12, 20, 35, 0.5);
+}
+.nc-how h3 {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--nc-green);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin: 0 0 1rem;
+}
+.nc-how p {
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: var(--nc-text-dim);
+  margin: 0;
+}
+.nc-how p + p { margin-top: 0.75rem; }
+.nc-how code {
+  font-family: 'Inter', 'Inter-fallback', monospace;
+  background: rgba(59, 130, 246, 0.1);
+  color: #93c5fd;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.86em;
+}
+.nc-how a {
+  color: var(--nc-green);
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 1px dashed rgba(16, 185, 129, 0.4);
+  padding-bottom: 1px;
+}
+.nc-how a:hover { color: #34d399; border-bottom-color: var(--nc-green); }
+
+/* Status pill in navbar (loading / error / live-ts) */
+.nc-status-pill {
+  font-size: 0.72rem;
+  font-family: 'Inter', 'Inter-fallback', monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--nc-text-muted);
+}
+.nc-status-pill .nc-status-error { color: var(--nc-red); }
+
+/* Section spacing — vertical rhythm between blocks. */
+.nc-stack > * + * { margin-top: 1.5rem; }
+.nc-stack-lg > * + * { margin-top: 2.5rem; }
+
+/* Page wrapper — z-index 1 to sit above orbs/grid. */
+.nc-main {
+  position: relative;
+  z-index: 1;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 0 2rem 4rem;
+}
+@media (max-width: 700px) {
+  .nc-main { padding: 0 1.25rem 3rem; }
+}
+
+/* Flash colors for value transitions — reuse the existing
+   globals.css .flash-up / .flash-down classes by re-binding the
+   accent variable. Already defined globally; nothing to add. */

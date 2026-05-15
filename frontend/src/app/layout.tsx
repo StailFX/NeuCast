@@ -30,7 +30,12 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="min-h-full flex flex-col nc-themed">
+        {/* V1-landing floating orb decorations — always present at body
+            level (z-index 0) behind page content. */}
+        <div className="nc-orb nc-orb-1" aria-hidden />
+        <div className="nc-orb nc-orb-2" aria-hidden />
+        <div className="nc-orb nc-orb-3" aria-hidden />
         <QueryProvider>
           <AuthProvider>
             <HorizonProvider>{children}</HorizonProvider>

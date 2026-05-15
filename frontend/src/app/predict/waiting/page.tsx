@@ -266,7 +266,7 @@ export default function PredictWaitingPage() {
   // Router export mode — wrap so the static HTML can render an
   // empty shell while the client picks up the query string.
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen">
       <Navbar />
       <Suspense
         fallback={

@@ -73,9 +73,34 @@ function PerSymbolPlot({ row }: { row: ReliabilitySymbolRow }) {
   const xToPx = (x: number) => PADDING + x * innerW;
   const yToPx = (y: number) => PADDING + (1 - y) * innerH;
 
-  // Diagonal points + bin scatter
+  // Server actually returns ``buckets`` with fields {bin_idx, p_lo,
+  // p_hi, p_mid, n, n_pos, predicted_mean, realized_rate} as of
+  // 2026-05-15 (was ``bins`` with {bin_lo, bin_hi, bin_mid, n,
+  // realized_rate}). Normalise both shapes.
+  const rawAlt = (row as unknown as {
+    buckets?: Array<{
+      bin_idx?: number;
+      p_lo: number;
+      p_hi: number;
+      p_mid: number;
+      n: number;
+      n_pos?: number;
+      predicted_mean?: number;
+      realized_rate: number | null;
+    }>;
+  }).buckets;
   const diagPath = `M ${xToPx(0)} ${yToPx(0)} L ${xToPx(1)} ${yToPx(1)}`;
-  const points = row.bins.filter(
+  const rawBins =
+    (row.bins ?? []).length > 0
+      ? row.bins!
+      : (rawAlt ?? []).map((b) => ({
+          bin_lo: b.p_lo,
+          bin_hi: b.p_hi,
+          bin_mid: b.p_mid,
+          n: b.n,
+          realized_rate: b.realized_rate,
+        }));
+  const points = rawBins.filter(
     (b) => b.realized_rate != null && b.n > 0,
   );
 

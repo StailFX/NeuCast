@@ -31,7 +31,7 @@ export default function DashboardPage() {
   }, [loading, user, router]);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen">
       <Navbar />
       <div className="mx-auto max-w-4xl px-6 py-12">
         {loading ? (

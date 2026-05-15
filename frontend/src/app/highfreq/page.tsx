@@ -8,6 +8,7 @@ import { AntiSkill } from "@/components/AntiSkill";
 import { TrainingHistory } from "@/components/TrainingHistory";
 import { StatsStrip } from "@/components/StatsStrip";
 import { ConditionalAccuracy } from "@/components/ConditionalAccuracy";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useDashboard } from "@/lib/useDashboard";
 import type { PerSymbolPayload } from "@/lib/api-types";
 
@@ -66,7 +67,7 @@ export default function HighfreqPage() {
   );
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen">
       <Navbar rightSlot={statusPill} />
       <div className="mx-auto max-w-6xl space-y-6 px-6 py-10">
         <header>
@@ -80,39 +81,57 @@ export default function HighfreqPage() {
           </p>
         </header>
 
+        {/* Each operator block wrapped in ErrorBoundary so a single
+            crashing widget doesn't blank the whole dashboard. The
+            chip surfaces the offending component name + JS error. */}
+
         {/* Ingest health — operator's first glance */}
-        <IngestHealth symbols={SYMBOLS} />
+        <ErrorBoundary label="IngestHealth">
+          <IngestHealth symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         {/* Anti-skill — second-most-important alert */}
-        <AntiSkill symbols={SYMBOLS} />
+        <ErrorBoundary label="AntiSkill">
+          <AntiSkill symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         {/* Prediction cards (live) */}
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {SYMBOLS.map((sym) => {
-            const slice = slices[sym];
-            return (
-              <ForecastCard
-                key={sym}
-                symbol={sym}
-                forecast={slice.forecast}
-                drift={slice.drift}
-                microprice={slice.microprice}
-              />
-            );
-          })}
-        </div>
+        <ErrorBoundary label="ForecastCards">
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {SYMBOLS.map((sym) => {
+              const slice = slices[sym];
+              return (
+                <ForecastCard
+                  key={sym}
+                  symbol={sym}
+                  forecast={slice.forecast}
+                  drift={slice.drift}
+                  microprice={slice.microprice}
+                />
+              );
+            })}
+          </div>
+        </ErrorBoundary>
 
         {/* 24h stats — same as /forecast */}
-        <StatsStrip symbols={SYMBOLS} />
+        <ErrorBoundary label="StatsStrip">
+          <StatsStrip symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         {/* Training report — fold readiness + last walk-forward CI */}
-        <TrainingReport symbols={SYMBOLS} />
+        <ErrorBoundary label="TrainingReport">
+          <TrainingReport symbols={SYMBOLS} />
+        </ErrorBoundary>
 
         {/* Conditional accuracy — by confidence threshold */}
-        <ConditionalAccuracy />
+        <ErrorBoundary label="ConditionalAccuracy">
+          <ConditionalAccuracy />
+        </ErrorBoundary>
 
         {/* Training history — live auto-scoreboard */}
-        <TrainingHistory />
+        <ErrorBoundary label="TrainingHistory">
+          <TrainingHistory />
+        </ErrorBoundary>
 
         <footer className="pt-4 text-xs text-zinc-600">
           <span>

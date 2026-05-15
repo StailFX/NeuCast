@@ -40,7 +40,7 @@ describe("<HorizonPill />", () => {
     expect(fiveMin).not.toHaveClass("bg-zinc-100");
   });
 
-  it("flips the active horizon when a different pill is clicked", async () => {
+  it("flips horizon for trained slots (5m, 15m) and keeps 1h disabled", async () => {
     const user = userEvent.setup();
     render(
       <HorizonProvider>
@@ -49,8 +49,14 @@ describe("<HorizonPill />", () => {
       </HorizonProvider>,
     );
 
+    // 5m and 15m have trained .cbm weights — clicking flips horizon.
     expect(screen.getByTestId("active-horizon")).toHaveTextContent("1");
     await user.click(screen.getByRole("button", { name: "15m" }));
     expect(screen.getByTestId("active-horizon")).toHaveTextContent("15");
+    await user.click(screen.getByRole("button", { name: "5m" }));
+    expect(screen.getByTestId("active-horizon")).toHaveTextContent("5");
+
+    // 1h has only metrics.json (no .cbm) — disabled until ВКР trains it.
+    expect(screen.getByRole("button", { name: "1h" })).toBeDisabled();
   });
 });

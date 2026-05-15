@@ -1,123 +1,141 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
 
+/**
+ * Navbar — global navigation bar (v1-landing visual style).
+ *
+ * Visually matches ``templates/_partials/nav.html``:
+ *   • Gradient checkmark logo + NeuCast brand wordmark
+ *   • Sticky with backdrop blur, reactive border on scroll
+ *   • Section links: Live · Forecast · Operator (ghost buttons,
+ *     emerald-tinted when active)
+ *   • Grafana (subtle dim ghost)
+ *   • Right: anon → Войти + Регистрация (primary), auth → username + Выйти
+ *
+ * Rewritten 2026-05-14 to match v1 landing chrome — replaces the
+ * legacy zinc-Tailwind navbar so all v2 pages share one chrome.
+ */
+
 interface Props {
-  /** Optional right-side accessory — e.g. live "обновлено N сек назад"
-   * pill from the page that owns the header. */
+  /** Optional right-side accessory — e.g. live-status pill. */
   rightSlot?: React.ReactNode;
 }
 
-
 export function Navbar({ rightSlot }: Props) {
-  const pathname = usePathname();
   const router = useRouter();
+  const pathname = usePathname();
   const { user, loading, logout } = useAuth();
+  const [scrolled, setScrolled] = useState(false);
 
-  /** Match check honours basePath/trailingSlash quirks. */
+  useEffect(() => {
+    let ticking = false;
+    function onScroll() {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          setScrolled(window.scrollY > 8);
+          ticking = false;
+        });
+        ticking = true;
+      }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   const isActive = (route: string) =>
     pathname === route ||
     pathname === `${route}/` ||
     pathname?.startsWith(`${route}/`);
 
   return (
-    <nav className="sticky top-0 z-30 border-b border-zinc-900/60 bg-zinc-950/80 backdrop-blur supports-[backdrop-filter]:bg-zinc-950/60">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
+    <nav className={`nc-nav ${scrolled ? "nc-scrolled" : ""}`}>
+      <Link href="/" className="nc-brand">
+        <span className="nc-logo" aria-hidden>
+          <svg viewBox="0 0 24 24">
+            <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z" />
+          </svg>
+        </span>
+        <span className="nc-name">NeuCast</span>
+      </Link>
+
+      <div className="nc-links">
         <Link
-          href="/"
-          className="group flex items-baseline gap-2 text-sm tracking-tight"
+          href="/live"
+          className={`nc-btn nc-btn-ghost ${isActive("/live") ? "nc-active" : ""}`}
         >
-          <span className="text-base font-semibold text-zinc-100">
-            NeuCast
-          </span>
-          <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wider text-emerald-300">
-            HF
-          </span>
-          <span className="hidden text-[0.7rem] text-zinc-600 sm:inline">
-            · Binance Spot · 19 ms ingest
-          </span>
+          Прогноз
         </Link>
+        <Link
+          href="/forecast"
+          className={`nc-btn nc-btn-ghost ${isActive("/forecast") ? "nc-active" : ""}`}
+        >
+          Forecast
+        </Link>
+        <Link
+          href="/highfreq"
+          className={`nc-btn nc-btn-ghost ${isActive("/highfreq") ? "nc-active" : ""}`}
+        >
+          Operator
+        </Link>
+        <a
+          href="/grafana"
+          className="nc-btn nc-btn-ghost"
+          style={{ opacity: 0.7 }}
+        >
+          Grafana
+        </a>
 
-        <div className="flex items-center gap-1">
-          <NavLink href="/forecast" active={isActive("/forecast")}>
-            Forecast
-          </NavLink>
-          <NavLink href="/highfreq" active={isActive("/highfreq")}>
-            Operator
-          </NavLink>
-          <a
-            href="/grafana"
-            className="rounded-md px-3 py-1.5 text-sm text-zinc-500 transition hover:bg-zinc-900 hover:text-zinc-300"
+        {loading ? (
+          <span
+            aria-hidden
+            className="nc-btn nc-btn-ghost"
+            style={{ opacity: 0.5, pointerEvents: "none" }}
           >
-            Grafana
-          </a>
+            …
+          </span>
+        ) : user ? (
+          <>
+            <Link
+              href="/dashboard"
+              className={`nc-btn nc-btn-ghost ${isActive("/dashboard") ? "nc-active" : ""}`}
+            >
+              {user.username}
+            </Link>
+            <button
+              type="button"
+              onClick={async () => {
+                await logout();
+                router.replace("/");
+              }}
+              className="nc-btn nc-btn-ghost"
+            >
+              Выйти
+            </button>
+          </>
+        ) : (
+          <>
+            <Link
+              href="/login"
+              className={`nc-btn nc-btn-ghost ${isActive("/login") ? "nc-active" : ""}`}
+            >
+              Войти
+            </Link>
+            <Link
+              href="/register"
+              className={`nc-btn nc-btn-primary ${isActive("/register") ? "nc-active" : ""}`}
+            >
+              Регистрация
+            </Link>
+          </>
+        )}
 
-          {/* Auth-aware right side. */}
-          {loading ? (
-            <span className="ml-2 h-8 w-16 rounded-md bg-zinc-900/40" aria-hidden />
-          ) : user ? (
-            <div className="ml-2 flex items-center gap-1 border-l border-zinc-800 pl-2">
-              <NavLink
-                href="/dashboard"
-                active={isActive("/dashboard")}
-              >
-                {user.username}
-              </NavLink>
-              <button
-                type="button"
-                onClick={async () => {
-                  await logout();
-                  router.replace("/");
-                }}
-                className="rounded-md px-3 py-1.5 text-sm text-zinc-500 transition hover:bg-zinc-900 hover:text-zinc-300"
-              >
-                Выйти
-              </button>
-            </div>
-          ) : (
-            <div className="ml-2 flex items-center gap-1 border-l border-zinc-800 pl-2">
-              <NavLink href="/login" active={isActive("/login")}>
-                Войти
-              </NavLink>
-              <NavLink href="/register" active={isActive("/register")}>
-                Регистрация
-              </NavLink>
-            </div>
-          )}
-
-          {rightSlot && (
-            <span className="ml-2 hidden border-l border-zinc-800 pl-3 sm:block">
-              {rightSlot}
-            </span>
-          )}
-        </div>
+        {rightSlot && <span className="nc-status-pill">{rightSlot}</span>}
       </div>
     </nav>
-  );
-}
-
-
-function NavLink({
-  href,
-  active,
-  children,
-}: {
-  href: string;
-  active: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <Link
-      href={href}
-      className={`rounded-md px-3 py-1.5 text-sm transition ${
-        active
-          ? "bg-zinc-900 text-zinc-100"
-          : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
-      }`}
-    >
-      {children}
-    </Link>
   );
 }

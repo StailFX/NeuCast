@@ -974,6 +974,22 @@ def _predict_for_horizon(
     return float(prob), status_dict
 
 
+# ── In-memory TTL cache for /forecast_ensemble (2026-05-15) ─────────────
+#
+# Hot endpoint — 3 ForecastCards on /v2/forecast fan out → 3 calls every
+# 30 s. Underlying compute is ~2-3 s/call (two _predict_for_horizon runs
+# + 4 DB SELECTs). With cache: first call computes + populates; subsequent
+# calls within 60 s hit the dict, returning instantly. Stays in scope of
+# a single uvicorn worker (1 worker in prod, see systemd unit) so we
+# don't need cross-worker invalidation.
+#
+# Keyed on (symbol, weight_1m, weight_15m) — the only inputs that affect
+# the response. TTL = 60 s; the underlying forecast moves on a minute-bar
+# cadence anyway, so a 60-second-old response is at most one bar stale.
+_ENSEMBLE_CACHE: dict[tuple[str, float, float], tuple[float, dict]] = {}
+_ENSEMBLE_TTL_SECONDS = 60.0
+
+
 @router.get("/api/highfreq/forecast_ensemble")
 def get_forecast_ensemble(
     symbol: str = DEFAULT_SYMBOL,
@@ -1042,6 +1058,13 @@ def get_forecast_ensemble(
                 "ts": datetime.now(tz=timezone.utc).isoformat(),
             },
         )
+
+    # TTL cache hit-check.
+    _cache_key = (symbol, float(weight_1m), float(weight_15m))
+    _now = time.time()
+    _cached = _ENSEMBLE_CACHE.get(_cache_key)
+    if _cached is not None and (_now - _cached[0]) < _ENSEMBLE_TTL_SECONDS:
+        return JSONResponse(content=_cached[1])
 
     # Code-review C-5 (2026-05-04): fetch the SECONDS slices ONCE with the
     # widest lookback either horizon needs, then pass the cached frames
@@ -1115,7 +1138,7 @@ def get_forecast_ensemble(
     else:
         signal = "neutral"
 
-    return JSONResponse(content=_scrub({
+    _payload = _scrub({
         "ok": True,
         "symbol": symbol,
         "ts": datetime.now(tz=timezone.utc).isoformat(),
@@ -1133,7 +1156,20 @@ def get_forecast_ensemble(
             for c in result.components
         ],
         "models": {"1m": status_1m, "15m": status_15m},
-    }))
+    })
+    # Populate TTL cache. Only successful (ok=True) responses are
+    # cached so error states don't get stuck.
+    _ENSEMBLE_CACHE[_cache_key] = (_now, _payload)
+    # Naïve cache-size cap — drop the oldest entry if we exceed 32.
+    # Max realistic key cardinality is 3 symbols × handful of weights,
+    # but bound just in case.
+    if len(_ENSEMBLE_CACHE) > 32:
+        _oldest_key = min(
+            _ENSEMBLE_CACHE.keys(),
+            key=lambda k: _ENSEMBLE_CACHE[k][0],
+        )
+        _ENSEMBLE_CACHE.pop(_oldest_key, None)
+    return JSONResponse(content=_payload)
 
 
 # ── Joint multi-symbol shadow endpoint (Phase 2.2, 2026-05-09) ────────────
@@ -1374,23 +1410,28 @@ def get_forecast_joint(
 def _build_per_symbol_dashboard_payload(
     symbol: str,
     db: Session,
+    horizon: int = 1,
 ) -> dict[str, Any]:
-    """Per-symbol slice of the dashboard payload — forecast (1m) +
-    drift_status + last microprice. Stays lightweight enough to fan
-    out across N symbols in a single request without blocking the
-    event loop (the handler is plain ``def``, runs in threadpool).
+    """Per-symbol slice of the dashboard payload — forecast (at the
+    requested ``horizon`` minutes) + drift_status + last microprice.
+
+    ``horizon`` defaults to 1 (legacy contract). Pass 5 / 15 to score
+    against a different trained model. The trainer writes
+    ``weights/highfreq/{symbol}_{horizon}m.cbm``; if a weight file is
+    missing for the requested horizon the forecast sub-block will
+    surface ``ok=False, reason="model_or_data_unavailable"`` and the
+    rest of the payload still renders.
 
     Each sub-block is fail-safe: if the DB / file is unavailable, we
     return ``ok=False`` for that block but don't 503 the whole batch.
     """
     out: dict[str, Any] = {"symbol": symbol}
 
-    # Forecast (1m, base path — same payload as /api/highfreq/forecast).
-    # Includes split-conformal CI when the predictor has it calibrated
-    # so the dashboard can render the same prob_up=X% · CI [lo, hi]
-    # tooltip the per-card endpoint surfaces.
+    # Forecast at the requested horizon. Includes split-conformal CI
+    # when calibrated so the dashboard can render the same prob_up=X%
+    # · CI [lo, hi] tooltip the per-card endpoint surfaces.
     try:
-        prob, status_dict = _predict_for_horizon(symbol, 1, db)
+        prob, status_dict = _predict_for_horizon(symbol, horizon, db)
         if prob is None:
             out["forecast"] = {
                 "ok": False,
@@ -1410,12 +1451,11 @@ def _build_per_symbol_dashboard_payload(
                 "signal": signal,
                 "model": status_dict,
             }
-            # Pull conformal q from the predictor singleton (mirrors
-            # the /forecast endpoint's conformal_90/95 logic — best-
-            # effort, never blocks the response).
+            # Pull conformal q from the predictor singleton for the
+            # SAME horizon — best-effort, never blocks the response.
             try:
                 from app.highfreq.predictor import get_predictor as _get_predictor
-                predictor = _get_predictor(symbol, horizon_minutes=1)
+                predictor = _get_predictor(symbol, horizon_minutes=horizon)
                 if hasattr(predictor, "conformal_interval"):
                     ci90 = predictor.conformal_interval(float(prob), alpha=0.10)
                     if ci90 is not None:
@@ -1474,6 +1514,7 @@ def _build_per_symbol_dashboard_payload(
 @router.get("/api/highfreq/dashboard")
 def get_dashboard(
     symbols: str = ",".join(_available_symbols()),
+    horizon: int = 1,
     db: Session = Depends(_get_db),
 ) -> JSONResponse:
     """Batch endpoint serving the full /forecast page payload for
@@ -1548,8 +1589,16 @@ def get_dashboard(
         "n_symbols": len(validated),
         "symbols": {},
     }
+    # Bound horizon to the trained set (1/5/15). Anything else falls
+    # back to 1 — silent because the UI's HorizonPill already gates
+    # invalid options.
+    if horizon not in (1, 5, 15):
+        horizon = 1
+    payload["horizon"] = horizon
     for sym in validated:
-        payload["symbols"][sym] = _build_per_symbol_dashboard_payload(sym, db)
+        payload["symbols"][sym] = _build_per_symbol_dashboard_payload(
+            sym, db, horizon=horizon,
+        )
     return JSONResponse(content=_scrub(payload))
 
 

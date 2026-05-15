@@ -2,8 +2,31 @@
 
 import { useState } from "react";
 import { usePnLByFeeTier } from "@/lib/hooks";
-import type { FeeTierSummary } from "@/lib/api-types";
 import { Skeleton } from "./Skeleton";
+
+/**
+ * Actual server payload shape (2026-05-15: drifted from the legacy
+ * FeeTierSummary type in api-types.ts — backend renamed fields).
+ * We normalise to the legacy shape inside TierBars below.
+ */
+interface FeeTierRowServer {
+  tier: string;
+  fee_bps_per_side: number;
+  n_trades: number;
+  n_wins?: number;
+  n_losses?: number;
+  pnl_usd?: number;
+  pnl_bps_avg?: number;
+  pnl_usd_per_trade_avg?: number;
+}
+
+interface FeeTierRowDisplay {
+  key: string;
+  fee_bps: number;
+  n_trades: number;
+  win_rate: number | null;
+  mean_bps: number;
+}
 
 interface Props {
   symbols: readonly string[];
@@ -87,22 +110,43 @@ export function FeeTierPnLBars({ symbols }: Props) {
           нет закрытых сделок для этого символа
         </div>
       ) : (
-        <TierBars tiers={data.tiers} />
+        <TierBars tiers={data.tiers as unknown as FeeTierRowServer[]} />
       )}
     </div>
   );
 }
 
 
-function TierBars({ tiers }: { tiers: FeeTierSummary[] }) {
+function TierBars({ tiers }: { tiers: FeeTierRowServer[] }) {
+  // Normalise — supports both the current production shape
+  // ({tier, fee_bps_per_side, pnl_bps_avg, n_wins}) and the legacy
+  // shape used by older tests/mocks ({key, fee_bps, mean_bps, win_rate}).
+  const rows: FeeTierRowDisplay[] = tiers.map((t) => {
+    const legacy = t as unknown as {
+      key?: string;
+      fee_bps?: number;
+      mean_bps?: number;
+      win_rate?: number | null;
+    };
+    return {
+      key: t.tier ?? legacy.key ?? "?",
+      fee_bps: t.fee_bps_per_side ?? legacy.fee_bps ?? 0,
+      n_trades: t.n_trades ?? 0,
+      win_rate:
+        legacy.win_rate ??
+        (t.n_wins != null && t.n_trades > 0 ? t.n_wins / t.n_trades : null),
+      mean_bps: t.pnl_bps_avg ?? legacy.mean_bps ?? 0,
+    };
+  });
+
   const max = Math.max(
-    ...tiers.map((t) => Math.abs(t.mean_bps)),
+    ...rows.map((t) => Math.abs(t.mean_bps)),
     1,
   );
 
   return (
     <ul className="space-y-2">
-      {tiers.map((t) => {
+      {rows.map((t) => {
         const widthPct = (Math.abs(t.mean_bps) / max) * 100;
         const positive = t.mean_bps > 0;
         const negative = t.mean_bps < 0;

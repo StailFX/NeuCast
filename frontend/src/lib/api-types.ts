@@ -98,10 +98,27 @@ export interface PaperTradesResponse {
 
 
 // ── /api/highfreq/realized_accuracy ───────────────────────────────
+//
+// Current shape (2026-05-15): rolling 100-trade window from
+// app/highfreq/realized_accuracy.py. Legacy 24h-named fields are
+// kept as optional for backward-compat with the old MSW mocks but
+// the FastAPI side now emits the ``accuracy`` / ``n_trades_total``
+// names. Components read the new fields with a fallback to legacy.
 export interface RealizedAccuracyResponse {
   ok: boolean;
   symbol: string;
-  // 24h sliding window stats — exact field names match the FastAPI side.
+  // ── current shape (rolling 100-trade window) ──
+  ts?: string;
+  db_status?: string;
+  window?: number;
+  n_trades_total?: number;
+  n_eligible?: number;
+  n_correct?: number;
+  accuracy?: number;
+  avg_predicted_proba_up?: number;
+  earliest_exit_ts?: string;
+  latest_exit_ts?: string;
+  // ── legacy fields (still emitted in some MSW mocks; tolerated) ──
   n_trades_24h?: number;
   n_directional_24h?: number;
   n_correct_24h?: number;
@@ -109,15 +126,31 @@ export interface RealizedAccuracyResponse {
   ci_low_24h?: number;
   ci_high_24h?: number;
   p_value_24h?: number;
-  // Lifetime
   n_trades_lifetime?: number;
   dir_acc_lifetime?: number;
-  // Other
   reason?: string;
 }
 
 
 // ── /api/highfreq/reliability_diagram ─────────────────────────────
+//
+// Current shape (2026-05-15): server emits ``buckets`` with
+// {bin_idx, p_lo, p_hi, p_mid, n, n_pos, predicted_mean,
+//  realized_rate}. Components normalise to the legacy ``bins``
+// vocabulary for rendering. Legacy ``bins`` field kept optional for
+// any historical caller.
+export interface ReliabilityBucket {
+  bin_idx?: number;
+  p_lo: number;
+  p_hi: number;
+  p_mid: number;
+  n: number;
+  n_pos?: number;
+  predicted_mean?: number;
+  realized_rate: number | null;
+}
+
+/** Legacy bin shape (pre-2026-05-15). Some MSW mocks still emit this. */
 export interface ReliabilityBin {
   bin_lo: number;
   bin_hi: number;
@@ -131,7 +164,8 @@ export interface ReliabilitySymbolRow {
   n_total: number;
   brier: number | null;
   ece: number | null;
-  bins: ReliabilityBin[];
+  buckets?: ReliabilityBucket[];
+  bins?: ReliabilityBin[]; // legacy fallback
 }
 
 export interface ReliabilityResponse {
@@ -187,6 +221,23 @@ export interface ConditionalAccuracyResponse {
 
 
 // ── /api/highfreq/cumulative_pnl ──────────────────────────────────
+//
+// Current shape (2026-05-15): server returns ``points: [{ts, gross,
+// retail, vip5, vip9, futures, mm_rebate}]`` — tier values DIRECTLY
+// on the point object, not under ``cum_bps_by_tier``. The legacy
+// ``PnLPoint`` shape is kept for the rendering layer; CumulativePnL
+// component normalises server → legacy at render time.
+export interface PnLPointServer {
+  ts: string;
+  gross?: number;
+  retail?: number;
+  vip5?: number;
+  vip9?: number;
+  futures?: number;
+  mm_rebate?: number;
+}
+
+/** Legacy shape — components use this internally after normalisation. */
 export interface PnLPoint {
   ts: string;
   /** dict tier_key → cumulative bps at this trade-close ts. */
@@ -374,8 +425,44 @@ export interface PerHourPoint {
   dir_acc: number;
 }
 
+/**
+ * Current shape (2026-05-15): server wraps everything in ``report``
+ * and FLATTENS the bootstrap/permutation results into top-level
+ * scalars (block_bootstrap_ci_low/high, permutation_p_value, ...).
+ * The component reads ``data.report.*`` first, falling back to
+ * ``data.*`` for legacy callers / MSW mocks.
+ */
+export interface RobustnessReport {
+  symbol?: string;
+  generated_at?: string;
+  n_predictions?: number;
+  n_bootstrap?: number;
+  n_permutations?: number;
+  block_size_minutes?: number;
+  dir_acc?: number;
+  n_correct?: number;
+  n_total?: number;
+  block_bootstrap_ci_low?: number;
+  block_bootstrap_ci_high?: number;
+  permutation_p_value?: number;
+  permutation_null_mean?: number;
+  permutation_null_std?: number;
+  permutation_z_score?: number;
+  per_day?: PerDayPoint[];
+  per_day_min?: number;
+  per_day_max?: number;
+  per_day_std?: number;
+  per_day_all_above_chance?: boolean;
+  per_hour?: PerHourPoint[];
+  per_regime?: Array<{ regime: string; n: number; dir_acc: number }>;
+}
+
 export interface RobustnessResponse {
   ok: boolean;
+  ts?: string;
+  /** Current path: server wraps payload under ``report``. */
+  report?: RobustnessReport;
+  /** ── legacy fields (top-level) — kept for MSW mocks ──. */
   symbol?: string;
   generated_at?: string;
   n_predictions?: number;
@@ -390,14 +477,28 @@ export interface RobustnessResponse {
 
 
 // ── /api/highfreq/pnl_by_fee_tier ─────────────────────────────────
+//
+// Current shape (2026-05-15): server emits {tier, fee_bps_per_side,
+// n_trades, n_wins, n_losses, pnl_usd, pnl_bps_avg,
+// pnl_usd_per_trade_avg}. Component normalises to display shape via
+// FeeTierRowDisplay (defined locally in FeeTierPnLBars.tsx).
 export interface FeeTierSummary {
-  key: string;
-  name: string;
-  fee_bps: number;
+  // ── current fields ──
+  tier?: string;
+  fee_bps_per_side?: number;
   n_trades: number;
-  total_bps: number;
-  win_rate: number | null;
-  mean_bps: number;
+  n_wins?: number;
+  n_losses?: number;
+  pnl_usd?: number;
+  pnl_bps_avg?: number;
+  pnl_usd_per_trade_avg?: number;
+  // ── legacy fields (MSW mocks still emit these) ──
+  key?: string;
+  name?: string;
+  fee_bps?: number;
+  total_bps?: number;
+  win_rate?: number | null;
+  mean_bps?: number;
 }
 
 export interface PnLByFeeTierResponse {
@@ -409,19 +510,34 @@ export interface PnLByFeeTierResponse {
 }
 
 
+/**
+ * Current shape (2026-05-15): server returns ``points`` (with tier
+ * values directly on each point) + ``tiers`` (with ``final_bps``,
+ * not ``final_cum_bps``). The legacy fields are kept optional for
+ * backward-compat with older callers / MSW mocks.
+ */
 export interface CumulativePnLResponse {
   ok: boolean;
   symbol?: string;
   n_trades?: number;
+  n_points?: number;
   first_trade_ts?: string;
   last_trade_ts?: string;
+  ts?: string;
   tiers?: Array<{
     key: string;
-    name: string;
-    fee_bps: number;
-    final_cum_bps: number;
-    final_cum_pct: number;
+    name?: string;
+    fee_bps?: number;
+    /** Current field name (renamed 2026-05-15). */
+    final_bps?: number;
+    win_rate?: number;
+    /** Legacy alias for final_bps. */
+    final_cum_bps?: number;
+    final_cum_pct?: number;
   }>;
+  /** Current: per-trade-close tier values directly on the object. */
+  points?: PnLPointServer[];
+  /** Legacy: nested ``cum_bps_by_tier`` map. */
   curve?: PnLPoint[];
   reason?: string;
 }

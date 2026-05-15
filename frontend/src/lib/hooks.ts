@@ -93,7 +93,13 @@ export function useForecastEnsemble(
   return useQuery({
     queryKey: ["forecast_ensemble", symbol, weight1m, weight15m],
     queryFn: () => fetchForecastEnsemble(symbol, weight1m, weight15m),
-    refetchInterval: PREDICT_REFRESH_MS,
+    // 2026-05-15: this endpoint is heavy (2-3 s warm cache) and 3
+    // ForecastCards fan out → 6-9 s blocking. Cache for 5 min instead
+    // of 30 s — the ensemble blend doesn't shift on a minute-scale,
+    // staleness is fine; freshness on the main forecast already comes
+    // from /dashboard.
+    refetchInterval: METRICS_REFRESH_MS,
+    staleTime: METRICS_REFRESH_MS,
   });
 }
 

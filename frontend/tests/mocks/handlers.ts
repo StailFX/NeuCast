@@ -69,8 +69,20 @@ export const handlers = [
   ),
 
   // Default empties for everything else the cards / strips fetch.
+  // 2026-05-15: realized_accuracy emits the rolling-100-trade window
+  // shape ({accuracy, n_trades_total, n_correct, ...}) — components
+  // also accept legacy {dir_acc_24h, n_trades_24h} via fallback.
   http.get("/api/highfreq/realized_accuracy", () =>
-    HttpResponse.json({ ok: true, symbol: "BTCUSDT" }),
+    HttpResponse.json({
+      ok: true,
+      symbol: "BTCUSDT",
+      window: 100,
+      n_trades_total: 35,
+      n_eligible: 35,
+      n_correct: 26,
+      accuracy: 0.7428,
+      avg_predicted_proba_up: 0.5946,
+    }),
   ),
   http.get("/api/highfreq/paper_trades", () =>
     HttpResponse.json({ ok: true, symbol: "BTCUSDT", trades: [] }),
@@ -161,21 +173,25 @@ export const handlers = [
     }),
   ),
 
+  // 2026-05-15: cumulative_pnl now emits ``points`` (per-trade-close
+  // timestamps with tier values directly on the object) + ``tiers``
+  // (with ``final_bps``, not ``final_cum_bps``).
   http.get("/api/highfreq/cumulative_pnl", () =>
     HttpResponse.json({
       ok: true,
       symbol: "BTCUSDT",
-      tiers: {
-        gross: [
-          { ts: "2026-05-01T00:00:00Z", cum_pnl_bps: 0 },
-          { ts: "2026-05-02T00:00:00Z", cum_pnl_bps: 12 },
-          { ts: "2026-05-03T00:00:00Z", cum_pnl_bps: 8 },
-        ],
-        retail: [
-          { ts: "2026-05-01T00:00:00Z", cum_pnl_bps: 0 },
-          { ts: "2026-05-02T00:00:00Z", cum_pnl_bps: -45 },
-        ],
-      },
+      n_trades: 3,
+      n_points: 3,
+      tiers: [
+        { key: "gross", name: "Без комиссии", fee_bps: 0, final_bps: 8, win_rate: 0.66 },
+        { key: "retail", name: "Spot retail", fee_bps: 7.5, final_bps: -45, win_rate: 0.0 },
+        { key: "vip9", name: "Spot VIP-9", fee_bps: 1.0, final_bps: 6, win_rate: 0.50 },
+      ],
+      points: [
+        { ts: "2026-05-01T00:00:00Z", gross: 0, retail: 0, vip9: 0 },
+        { ts: "2026-05-02T00:00:00Z", gross: 12, retail: -45, vip9: 8 },
+        { ts: "2026-05-03T00:00:00Z", gross: 8, retail: -85, vip9: 6 },
+      ],
     }),
   ),
 
@@ -193,14 +209,19 @@ export const handlers = [
     }),
   ),
 
+  // 2026-05-15: pnl_by_fee_tier emits {tier, fee_bps_per_side,
+  // n_trades, n_wins, n_losses, pnl_usd, pnl_bps_avg,
+  // pnl_usd_per_trade_avg}. Components also accept legacy
+  // {key, fee_bps, mean_bps, win_rate} via the normaliser in
+  // FeeTierPnLBars.tsx.
   http.get("/api/highfreq/pnl_by_fee_tier", () =>
     HttpResponse.json({
       ok: true,
       symbol: "BTCUSDT",
       tiers: [
-        { key: "gross", name: "Без комиссии", fee_bps: 0, n_trades: 56, win_rate: 0.55, total_bps: 12.4, mean_bps: 0.22 },
-        { key: "retail", name: "Spot retail", fee_bps: 7.5, n_trades: 56, win_rate: 0.0, total_bps: -785, mean_bps: -14.0 },
-        { key: "vip9", name: "Spot VIP-9", fee_bps: 1.0, n_trades: 56, win_rate: 0.41, total_bps: 18.5, mean_bps: 0.33 },
+        { tier: "gross", fee_bps_per_side: 0, n_trades: 56, n_wins: 31, n_losses: 25, pnl_usd: 12.4, pnl_bps_avg: 0.22, pnl_usd_per_trade_avg: 0.22 },
+        { tier: "retail", fee_bps_per_side: 7.5, n_trades: 56, n_wins: 0, n_losses: 56, pnl_usd: -15.12, pnl_bps_avg: -14.02, pnl_usd_per_trade_avg: -0.27 },
+        { tier: "vip9", fee_bps_per_side: 1.0, n_trades: 56, n_wins: 23, n_losses: 33, pnl_usd: 1.85, pnl_bps_avg: 0.33, pnl_usd_per_trade_avg: 0.033 },
       ],
     }),
   ),
@@ -224,6 +245,10 @@ export const handlers = [
     }),
   ),
 
+  // 2026-05-15: reliability_diagram emits ``buckets`` with fields
+  // {bin_idx, p_lo, p_hi, p_mid, n, n_pos, predicted_mean,
+  // realized_rate}. Legacy ``bins`` keys (bin_lo/bin_hi/bin_mid) are
+  // tolerated by the renderer via normalisation in ReliabilityDiagram.
   http.get("/api/highfreq/reliability_diagram", () =>
     HttpResponse.json({
       ok: true,
@@ -235,40 +260,49 @@ export const handlers = [
           n_total: 7011,
           brier: 0.241,
           ece: 0.018,
-          bins: [
-            { bin_lo: 0.0, bin_hi: 0.1, bin_mid: 0.05, n: 12, realized_rate: 0.05 },
-            { bin_lo: 0.5, bin_hi: 0.6, bin_mid: 0.55, n: 1830, realized_rate: 0.57 },
-            { bin_lo: 0.9, bin_hi: 1.0, bin_mid: 0.95, n: 5, realized_rate: 0.80 },
+          buckets: [
+            { bin_idx: 0, p_lo: 0.0, p_hi: 0.1, p_mid: 0.05, n: 12, n_pos: 1, predicted_mean: 0.05, realized_rate: 0.083 },
+            { bin_idx: 5, p_lo: 0.5, p_hi: 0.6, p_mid: 0.55, n: 1830, n_pos: 1043, predicted_mean: 0.55, realized_rate: 0.57 },
+            { bin_idx: 9, p_lo: 0.9, p_hi: 1.0, p_mid: 0.95, n: 5, n_pos: 4, predicted_mean: 0.95, realized_rate: 0.80 },
           ],
         },
       ],
     }),
   ),
 
+  // 2026-05-15: robustness wraps payload under ``report`` and
+  // FLATTENS bootstrap/permutation results into top-level scalars
+  // (block_bootstrap_ci_low/high, permutation_p_value, ...). Component
+  // reads ``data.report.*`` first, falls back to legacy ``data.*``.
   http.get("/api/highfreq/robustness", () =>
     HttpResponse.json({
       ok: true,
-      symbol: "BTCUSDT",
-      block_bootstrap: {
-        dir_acc: 0.5409,
-        ci_low: 0.5342,
-        ci_high: 0.5476,
-        n_blocks: 100,
-        block_size_minutes: 60,
-      },
-      permutation_test: {
-        observed_dir_acc: 0.5409,
+      ts: "2026-05-15T08:30:00Z",
+      report: {
+        symbol: "BTCUSDT",
+        generated_at: "2026-05-15T08:30:00Z",
+        n_predictions: 7029,
+        n_bootstrap: 1000,
         n_permutations: 1000,
-        p_value: 0.001,
+        block_size_minutes: 60,
+        dir_acc: 0.5409,
+        n_correct: 3801,
+        n_total: 7029,
+        block_bootstrap_ci_low: 0.5342,
+        block_bootstrap_ci_high: 0.5476,
+        permutation_p_value: 0.001,
+        permutation_null_mean: 0.50,
+        permutation_null_std: 0.0060,
+        permutation_z_score: 6.82,
+        per_day: [
+          { day: "2026-05-01", dir_acc: 0.55, n: 240 },
+          { day: "2026-05-02", dir_acc: 0.52, n: 240 },
+        ],
+        per_hour: [
+          { hour: 0, dir_acc: 0.54, n: 100 },
+          { hour: 1, dir_acc: 0.53, n: 100 },
+        ],
       },
-      per_day: [
-        { day: "2026-05-01", dir_acc: 0.55, n: 240 },
-        { day: "2026-05-02", dir_acc: 0.52, n: 240 },
-      ],
-      per_hour: [
-        { hour: 0, dir_acc: 0.54, n: 100 },
-        { hour: 1, dir_acc: 0.53, n: 100 },
-      ],
     }),
   ),
 
