@@ -192,3 +192,7 @@ node_modules/
 coverage.xml
 *.pid
 *.seed
+
+# Local assistant/runtime metadata and generated experiment results
+AGENTS.md
+_results/

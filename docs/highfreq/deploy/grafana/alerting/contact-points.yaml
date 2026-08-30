@@ -1,0 +1,37 @@
+apiVersion: 1
+
+# Notification templates — used by the Telegram contact point below.
+# HTML mode: Telegram supports a small HTML subset (<b>, <i>, <a>, <code>, <pre>).
+templates:
+  - orgId: 1
+    name: telegram_neucast
+    template: |
+      {{ define "telegram.neucast.message" }}
+      {{ if eq .Status "firing" }}🚨 <b>FIRING</b>{{ else }}✅ <b>RESOLVED</b>{{ end }}
+      {{ range .Alerts }}
+
+      <b>{{ .Labels.alertname }}</b>{{ if .Labels.severity }} · <i>{{ .Labels.severity }}</i>{{ end }}
+      {{ if .Annotations.summary }}{{ .Annotations.summary }}{{ end }}
+      {{ if .Labels.symbol }}📍 symbol: <code>{{ .Labels.symbol }}</code>{{ end }}
+      {{ if .Labels.service }}📍 service: <code>{{ .Labels.service }}</code>{{ end }}
+      {{ if .Labels.reason }}📍 reason: <code>{{ .Labels.reason }}</code>{{ end }}
+      {{ if .Annotations.description }}
+      💡 <i>{{ .Annotations.description }}</i>{{ end }}
+      {{ if eq .Status "firing" }}🔗 <a href="{{ .GeneratorURL }}">view rule</a>{{ end }}
+      {{ end }}
+      {{ end }}
+
+# Contact point: values are expanded by Grafana from its process environment.
+# Keep the real token and chat ID in a root-only environment file, never in Git.
+contactPoints:
+  - orgId: 1
+    name: telegram-stailfx
+    receivers:
+      - uid: tg-stailfx-1
+        type: telegram
+        settings:
+          bottoken: "$HF_TELEGRAM_SIGNAL_BOT_TOKEN"
+          chatid: "$HF_TELEGRAM_SIGNAL_CHAT_ID"
+          parse_mode: HTML
+          message: '{{ template "telegram.neucast.message" . }}'
+        disableResolveMessage: false

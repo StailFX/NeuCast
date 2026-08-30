@@ -60,6 +60,11 @@ See [ADR-009](../architecture.md#adr-009--tokyo-vps-as-the-hft-data-plane-supers
 | **Networking** | |
 | `wireguard_setup.md` | 10-step runbook for WG tunnel between Tokyo + Finland |
 
+The Telegram contact point reads `HF_TELEGRAM_SIGNAL_BOT_TOKEN` and
+`HF_TELEGRAM_SIGNAL_CHAT_ID` from the Grafana process environment. Keep the
+real values in a root-only environment file on the deployment host; do not
+write them into the provisioning YAML or commit them to Git.
+
 ## Production VPS layout (Hostkey Finland)
 
 The production VPS predates Phase A and uses a hybrid layout:
