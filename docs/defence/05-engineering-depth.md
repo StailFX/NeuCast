@@ -128,8 +128,9 @@ not just the thesis.
 
 * **Source of truth is GitHub** (`StailFX/NeuCast`), not the running
   VPS. Tokyo is `rsync`-deploy; Finland is `git pull`-deploy.
-* **No secrets in the repo** — `.env` files on each VPS, mode 0600,
-  values.
+* **No secrets in the repo** — runtime credentials are loaded from
+  root-owned `.env` files with mode 0600; operational inventories are
+  stored outside the repository.
 * **GitHub deploy key** for git pull on Finland (`~/.ssh/github_deploy`).
 * **systemd hardening** on every unit:
   `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`,

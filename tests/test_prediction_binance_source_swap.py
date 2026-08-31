@@ -14,11 +14,51 @@ Tests pin:
 """
 from __future__ import annotations
 
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import numpy as np
 import pandas as pd
 import pytest
+
+
+# These tests exercise data-source selection and preprocessing only.  Provide
+# a tiny TensorFlow surface so importing ``app.prediction`` does not pull the
+# heavyweight training runtime into the unit-test job.
+_tensorflow = ModuleType("tensorflow")
+_tensorflow.config = SimpleNamespace(
+    threading=SimpleNamespace(
+        set_inter_op_parallelism_threads=lambda *_: None,
+        set_intra_op_parallelism_threads=lambda *_: None,
+    ),
+)
+_keras = ModuleType("tensorflow.keras")
+_callbacks = ModuleType("tensorflow.keras.callbacks")
+_models = ModuleType("tensorflow.keras.models")
+
+
+class _Callback:
+    pass
+
+
+_callbacks.Callback = _Callback
+_callbacks.EarlyStopping = _Callback
+_callbacks.ReduceLROnPlateau = _Callback
+_models.load_model = lambda *args, **kwargs: None
+_models.clone_model = lambda model: model
+_keras.callbacks = _callbacks
+_keras.models = _models
+_tensorflow.keras = _keras
+
+sys.modules.setdefault("tensorflow", _tensorflow)
+sys.modules.setdefault("tensorflow.keras", _keras)
+sys.modules.setdefault("tensorflow.keras.callbacks", _callbacks)
+sys.modules.setdefault("tensorflow.keras.models", _models)
+
+_layers = ModuleType("app.layers")
+_layers.CUSTOM_OBJECTS = {}
+sys.modules.setdefault("app.layers", _layers)
 
 
 def _make_ohlcv_df(n: int = 100, start: str = "2025-01-01") -> pd.DataFrame:

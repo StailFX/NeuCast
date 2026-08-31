@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.highfreq.web import _get_db, router
+from app.highfreq.web import _ENSEMBLE_CACHE, _get_db, router
 
 
 # Code-review C-5 (2026-05-04): get_forecast_ensemble pre-fetches
@@ -34,6 +34,7 @@ from app.highfreq.web import _get_db, router
 # df_seconds kwargs entirely.
 @pytest.fixture(autouse=True)
 def _patch_prefetch_seconds():
+    _ENSEMBLE_CACHE.clear()
     with patch(
         "app.highfreq.web._fetch_recent_seconds",
         return_value=pd.DataFrame(),
@@ -42,6 +43,7 @@ def _patch_prefetch_seconds():
         return_value=pd.DataFrame(),
     ):
         yield
+    _ENSEMBLE_CACHE.clear()
 
 
 def _make_app() -> FastAPI:
@@ -146,6 +148,7 @@ def test_signal_classification_threshold():
             "/api/highfreq/forecast_ensemble?symbol=BTCUSDT"
         ).json()
         assert body["signal"] == "neutral"
+    _ENSEMBLE_CACHE.clear()
     with patch("app.highfreq.web._predict_for_horizon") as mock_pred:
         mock_pred.side_effect = [(0.40, {}), (0.40, {})]
         body = TestClient(app).get(

@@ -23,10 +23,32 @@ ML-моделей).
 from __future__ import annotations
 
 import os
+import sys
+from types import ModuleType
 
 # `app.db` читает DATABASE_URL на import — sqlite:///:memory: безопасен,
 # create_engine не коннектится сразу. Делаем это ДО импорта app.main.
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
+# ``app.main`` wires ML services into production routes at import time.  The
+# error-page tests never call those routes, so loading TensorFlow and the rest
+# of the training stack here would make this lightweight unit suite needlessly
+# slow.  Minimal module stubs keep the test focused on the HTTP handlers.
+_prediction = ModuleType("app.prediction")
+_prediction.run_prediction = lambda *args, **kwargs: None
+_prediction.fetch_and_preprocess = lambda *args, **kwargs: None
+_prediction.apply_sentiment_bias = lambda *args, **kwargs: None
+_prediction.SEQ_LEN = 1
+_prediction.MODEL_COLS = []
+sys.modules["app.prediction"] = _prediction
+
+_sentiment = ModuleType("app.sentiment")
+_sentiment.analyze_sentiment = lambda *args, **kwargs: None
+sys.modules["app.sentiment"] = _sentiment
+
+_portfolio = ModuleType("app.portfolio")
+_portfolio.optimize_portfolio = lambda *args, **kwargs: None
+sys.modules["app.portfolio"] = _portfolio
 
 import pytest
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -40,6 +62,19 @@ from app.main import (  # noqa: E402  (env-setup must come first)
     _validation_exception_handler,
     _wants_json_response,
 )
+import app as _app_package
+
+# Do not leak the lightweight stubs into the rest of the test session: several
+# other modules exercise the real prediction implementation.
+for _module_name, _attribute, _stub in (
+    ("app.prediction", "prediction", _prediction),
+    ("app.sentiment", "sentiment", _sentiment),
+    ("app.portfolio", "portfolio", _portfolio),
+):
+    sys.modules.pop(_module_name, None)
+    if getattr(_app_package, _attribute, None) is _stub:
+        delattr(_app_package, _attribute)
+
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
