@@ -140,7 +140,7 @@ describe("<AuthForm /> — register mode", () => {
     expect(seen.mock.calls[0][0]).toMatchObject({
       username: "newbie",
       email: "n@example.com",
-      password: "<redacted>",
+      password: "verysecure-12chars",
       password2: "verysecure-12chars",
     });
   });
